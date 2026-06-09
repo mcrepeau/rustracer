@@ -52,14 +52,14 @@ impl BvhNode {
     }
 }
 
-fn centroid(obj: &dyn Hittable, axis: usize) -> f64 {
+fn centroid(obj: &dyn Hittable, axis: usize) -> f32 {
     obj.bounding_box()
         .map(|bb| (bb.min[axis] + bb.max[axis]) * 0.5)
         .unwrap_or(0.0)
 }
 
 impl Hittable for BvhNode {
-    fn hit(&self, r: &Ray, t_min: f64, t_max: f64) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         if !self.bbox.hit(r, t_min, t_max) { return None; }
         let left_hit   = self.left.hit(r, t_min, t_max);
         let t_max_right = left_hit.as_ref().map_or(t_max, |h| h.t);

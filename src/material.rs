@@ -28,7 +28,7 @@ impl Material for Lambertian {
 
 pub struct Metal {
     pub albedo: Color,
-    pub fuzz: f64,
+    pub fuzz: f32,
 }
 
 impl Material for Metal {
@@ -44,11 +44,11 @@ impl Material for Metal {
 }
 
 pub struct Dielectric {
-    pub ir: f64,
+    pub ir: f32,
 }
 
 impl Dielectric {
-    fn reflectance(cosine: f64, ref_idx: f64) -> f64 {
+    fn reflectance(cosine: f32, ref_idx: f32) -> f32 {
         let r0 = ((1.0 - ref_idx) / (1.0 + ref_idx)).powi(2);
         r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
     }
@@ -61,7 +61,7 @@ impl Material for Dielectric {
         let cos_theta = (-unit).dot(rec.normal).min(1.0);
         let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
         let mut rng = rand::thread_rng();
-        let direction = if ratio * sin_theta > 1.0 || Self::reflectance(cos_theta, ratio) > rng.gen::<f64>() {
+        let direction = if ratio * sin_theta > 1.0 || Self::reflectance(cos_theta, ratio) > rng.gen::<f32>() {
             unit.reflect(rec.normal)
         } else {
             unit.refract(rec.normal, ratio)

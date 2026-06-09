@@ -9,18 +9,18 @@ use crate::hittable::{HitRecord, Hittable, HittableList, Material};
 pub struct Triangle {
     v:   [Point3; 3],
     n:   [Vec3; 3],         // per-vertex normals (interpolated at hit)
-    uv:  [(f64, f64); 3],
+    uv:  [(f32, f32); 3],
     mat: Arc<dyn Material>,
 }
 
 impl Triangle {
-    pub fn new(v: [Point3; 3], n: [Vec3; 3], uv: [(f64, f64); 3], mat: Arc<dyn Material>) -> Self {
+    pub fn new(v: [Point3; 3], n: [Vec3; 3], uv: [(f32, f32); 3], mat: Arc<dyn Material>) -> Self {
         Self { v, n, uv, mat }
     }
 }
 
 impl Hittable for Triangle {
-    fn hit(&self, r: &Ray, t_min: f64, t_max: f64) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         let e1 = self.v[1] - self.v[0];
         let e2 = self.v[2] - self.v[0];
         let h  = r.direction.cross(e2);
@@ -72,7 +72,7 @@ impl Hittable for Triangle {
 /// Returns a flat HittableList of triangles — wrap in BvhNode before use.
 pub fn load_obj(
     path: &str,
-    scale: f64,
+    scale: f32,
     mat: Arc<dyn Material>,
 ) -> Result<HittableList, tobj::LoadError> {
     let (models, _) = tobj::load_obj(path, &tobj::LoadOptions {
@@ -94,17 +94,17 @@ pub fn load_obj(
             let (i0, i1, i2) = (chunk[0] as usize, chunk[1] as usize, chunk[2] as usize);
 
             let v = [
-                Point3::new(pos[3*i0] as f64 * scale, pos[3*i0+1] as f64 * scale, pos[3*i0+2] as f64 * scale),
-                Point3::new(pos[3*i1] as f64 * scale, pos[3*i1+1] as f64 * scale, pos[3*i1+2] as f64 * scale),
-                Point3::new(pos[3*i2] as f64 * scale, pos[3*i2+1] as f64 * scale, pos[3*i2+2] as f64 * scale),
+                Point3::new(pos[3*i0] as f32 * scale, pos[3*i0+1] as f32 * scale, pos[3*i0+2] as f32 * scale),
+                Point3::new(pos[3*i1] as f32 * scale, pos[3*i1+1] as f32 * scale, pos[3*i1+2] as f32 * scale),
+                Point3::new(pos[3*i2] as f32 * scale, pos[3*i2+1] as f32 * scale, pos[3*i2+2] as f32 * scale),
             ];
 
             let max_nrm_idx = i0.max(i1).max(i2);
             let n = if nrm.len() >= 3 * (max_nrm_idx + 1) {
                 [
-                    Vec3::new(nrm[3*i0] as f64, nrm[3*i0+1] as f64, nrm[3*i0+2] as f64),
-                    Vec3::new(nrm[3*i1] as f64, nrm[3*i1+1] as f64, nrm[3*i1+2] as f64),
-                    Vec3::new(nrm[3*i2] as f64, nrm[3*i2+1] as f64, nrm[3*i2+2] as f64),
+                    Vec3::new(nrm[3*i0] as f32, nrm[3*i0+1] as f32, nrm[3*i0+2] as f32),
+                    Vec3::new(nrm[3*i1] as f32, nrm[3*i1+1] as f32, nrm[3*i1+2] as f32),
+                    Vec3::new(nrm[3*i2] as f32, nrm[3*i2+1] as f32, nrm[3*i2+2] as f32),
                 ]
             } else {
                 let face_n = (v[1] - v[0]).cross(v[2] - v[0]).unit();
@@ -114,9 +114,9 @@ pub fn load_obj(
             let max_tex_idx = i0.max(i1).max(i2);
             let uv = if tex.len() >= 2 * (max_tex_idx + 1) {
                 [
-                    (tex[2*i0] as f64, tex[2*i0+1] as f64),
-                    (tex[2*i1] as f64, tex[2*i1+1] as f64),
-                    (tex[2*i2] as f64, tex[2*i2+1] as f64),
+                    (tex[2*i0] as f32, tex[2*i0+1] as f32),
+                    (tex[2*i1] as f32, tex[2*i1+1] as f32),
+                    (tex[2*i2] as f32, tex[2*i2+1] as f32),
                 ]
             } else {
                 [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]

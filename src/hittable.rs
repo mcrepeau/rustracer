@@ -12,14 +12,14 @@ pub struct HitRecord {
     pub p: Point3,
     pub normal: Vec3,
     pub mat: Arc<dyn Material>,
-    pub t: f64,
-    pub u: f64,
-    pub v: f64,
+    pub t: f32,
+    pub u: f32,
+    pub v: f32,
     pub front_face: bool,
 }
 
 impl HitRecord {
-    pub fn new(p: Point3, t: f64, mat: Arc<dyn Material>, r: &Ray, outward_normal: Vec3) -> Self {
+    pub fn new(p: Point3, t: f32, mat: Arc<dyn Material>, r: &Ray, outward_normal: Vec3) -> Self {
         let front_face = r.direction.dot(outward_normal) < 0.0;
         let normal = if front_face { outward_normal } else { -outward_normal };
         Self { p, normal, mat, t, u: 0.0, v: 0.0, front_face }
@@ -27,7 +27,7 @@ impl HitRecord {
 }
 
 pub trait Hittable: Send + Sync {
-    fn hit(&self, r: &Ray, t_min: f64, t_max: f64) -> Option<HitRecord>;
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord>;
     fn bounding_box(&self) -> Option<Aabb>;
 }
 
@@ -48,7 +48,7 @@ impl HittableList {
 }
 
 impl Hittable for HittableList {
-    fn hit(&self, r: &Ray, t_min: f64, t_max: f64) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         let mut closest = t_max;
         let mut result = None;
         for obj in &self.objects {

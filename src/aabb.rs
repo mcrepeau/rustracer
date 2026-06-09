@@ -19,7 +19,7 @@ impl Aabb {
 
     // Expand any axis-aligned slab thinner than DELTA (needed for flat quads).
     pub fn pad(self) -> Self {
-        const D: f64 = 0.0001;
+        const D: f32 = 0.0001;
         let px = if self.max.x - self.min.x < D { D } else { 0.0 };
         let py = if self.max.y - self.min.y < D { D } else { 0.0 };
         let pz = if self.max.z - self.min.z < D { D } else { 0.0 };
@@ -29,7 +29,7 @@ impl Aabb {
         }
     }
 
-    pub fn hit(&self, r: &Ray, mut t_min: f64, mut t_max: f64) -> bool {
+    pub fn hit(&self, r: &Ray, mut t_min: f32, mut t_max: f32) -> bool {
         for axis in 0..3 {
             let inv_d = 1.0 / r.direction[axis];
             let orig  = r.origin[axis];

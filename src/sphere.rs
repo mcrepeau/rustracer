@@ -1,11 +1,12 @@
 use std::sync::Arc;
-use std::f64::consts::PI;
+use std::f32::consts::PI;
+
 use crate::aabb::Aabb;
 use crate::vec3::{Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Hittable, Material};
 
-fn sphere_uv(p: Vec3) -> (f64, f64) {
+fn sphere_uv(p: Vec3) -> (f32, f32) {
     let theta = (-p.y).acos();
     let phi   = (-p.z).atan2(p.x) + PI;
     (phi / (2.0 * PI), theta / PI)
@@ -13,18 +14,18 @@ fn sphere_uv(p: Vec3) -> (f64, f64) {
 
 pub struct Sphere {
     pub center: Point3,
-    pub radius: f64,
+    pub radius: f32,
     pub mat: Arc<dyn Material>,
 }
 
 impl Sphere {
-    pub fn new(center: Point3, radius: f64, mat: Arc<dyn Material>) -> Self {
+    pub fn new(center: Point3, radius: f32, mat: Arc<dyn Material>) -> Self {
         Self { center, radius, mat }
     }
 }
 
 impl Hittable for Sphere {
-    fn hit(&self, r: &Ray, t_min: f64, t_max: f64) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         let oc = r.origin - self.center;
         let a = r.direction.length_squared();
         let half_b = oc.dot(r.direction);

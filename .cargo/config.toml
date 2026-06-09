@@ -1,2 +1,0 @@
-[target.x86_64-pc-windows-msvc]
-  rustflags = ["-L", "C:\\SDL2-2.32.10\\lib\\x64"]

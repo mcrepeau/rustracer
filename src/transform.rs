@@ -18,7 +18,7 @@ impl Translate {
 }
 
 impl Hittable for Translate {
-    fn hit(&self, r: &Ray, t_min: f64, t_max: f64) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         let moved = Ray::new(r.origin - self.offset, r.direction);
         let mut rec = self.object.hit(&moved, t_min, t_max)?;
         rec.p += self.offset;
@@ -36,20 +36,20 @@ impl Hittable for Translate {
 
 pub struct RotateY {
     object:    Arc<dyn Hittable>,
-    sin_theta: f64,
-    cos_theta: f64,
+    sin_theta: f32,
+    cos_theta: f32,
     bbox:      Option<Aabb>,
 }
 
 impl RotateY {
-    pub fn new(object: Arc<dyn Hittable>, angle_deg: f64) -> Self {
+    pub fn new(object: Arc<dyn Hittable>, angle_deg: f32) -> Self {
         let theta     = angle_deg.to_radians();
         let sin_theta = theta.sin();
         let cos_theta = theta.cos();
 
         let bbox = object.bounding_box().map(|bb| {
-            let mut min = Point3::new( f64::INFINITY,  f64::INFINITY,  f64::INFINITY);
-            let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            let mut min = Point3::new( f32::INFINITY,  f32::INFINITY,  f32::INFINITY);
+            let mut max = Point3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
             for i in 0..2usize {
                 for j in 0..2usize {
                     for k in 0..2usize {
@@ -73,7 +73,7 @@ impl RotateY {
 }
 
 impl Hittable for RotateY {
-    fn hit(&self, r: &Ray, t_min: f64, t_max: f64) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         // Rotate ray into object space (inverse: −theta)
         let rotated = Ray::new(
             Point3::new(

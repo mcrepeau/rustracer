@@ -9,7 +9,7 @@ pub struct Quad {
     u:      Vec3,
     v:      Vec3,
     normal: Vec3,
-    d:      f64,
+    d:      f32,
     w:      Vec3,  // n / (n·n), used to compute UV coordinates
     mat:    Arc<dyn Material>,
 }
@@ -25,7 +25,7 @@ impl Quad {
 }
 
 impl Hittable for Quad {
-    fn hit(&self, r: &Ray, t_min: f64, t_max: f64) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         let denom = self.normal.dot(r.direction);
         if denom.abs() < 1e-8 { return None; }
 

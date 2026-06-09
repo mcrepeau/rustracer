@@ -39,11 +39,11 @@ use std::sync::Arc;
 const WIDTH: u32    = 1200;
 const HEIGHT: u32   = 800;
 const MAX_DEPTH: i32 = 50;
-const MOUSE_SENS: f64 = 0.002;
+const MOUSE_SENS: f32 = 0.002;
 
 fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, depth: i32) -> Color {
     if depth <= 0 { return Color::default(); }
-    match world.hit(r, 0.001, f64::INFINITY) {
+    match world.hit(r, 0.001, f32::INFINITY) {
         None => background.unwrap_or_else(|| {
             let t = 0.5 * (r.direction.unit().y + 1.0);
             (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
@@ -55,7 +55,7 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, depth: i3
             };
             if depth < MAX_DEPTH - 1 {
                 let survive = attenuation.x.max(attenuation.y).max(attenuation.z);
-                if rand::thread_rng().gen::<f64>() >= survive { return emitted; }
+                if rand::thread_rng().gen::<f32>() >= survive { return emitted; }
                 attenuation = attenuation / survive;
             }
             emitted + attenuation * ray_color(&scattered, world, background, depth - 1)
@@ -68,20 +68,20 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, depth: i3
 struct SceneCameraParams {
     pos:        Point3,
     lookat:     Point3,
-    vfov:       f64,
-    aperture:   f64,
-    focus_dist: f64,
-    move_speed: f64,
+    vfov:       f32,
+    aperture:   f32,
+    focus_dist: f32,
+    move_speed: f32,
 }
 
 struct CameraState {
     pos:        Point3,
-    yaw:        f64,   // radians; 0 = looking toward −Z
-    pitch:      f64,   // radians; clamped to ±89°
-    vfov:       f64,
-    aperture:   f64,
-    focus_dist: f64,
-    move_speed: f64,
+    yaw:        f32,   // radians; 0 = looking toward −Z
+    pitch:      f32,   // radians; clamped to ±89°
+    vfov:       f32,
+    aperture:   f32,
+    focus_dist: f32,
+    move_speed: f32,
 }
 
 impl CameraState {
@@ -90,7 +90,7 @@ impl CameraState {
         Self {
             pos:        p.pos,
             yaw:        dir.x.atan2(-dir.z),
-            pitch:      dir.y.asin().clamp(-89f64.to_radians(), 89f64.to_radians()),
+            pitch:      dir.y.asin().clamp(-89f32.to_radians(), 89f32.to_radians()),
             vfov:       p.vfov,
             aperture:   p.aperture,
             focus_dist: p.focus_dist,
@@ -102,7 +102,7 @@ impl CameraState {
     fn forward_horiz(&self) -> Vec3 { Vec3::new( self.yaw.sin(), 0.0, -self.yaw.cos()) }
     fn right_horiz(&self)   -> Vec3 { Vec3::new( self.yaw.cos(), 0.0,  self.yaw.sin()) }
 
-    fn to_camera(&self, aspect: f64) -> Camera {
+    fn to_camera(&self, aspect: f32) -> Camera {
         let fwd = Vec3::new(
             self.yaw.sin() * self.pitch.cos(),
             self.pitch.sin(),
@@ -135,9 +135,9 @@ fn build_random_scene() -> SceneData {
 
     for a in -11..11 {
         for b in -11..11 {
-            let center = Point3::new(a as f64 + 0.9*rng.gen::<f64>(), 0.2, b as f64 + 0.9*rng.gen::<f64>());
+            let center = Point3::new(a as f32 + 0.9*rng.gen::<f32>(), 0.2, b as f32 + 0.9*rng.gen::<f32>());
             if (center - Point3::new(4.0, 0.2, 0.0)).length() <= 0.9 { continue; }
-            let choose: f64 = rng.gen();
+            let choose: f32 = rng.gen();
             let mat: Arc<dyn hittable::Material> = if choose < 0.8 {
                 Arc::new(Lambertian { texture: (Color::random() * Color::random()).into() })
             } else if choose < 0.95 {
@@ -258,7 +258,7 @@ fn build_mesh_scene() -> SceneData {
 
 fn to_rgb_u32(c: Color, samples: u32) -> u32 {
     if samples == 0 { return 0; }
-    let scale = 1.0 / samples as f64;
+    let scale = 1.0 / samples as f32;
     let r = ((c.x * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
     let g = ((c.y * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
     let b = ((c.z * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
@@ -269,7 +269,7 @@ fn save_png(accumulator: &[Color], samples: u32, scene_name: &str) {
     if samples == 0 { return; }
     let img = ImageBuffer::from_fn(WIDTH, HEIGHT, |x, y| {
         let c     = accumulator[(y * WIDTH + x) as usize];
-        let scale = 1.0 / samples as f64;
+        let scale = 1.0 / samples as f32;
         let r = (c.x * scale).sqrt().clamp(0.0, 0.999);
         let g = (c.y * scale).sqrt().clamp(0.0, 0.999);
         let b = (c.z * scale).sqrt().clamp(0.0, 0.999);
@@ -309,9 +309,10 @@ fn main() {
 
     let mut scene_idx   = 0usize;
     let mut cam_state   = CameraState::from_params(&scenes[scene_idx].cam_init);
-    let mut camera      = cam_state.to_camera(WIDTH as f64 / HEIGHT as f64);
+    let mut camera      = cam_state.to_camera(WIDTH as f32 / HEIGHT as f32);
     let mut free_cam    = false;
     let mut accumulator = vec![Color::default(); (WIDTH * HEIGHT) as usize];
+    let mut scratch     = vec![Color::default(); (WIDTH * HEIGHT) as usize];
     let mut samples     = 0u32;
     let mut pressed     = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut cam_dirty   = false;
@@ -385,9 +386,9 @@ fn main() {
 
             Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta: (dx, dy) }, .. } => {
                 if free_cam {
-                    cam_state.yaw   += dx * MOUSE_SENS;
-                    cam_state.pitch  = (cam_state.pitch - dy * MOUSE_SENS)
-                        .clamp(-89f64.to_radians(), 89f64.to_radians());
+                    cam_state.yaw   += dx as f32 * MOUSE_SENS;
+                    cam_state.pitch  = (cam_state.pitch - dy as f32 * MOUSE_SENS)
+                        .clamp(-89f32.to_radians(), 89f32.to_radians());
                     cam_dirty = true;
                 }
             }
@@ -406,7 +407,7 @@ fn main() {
                 }
 
                 if cam_dirty {
-                    camera = cam_state.to_camera(WIDTH as f64 / HEIGHT as f64);
+                    camera = cam_state.to_camera(WIDTH as f32 / HEIGHT as f32);
                     accumulator.fill(Color::default());
                     samples = 0;
                     cam_dirty = false;
@@ -416,20 +417,17 @@ fn main() {
                 let world_ref = &scene.world;
                 let bg        = scene.background;
 
-                let new_samples: Vec<Color> = (0usize..(WIDTH * HEIGHT) as usize)
-                    .into_par_iter()
-                    .map(|i| {
-                        let px    = (i % WIDTH as usize) as u32;
-                        let py    = (i / WIDTH as usize) as u32;
-                        let ray_y = HEIGHT - 1 - py;
-                        let mut rng = rand::thread_rng();
-                        let u = (px as f64 + rng.gen::<f64>()) / (WIDTH  - 1) as f64;
-                        let v = (ray_y as f64 + rng.gen::<f64>()) / (HEIGHT - 1) as f64;
-                        ray_color(&camera.get_ray(u, v), world_ref.as_ref(), bg, MAX_DEPTH)
-                    })
-                    .collect();
+                scratch.par_iter_mut().enumerate().for_each(|(i, out)| {
+                    let px    = (i % WIDTH as usize) as u32;
+                    let py    = (i / WIDTH as usize) as u32;
+                    let ray_y = HEIGHT - 1 - py;
+                    let mut rng = rand::thread_rng();
+                    let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
+                    let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
+                    *out = ray_color(&camera.get_ray(u, v), world_ref.as_ref(), bg, MAX_DEPTH);
+                });
 
-                for (acc, s) in accumulator.iter_mut().zip(new_samples.iter()) { *acc += *s; }
+                for (acc, s) in accumulator.iter_mut().zip(scratch.iter()) { *acc += *s; }
                 samples += 1;
 
                 let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
