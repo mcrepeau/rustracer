@@ -5,22 +5,22 @@ use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 
 pub trait Material: Send + Sync {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)>;
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<(Color, Ray)>;
     fn emitted(&self) -> Color { Color::default() }
 }
 
-pub struct HitRecord {
+pub struct HitRecord<'a> {
     pub p: Point3,
     pub normal: Vec3,
-    pub mat: Arc<dyn Material>,
+    pub mat: &'a dyn Material,
     pub t: f32,
     pub u: f32,
     pub v: f32,
     pub front_face: bool,
 }
 
-impl HitRecord {
-    pub fn new(p: Point3, t: f32, mat: Arc<dyn Material>, r: &Ray, outward_normal: Vec3) -> Self {
+impl<'a> HitRecord<'a> {
+    pub fn new(p: Point3, t: f32, mat: &'a dyn Material, r: &Ray, outward_normal: Vec3) -> Self {
         let front_face = r.direction.dot(outward_normal) < 0.0;
         let normal = if front_face { outward_normal } else { -outward_normal };
         Self { p, normal, mat, t, u: 0.0, v: 0.0, front_face }
@@ -28,7 +28,7 @@ impl HitRecord {
 }
 
 pub trait Hittable: Send + Sync {
-    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord>;
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>>;
     fn bounding_box(&self) -> Option<Aabb>;
 }
 
@@ -49,7 +49,7 @@ impl HittableList {
 }
 
 impl Hittable for HittableList {
-    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let mut closest = t_max;
         let mut result = None;
         for obj in &self.objects {

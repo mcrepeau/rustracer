@@ -20,7 +20,7 @@ impl Triangle {
 }
 
 impl Hittable for Triangle {
-    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let e1 = self.v[1] - self.v[0];
         let e2 = self.v[2] - self.v[0];
         let h  = r.direction.cross(e2);
@@ -45,7 +45,7 @@ impl Hittable for Triangle {
         let tex_u   =  w * self.uv[0].0 + u * self.uv[1].0 + v * self.uv[2].0;
         let tex_v   =  w * self.uv[0].1 + u * self.uv[1].1 + v * self.uv[2].1;
 
-        let mut rec = HitRecord::new(r.at(t), t, Arc::clone(&self.mat), r, normal);
+        let mut rec = HitRecord::new(r.at(t), t, &*self.mat, r, normal);
         rec.u = tex_u;
         rec.v = tex_v;
         Some(rec)

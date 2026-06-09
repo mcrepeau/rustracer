@@ -156,7 +156,7 @@ impl BvhNode {
 }
 
 impl Hittable for BvhNode {
-    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         if !self.bbox.hit(r, t_min, t_max) { return None; }
         let left_hit = self.left.hit(r, t_min, t_max);
         if Arc::ptr_eq(&self.left, &self.right) { return left_hit; }

@@ -9,7 +9,7 @@ pub struct DiffuseLight {
 }
 
 impl Material for DiffuseLight {
-    fn scatter(&self, _r_in: &Ray, _rec: &HitRecord, _rng: &mut dyn RngCore) -> Option<(Color, Ray)> { None }
+    fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<(Color, Ray)> { None }
     fn emitted(&self) -> Color { self.emit }
 }
 
@@ -18,7 +18,7 @@ pub struct Lambertian {
 }
 
 impl Material for Lambertian {
-    fn scatter(&self, _r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
+    fn scatter(&self, _r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
         let mut dir = rec.normal + Vec3::random_unit_vector(rng);
         if dir.near_zero() { dir = rec.normal; }
         let albedo = self.texture.value(rec.u, rec.v, rec.p);
@@ -32,7 +32,7 @@ pub struct Metal {
 }
 
 impl Material for Metal {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
         let reflected = r_in.direction.unit().reflect(rec.normal);
         let scattered = Ray::new(rec.p, reflected + self.fuzz * Vec3::random_unit_vector(rng));
         if scattered.direction.dot(rec.normal) > 0.0 {
@@ -55,7 +55,7 @@ impl Dielectric {
 }
 
 impl Material for Dielectric {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
         let ratio = if rec.front_face { 1.0 / self.ir } else { self.ir };
         let unit = r_in.direction.unit();
         let cos_theta = (-unit).dot(rec.normal).min(1.0);

@@ -25,7 +25,7 @@ impl Quad {
 }
 
 impl Hittable for Quad {
-    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let denom = self.normal.dot(r.direction);
         if denom.abs() < 1e-8 { return None; }
 
@@ -41,7 +41,7 @@ impl Hittable for Quad {
             return None;
         }
 
-        let mut rec = HitRecord::new(p, t, Arc::clone(&self.mat), r, self.normal);
+        let mut rec = HitRecord::new(p, t, &*self.mat, r, self.normal);
         rec.u = alpha;
         rec.v = beta;
         Some(rec)

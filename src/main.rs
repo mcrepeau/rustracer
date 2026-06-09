@@ -43,26 +43,38 @@ const HEIGHT: u32   = 800;
 const MAX_DEPTH: i32 = 50;
 const MOUSE_SENS: f32 = 0.002;
 
-fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, depth: i32, rng: &mut impl Rng) -> Color {
-    if depth <= 0 { return Color::default(); }
-    match world.hit(r, 0.001, f32::INFINITY) {
-        None => background.unwrap_or_else(|| {
-            let t = 0.5 * (r.direction.unit().y + 1.0);
-            (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
-        }),
-        Some(rec) => {
-            let emitted = rec.mat.emitted();
-            let Some((mut attenuation, scattered)) = rec.mat.scatter(r, &rec, rng) else {
-                return emitted;
-            };
-            if depth < MAX_DEPTH - 1 {
-                let survive = attenuation.x.max(attenuation.y).max(attenuation.z);
-                if rng.gen::<f32>() >= survive { return emitted; }
-                attenuation = attenuation / survive;
+fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, rng: &mut impl Rng) -> Color {
+    let mut throughput = Color::new(1.0, 1.0, 1.0);
+    let mut color      = Color::default();
+    let mut ray        = *r;
+
+    for depth in 0..MAX_DEPTH {
+        match world.hit(&ray, 0.001, f32::INFINITY) {
+            None => {
+                let bg = background.unwrap_or_else(|| {
+                    let t = 0.5 * (ray.direction.unit().y + 1.0);
+                    (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
+                });
+                color += throughput * bg;
+                break;
             }
-            emitted + attenuation * ray_color(&scattered, world, background, depth - 1, rng)
+            Some(rec) => {
+                color += throughput * rec.mat.emitted();
+                let Some((mut attenuation, scattered)) = rec.mat.scatter(&ray, &rec, rng) else {
+                    break;
+                };
+                if depth >= 2 {
+                    let survive = attenuation.x.max(attenuation.y).max(attenuation.z);
+                    if rng.gen::<f32>() >= survive { break; }
+                    attenuation = attenuation / survive;
+                }
+                throughput = throughput * attenuation;
+                ray = scattered;
+            }
         }
     }
+
+    color
 }
 
 // ── Camera ───────────────────────────────────────────────────────────────────
@@ -419,16 +431,20 @@ fn main() {
                 let world_ref = &scene.world;
                 let bg        = scene.background;
 
-                scratch.par_iter_mut().enumerate().for_each(|(i, out)| {
-                    let px    = (i % WIDTH as usize) as u32;
-                    let py    = (i / WIDTH as usize) as u32;
-                    let ray_y = HEIGHT - 1 - py;
+                scratch.par_chunks_mut(64).enumerate().for_each(|(ci, chunk)| {
                     let mut rng = SmallRng::seed_from_u64(
-                        (i as u64) ^ (samples as u64).wrapping_mul(2654435761)
+                        (ci as u64).wrapping_mul(6364136223846793005)
+                            ^ (samples as u64).wrapping_mul(2654435761)
                     );
-                    let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
-                    let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
-                    *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, MAX_DEPTH, &mut rng);
+                    for (li, out) in chunk.iter_mut().enumerate() {
+                        let i     = ci * 64 + li;
+                        let px    = (i % WIDTH as usize) as u32;
+                        let py    = (i / WIDTH as usize) as u32;
+                        let ray_y = HEIGHT - 1 - py;
+                        let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
+                        let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
+                        *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, &mut rng);
+                    }
                 });
 
                 for (acc, s) in accumulator.iter_mut().zip(scratch.iter()) { *acc += *s; }

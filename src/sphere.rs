@@ -25,7 +25,7 @@ impl Sphere {
 }
 
 impl Hittable for Sphere {
-    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let oc = r.origin - self.center;
         let a = r.direction.length_squared();
         let half_b = oc.dot(r.direction);
@@ -41,7 +41,7 @@ impl Hittable for Sphere {
         let p = r.at(root);
         let outward_normal = (p - self.center) / self.radius;
         let (u, v) = sphere_uv(outward_normal);
-        let mut rec = HitRecord::new(p, root, Arc::clone(&self.mat), r, outward_normal);
+        let mut rec = HitRecord::new(p, root, &*self.mat, r, outward_normal);
         rec.u = u;
         rec.v = v;
         Some(rec)
