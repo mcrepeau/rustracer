@@ -1,4 +1,4 @@
-use rand::Rng;
+use rand::{Rng, RngCore};
 use crate::vec3::{Color, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material};
@@ -9,7 +9,7 @@ pub struct DiffuseLight {
 }
 
 impl Material for DiffuseLight {
-    fn scatter(&self, _r_in: &Ray, _rec: &HitRecord) -> Option<(Color, Ray)> { None }
+    fn scatter(&self, _r_in: &Ray, _rec: &HitRecord, _rng: &mut dyn RngCore) -> Option<(Color, Ray)> { None }
     fn emitted(&self) -> Color { self.emit }
 }
 
@@ -18,8 +18,8 @@ pub struct Lambertian {
 }
 
 impl Material for Lambertian {
-    fn scatter(&self, _r_in: &Ray, rec: &HitRecord) -> Option<(Color, Ray)> {
-        let mut dir = rec.normal + Vec3::random_unit_vector();
+    fn scatter(&self, _r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
+        let mut dir = rec.normal + Vec3::random_unit_vector(rng);
         if dir.near_zero() { dir = rec.normal; }
         let albedo = self.texture.value(rec.u, rec.v, rec.p);
         Some((albedo, Ray::new(rec.p, dir)))
@@ -32,9 +32,9 @@ pub struct Metal {
 }
 
 impl Material for Metal {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord) -> Option<(Color, Ray)> {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
         let reflected = r_in.direction.unit().reflect(rec.normal);
-        let scattered = Ray::new(rec.p, reflected + self.fuzz * Vec3::random_unit_vector());
+        let scattered = Ray::new(rec.p, reflected + self.fuzz * Vec3::random_unit_vector(rng));
         if scattered.direction.dot(rec.normal) > 0.0 {
             Some((self.albedo, scattered))
         } else {
@@ -55,12 +55,11 @@ impl Dielectric {
 }
 
 impl Material for Dielectric {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord) -> Option<(Color, Ray)> {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
         let ratio = if rec.front_face { 1.0 / self.ir } else { self.ir };
         let unit = r_in.direction.unit();
         let cos_theta = (-unit).dot(rec.normal).min(1.0);
         let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-        let mut rng = rand::thread_rng();
         let direction = if ratio * sin_theta > 1.0 || Self::reflectance(cos_theta, ratio) > rng.gen::<f32>() {
             unit.reflect(rec.normal)
         } else {

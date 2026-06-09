@@ -1,3 +1,4 @@
+use rand::Rng;
 use crate::vec3::{Point3, Vec3};
 use crate::ray::Ray;
 
@@ -33,8 +34,8 @@ impl Camera {
         Self { origin: lookfrom, lower_left, horizontal, vertical, u, v, lens_radius: aperture/2.0 }
     }
 
-    pub fn get_ray(&self, s: f32, t: f32) -> Ray {
-        let rd = self.lens_radius * Vec3::random_in_unit_disk();
+    pub fn get_ray(&self, s: f32, t: f32, rng: &mut (impl Rng + ?Sized)) -> Ray {
+        let rd = self.lens_radius * Vec3::random_in_unit_disk(rng);
         let offset = self.u * rd.x + self.v * rd.y;
         Ray::new(
             self.origin + offset,

@@ -1,10 +1,11 @@
 use std::sync::Arc;
+use rand::RngCore;
 use crate::aabb::Aabb;
 use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 
 pub trait Material: Send + Sync {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord) -> Option<(Color, Ray)>;
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)>;
     fn emitted(&self) -> Color { Color::default() }
 }
 

@@ -44,27 +44,24 @@ impl Vec3 {
         perp + parallel
     }
 
-    pub fn random() -> Self {
-        let mut rng = rand::thread_rng();
+    pub fn random(rng: &mut (impl Rng + ?Sized)) -> Self {
         Self::new(rng.gen(), rng.gen(), rng.gen())
     }
 
-    pub fn random_range(min: f32, max: f32) -> Self {
-        let mut rng = rand::thread_rng();
+    pub fn random_range(min: f32, max: f32, rng: &mut (impl Rng + ?Sized)) -> Self {
         Self::new(rng.gen_range(min..max), rng.gen_range(min..max), rng.gen_range(min..max))
     }
 
-    pub fn random_in_unit_sphere() -> Self {
+    pub fn random_in_unit_sphere(rng: &mut (impl Rng + ?Sized)) -> Self {
         loop {
-            let p = Self::random_range(-1.0, 1.0);
+            let p = Self::random_range(-1.0, 1.0, rng);
             if p.length_squared() < 1.0 { return p; }
         }
     }
 
-    pub fn random_unit_vector() -> Self { Self::random_in_unit_sphere().unit() }
+    pub fn random_unit_vector(rng: &mut (impl Rng + ?Sized)) -> Self { Self::random_in_unit_sphere(rng).unit() }
 
-    pub fn random_in_unit_disk() -> Self {
-        let mut rng = rand::thread_rng();
+    pub fn random_in_unit_disk(rng: &mut (impl Rng + ?Sized)) -> Self {
         loop {
             let p = Self::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 0.0);
             if p.length_squared() < 1.0 { return p; }

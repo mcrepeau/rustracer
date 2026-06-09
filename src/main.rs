@@ -34,6 +34,8 @@ use std::num::NonZeroU32;
 use image::{ImageBuffer, Rgb};
 use rayon::prelude::*;
 use rand::Rng;
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use std::sync::Arc;
 
 const WIDTH: u32    = 1200;
@@ -41,7 +43,7 @@ const HEIGHT: u32   = 800;
 const MAX_DEPTH: i32 = 50;
 const MOUSE_SENS: f32 = 0.002;
 
-fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, depth: i32) -> Color {
+fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, depth: i32, rng: &mut impl Rng) -> Color {
     if depth <= 0 { return Color::default(); }
     match world.hit(r, 0.001, f32::INFINITY) {
         None => background.unwrap_or_else(|| {
@@ -50,15 +52,15 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, depth: i3
         }),
         Some(rec) => {
             let emitted = rec.mat.emitted();
-            let Some((mut attenuation, scattered)) = rec.mat.scatter(r, &rec) else {
+            let Some((mut attenuation, scattered)) = rec.mat.scatter(r, &rec, rng) else {
                 return emitted;
             };
             if depth < MAX_DEPTH - 1 {
                 let survive = attenuation.x.max(attenuation.y).max(attenuation.z);
-                if rand::thread_rng().gen::<f32>() >= survive { return emitted; }
+                if rng.gen::<f32>() >= survive { return emitted; }
                 attenuation = attenuation / survive;
             }
-            emitted + attenuation * ray_color(&scattered, world, background, depth - 1)
+            emitted + attenuation * ray_color(&scattered, world, background, depth - 1, rng)
         }
     }
 }
@@ -139,9 +141,9 @@ fn build_random_scene() -> SceneData {
             if (center - Point3::new(4.0, 0.2, 0.0)).length() <= 0.9 { continue; }
             let choose: f32 = rng.gen();
             let mat: Arc<dyn hittable::Material> = if choose < 0.8 {
-                Arc::new(Lambertian { texture: (Color::random() * Color::random()).into() })
+                Arc::new(Lambertian { texture: (Color::random(&mut rng) * Color::random(&mut rng)).into() })
             } else if choose < 0.95 {
-                Arc::new(Metal { albedo: Color::random_range(0.5, 1.0), fuzz: rng.gen_range(0.0..0.5) })
+                Arc::new(Metal { albedo: Color::random_range(0.5, 1.0, &mut rng), fuzz: rng.gen_range(0.0..0.5) })
             } else {
                 Arc::new(Dielectric { ir: 1.5 })
             };
@@ -421,10 +423,12 @@ fn main() {
                     let px    = (i % WIDTH as usize) as u32;
                     let py    = (i / WIDTH as usize) as u32;
                     let ray_y = HEIGHT - 1 - py;
-                    let mut rng = rand::thread_rng();
+                    let mut rng = SmallRng::seed_from_u64(
+                        (i as u64) ^ (samples as u64).wrapping_mul(2654435761)
+                    );
                     let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
                     let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
-                    *out = ray_color(&camera.get_ray(u, v), world_ref.as_ref(), bg, MAX_DEPTH);
+                    *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, MAX_DEPTH, &mut rng);
                 });
 
                 for (acc, s) in accumulator.iter_mut().zip(scratch.iter()) { *acc += *s; }
