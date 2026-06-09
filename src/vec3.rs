@@ -31,7 +31,7 @@ impl Vec3 {
     #[inline] pub fn unit(self) -> Self { self / self.length() }
 
     pub fn near_zero(self) -> bool {
-        const S: f32 = 1e-8;
+        const S: f32 = 1e-6;
         self.x.abs() < S && self.y.abs() < S && self.z.abs() < S
     }
 
