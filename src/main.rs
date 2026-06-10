@@ -231,11 +231,11 @@ fn build_cornell_box() -> SceneData {
     // Build each box at the origin, rotate, then translate into place.
     let tall = Arc::new(make_box(Point3::new(0.0,0.0,0.0), Point3::new(165.0,330.0,165.0), Arc::clone(&white))) as Arc<dyn Hittable>;
     let tall = Arc::new(RotateY::new(tall,  15.0)) as Arc<dyn Hittable>;
-    list.add_arc(Arc::new(Translate::new(tall, Vec3::new(265.0, 0.0, 295.0))));
+    list.add(Translate::new(tall, Vec3::new(265.0, 0.0, 295.0)));
 
     let short = Arc::new(make_box(Point3::new(0.0,0.0,0.0), Point3::new(165.0,165.0,165.0), white)) as Arc<dyn Hittable>;
     let short = Arc::new(RotateY::new(short, -18.0)) as Arc<dyn Hittable>;
-    list.add_arc(Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))));
+    list.add(Translate::new(short, Vec3::new(130.0, 0.0, 65.0)));
 
     SceneData {
         world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
@@ -302,7 +302,7 @@ fn build_mesh_scene() -> SceneData {
         Color::new(6.0, 6.0, 6.0),
     );
     list.add(overhead_quad);
-    list.add_arc(Arc::new(mesh_bvh));
+    list.add(mesh_bvh);
 
     SceneData {
         world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
@@ -413,23 +413,10 @@ fn main() {
                                         window.set_cursor_visible(true);
                                     }
                                 }
-                                VirtualKeyCode::Key1 => {
-                                    scene_idx = 0;
-                                    cam_state = CameraState::from_params(&scenes[0].cam_init);
-                                    accumulator.fill(Color::default());
-                                    samples = 0;
-                                    cam_dirty = true;
-                                }
-                                VirtualKeyCode::Key2 => {
-                                    scene_idx = 1;
-                                    cam_state = CameraState::from_params(&scenes[1].cam_init);
-                                    accumulator.fill(Color::default());
-                                    samples = 0;
-                                    cam_dirty = true;
-                                }
-                                VirtualKeyCode::Key3 => {
-                                    scene_idx = 2;
-                                    cam_state = CameraState::from_params(&scenes[2].cam_init);
+                                VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 => {
+                                    let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, _ => 0 };
+                                    scene_idx = idx;
+                                    cam_state = CameraState::from_params(&scenes[idx].cam_init);
                                     accumulator.fill(Color::default());
                                     samples = 0;
                                     cam_dirty = true;

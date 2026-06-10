@@ -44,10 +44,6 @@ impl HittableList {
     pub fn add(&mut self, obj: impl Hittable + 'static) {
         self.objects.push(Arc::new(obj));
     }
-
-    pub fn add_arc(&mut self, obj: Arc<dyn Hittable>) {
-        self.objects.push(obj);
-    }
 }
 
 impl Hittable for HittableList {
