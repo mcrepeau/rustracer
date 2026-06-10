@@ -48,7 +48,8 @@ const MAX_DEPTH: i32     = 50;
 const MAX_SAMPLES: u32   = 2000;
 const MOUSE_SENS: f32    = 0.002;
 const MAX_LUMINANCE: f32      = 10.0;
-const TITLE_INTERVAL: Duration = Duration::from_millis(200);
+const TITLE_INTERVAL: Duration  = Duration::from_millis(200);
+const PHYSICS_DT:     Duration  = Duration::from_millis(16);  // ~60 Hz fixed physics step
 const ADAPTIVE_MIN_SAMPLES: u32 = 16;
 const ADAPTIVE_THRESHOLD:   f32 = 0.01;
 
@@ -163,9 +164,7 @@ impl CameraState {
 // ── Sky / background ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 enum Background {
-    Gradient,
     Solid(Color),
     Physical { sun_dir: Vec3 },
 }
@@ -173,10 +172,6 @@ enum Background {
 impl Background {
     fn eval(self, dir: Vec3) -> Color {
         match self {
-            Background::Gradient => {
-                let t = 0.5 * (dir.unit().y + 1.0);
-                (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
-            }
             Background::Solid(c) => c,
             Background::Physical { sun_dir } => sky_color(dir, sun_dir),
         }
@@ -284,6 +279,11 @@ impl SceneData {
         // AABB colliders (Cornell box internal boxes)
         for ds in &mut self.dynamic {
             if ds.is_static { continue; }
+            // Clamp speed to one diameter per step so the sphere can't tunnel
+            // through an AABB wall thinner than its own diameter.
+            let max_step = ds.radius * 2.0;
+            let spd = ds.velocity.length();
+            if spd > max_step { ds.velocity *= max_step / spd; }
             for bbox in &self.colliders {
                 bounce_sphere_off_aabb(&mut ds.center, &mut ds.velocity, ds.radius, ds.restitution, bbox);
             }
@@ -741,6 +741,8 @@ fn main() {
     let mut cam_dirty         = false;
     let mut pending_autofocus = false;
     let mut last_title_update = Instant::now();
+    let mut last_frame_time   = Instant::now();
+    let mut physics_accum     = Duration::ZERO;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -889,9 +891,17 @@ fn main() {
                     pending_autofocus = false;
                 }
 
-                if scenes[scene_idx].tick() {
-                    reset_accum!();
+                let now = Instant::now();
+                // Cap catch-up to 100 ms so a paused/minimised window doesn't
+                // run dozens of physics ticks on resume.
+                physics_accum += now.duration_since(last_frame_time).min(Duration::from_millis(100));
+                last_frame_time = now;
+                let mut physics_ticked = false;
+                while physics_accum >= PHYSICS_DT {
+                    physics_ticked |= scenes[scene_idx].tick();
+                    physics_accum -= PHYSICS_DT;
                 }
+                if physics_ticked { reset_accum!(); }
 
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
                     let scene       = &scenes[scene_idx];
@@ -911,9 +921,15 @@ fn main() {
                     } else {
                         "  [T] adaptive".to_string()
                     };
+                    let spp_label = if adaptive && samples > 0 {
+                        let min_spp = pixel_samples.iter().copied().min().unwrap_or(0);
+                        format!("{min_spp}–{samples} spp")
+                    } else {
+                        format!("{samples} spp")
+                    };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [ ] aperture {:.2}{}{}{}",
-                        scene.name, samples, cam_hint, cam_state.aperture, denoise_hint, adaptive_hint, motion_hint,
+                        "Ray Tracer — {} — {}  |  [1/2/3] scene  {}  [P] Save  [ ] aperture {:.2}{}{}{}",
+                        scene.name, spp_label, cam_hint, cam_state.aperture, denoise_hint, adaptive_hint, motion_hint,
                     ));
                     last_title_update = Instant::now();
                 }
