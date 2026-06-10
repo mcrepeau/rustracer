@@ -387,8 +387,9 @@ fn main() {
     let mut accumulator = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch     = vec![Color::default(); (win_w * win_h) as usize];
     let mut samples     = 0u32;
-    let mut pressed     = std::collections::HashSet::<VirtualKeyCode>::new();
-    let mut cam_dirty   = false;
+    let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
+    let mut cam_dirty         = false;
+    let mut pending_autofocus = false;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -490,11 +491,17 @@ fn main() {
                 }
 
                 if cam_dirty {
-                    cam_state.autofocus(scenes[scene_idx].world.as_ref());
                     camera = cam_state.to_camera(win_w as f32 / win_h as f32);
                     accumulator.fill(Color::default());
                     samples = 0;
                     cam_dirty = false;
+                    pending_autofocus = true;
+                } else if pending_autofocus {
+                    cam_state.autofocus(scenes[scene_idx].world.as_ref());
+                    camera = cam_state.to_camera(win_w as f32 / win_h as f32);
+                    accumulator.fill(Color::default());
+                    samples = 0;
+                    pending_autofocus = false;
                 }
 
                 if samples < MAX_SAMPLES {
@@ -503,13 +510,14 @@ fn main() {
                     let bg        = scene.background;
                     let lights    = scene.lights.as_slice();
 
-                    scratch.par_chunks_mut(64).enumerate().for_each(|(ci, chunk)| {
+                    let chunk_size = ((win_w * win_h) as usize / (rayon::current_num_threads() * 4)).max(1);
+                    scratch.par_chunks_mut(chunk_size).enumerate().for_each(|(ci, chunk)| {
                         let mut rng = SmallRng::seed_from_u64(
                             (ci as u64).wrapping_mul(6364136223846793005)
                                 ^ (samples as u64).wrapping_mul(0x9E3779B97F4A7C15)
                         );
                         for (li, out) in chunk.iter_mut().enumerate() {
-                            let i     = ci * 64 + li;
+                            let i     = ci * chunk_size + li;
                             let px    = (i % win_w as usize) as u32;
                             let py    = (i / win_w as usize) as u32;
                             let ray_y = win_h - 1 - py;
