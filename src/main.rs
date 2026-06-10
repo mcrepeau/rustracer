@@ -12,6 +12,7 @@ mod mesh;
 mod camera;
 mod light;
 
+use aabb::Aabb;
 use vec3::{Color, Point3, Vec3};
 use ray::Ray;
 use hittable::{Hittable, HittableList};
@@ -161,12 +162,90 @@ impl CameraState {
 
 // ── Scenes ───────────────────────────────────────────────────────────────────
 
+struct DynamicSphere {
+    center:   Point3,
+    velocity: Vec3,   // world units per frame
+    radius:   f32,
+    mat:      Arc<dyn hittable::Material>,
+}
+
 struct SceneData {
-    world:      Arc<dyn Hittable>,
-    lights:     Vec<Light>,
-    background: Option<Color>,
-    name:       &'static str,
-    cam_init:   SceneCameraParams,
+    world:          Arc<dyn Hittable>,
+    lights:         Vec<Light>,
+    background:     Option<Color>,
+    name:           &'static str,
+    cam_init:       SceneCameraParams,
+    static_objects: Vec<Arc<dyn Hittable>>,
+    dynamic:        Vec<DynamicSphere>,
+    bounds:         Option<Aabb>,
+    colliders:      Vec<Aabb>,  // internal objects dynamic spheres bounce off
+    paused:         bool,
+}
+
+/// Sphere-vs-AABB collision response: if the sphere (center, radius) overlaps
+/// the AABB, push it out along the axis of minimum penetration and reflect
+/// velocity to point away from the box on that axis.
+fn bounce_sphere_off_aabb(center: &mut Point3, velocity: &mut Vec3, radius: f32, bbox: &Aabb) {
+    let lo = Point3::new(bbox.min.x - radius, bbox.min.y - radius, bbox.min.z - radius);
+    let hi = Point3::new(bbox.max.x + radius, bbox.max.y + radius, bbox.max.z + radius);
+    if center.x < lo.x || center.x > hi.x ||
+       center.y < lo.y || center.y > hi.y ||
+       center.z < lo.z || center.z > hi.z { return; }
+
+    let dx_lo = center.x - lo.x;  let dx_hi = hi.x - center.x;
+    let dy_lo = center.y - lo.y;  let dy_hi = hi.y - center.y;
+    let dz_lo = center.z - lo.z;  let dz_hi = hi.z - center.z;
+
+    let min_x = dx_lo.min(dx_hi);
+    let min_y = dy_lo.min(dy_hi);
+    let min_z = dz_lo.min(dz_hi);
+
+    if min_x <= min_y && min_x <= min_z {
+        if dx_lo < dx_hi { center.x = lo.x; velocity.x = -velocity.x.abs(); }
+        else              { center.x = hi.x; velocity.x =  velocity.x.abs(); }
+    } else if min_y <= min_x && min_y <= min_z {
+        if dy_lo < dy_hi { center.y = lo.y; velocity.y = -velocity.y.abs(); }
+        else              { center.y = hi.y; velocity.y =  velocity.y.abs(); }
+    } else {
+        if dz_lo < dz_hi { center.z = lo.z; velocity.z = -velocity.z.abs(); }
+        else              { center.z = hi.z; velocity.z =  velocity.z.abs(); }
+    }
+}
+
+impl SceneData {
+    fn tick(&mut self) -> bool {
+        if self.dynamic.is_empty() || self.paused { return false; }
+        if let Some(b) = self.bounds {
+            for ds in &mut self.dynamic {
+                ds.center += ds.velocity;
+                let r = ds.radius;
+                if ds.center.x - r < b.min.x { ds.center.x = b.min.x + r; ds.velocity.x =  ds.velocity.x.abs(); }
+                if ds.center.x + r > b.max.x { ds.center.x = b.max.x - r; ds.velocity.x = -ds.velocity.x.abs(); }
+                if ds.center.y - r < b.min.y { ds.center.y = b.min.y + r; ds.velocity.y =  ds.velocity.y.abs(); }
+                if ds.center.y + r > b.max.y { ds.center.y = b.max.y - r; ds.velocity.y = -ds.velocity.y.abs(); }
+                if ds.center.z - r < b.min.z { ds.center.z = b.min.z + r; ds.velocity.z =  ds.velocity.z.abs(); }
+                if ds.center.z + r > b.max.z { ds.center.z = b.max.z - r; ds.velocity.z = -ds.velocity.z.abs(); }
+            }
+        }
+        for ds in &mut self.dynamic {
+            for bbox in &self.colliders {
+                bounce_sphere_off_aabb(&mut ds.center, &mut ds.velocity, ds.radius, bbox);
+            }
+        }
+        self.rebuild();
+        true
+    }
+
+    fn rebuild(&mut self) {
+        let mut list = HittableList::new();
+        for obj in &self.static_objects {
+            list.objects.push(Arc::clone(obj));
+        }
+        for ds in &self.dynamic {
+            list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
+        }
+        self.world = Arc::new(BvhTree::from_list(list));
+    }
 }
 
 fn build_random_scene() -> SceneData {
@@ -200,14 +279,19 @@ fn build_random_scene() -> SceneData {
     list.add(Sphere::new(Point3::new( 4.0, 1.0, 0.0), 1.0, Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 })));
 
     SceneData {
-        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:     vec![],
-        background: None,
-        name:       "Random Spheres",
-        cam_init:   SceneCameraParams {
+        world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
+        lights:         vec![],
+        background:     None,
+        name:           "Random Spheres",
+        cam_init:       SceneCameraParams {
             pos: Point3::new(13.0, 2.0, 3.0), lookat: Point3::new(0.0, 0.0, 0.0),
             vfov: 20.0, aperture: 0.1, focus_dist: 10.0, move_speed: 0.3,
         },
+        static_objects: vec![],
+        dynamic:        vec![],
+        bounds:         None,
+        colliders:      vec![],
+        paused:         false,
     }
 }
 
@@ -239,21 +323,49 @@ fn build_cornell_box() -> SceneData {
     // Build each box at the origin, rotate, then translate into place.
     let tall = Arc::new(make_box(Point3::new(0.0,0.0,0.0), Point3::new(165.0,330.0,165.0), Arc::clone(&white))) as Arc<dyn Hittable>;
     let tall = Arc::new(RotateY::new(tall,  15.0)) as Arc<dyn Hittable>;
-    list.add(Translate::new(tall, Vec3::new(265.0, 0.0, 295.0)));
+    let tall = Arc::new(Translate::new(tall, Vec3::new(265.0, 0.0, 295.0))) as Arc<dyn Hittable>;
+    let tall_bbox = tall.bounding_box().unwrap();
+    list.objects.push(tall);
 
     let short = Arc::new(make_box(Point3::new(0.0,0.0,0.0), Point3::new(165.0,165.0,165.0), white)) as Arc<dyn Hittable>;
     let short = Arc::new(RotateY::new(short, -18.0)) as Arc<dyn Hittable>;
-    list.add(Translate::new(short, Vec3::new(130.0, 0.0, 65.0)));
+    let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
+    let short_bbox = short.bounding_box().unwrap();
+    list.objects.push(short);
+
+    // Snapshot static geometry before adding the dynamic sphere.
+    let static_objects = list.objects.clone();
+
+    let dynamic = vec![DynamicSphere {
+        center:   Point3::new(190.0, 100.0, 190.0),
+        velocity: Vec3::new(3.0, 5.0, 2.0),
+        radius:   80.0,
+        mat:      Arc::new(Dielectric { ir: 1.5 }),
+    }];
+    let bounds = Aabb::new(
+        Point3::new(1.0, 1.0, 1.0),
+        Point3::new(554.0, 554.0, 554.0),
+    );
+
+    // Add sphere at its initial position for the first BVH build.
+    for ds in &dynamic {
+        list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
+    }
 
     SceneData {
-        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:     vec![nee_light],
-        background: Some(Color::default()),
-        name:       "Cornell Box",
-        cam_init:   SceneCameraParams {
+        world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
+        lights:         vec![nee_light],
+        background:     Some(Color::default()),
+        name:           "Cornell Box",
+        cam_init:       SceneCameraParams {
             pos: Point3::new(278.0, 278.0, -800.0), lookat: Point3::new(278.0, 278.0, 0.0),
             vfov: 40.0, aperture: 0.0, focus_dist: 10.0, move_speed: 8.0,
         },
+        static_objects,
+        dynamic,
+        bounds: Some(bounds),
+        colliders: vec![tall_bbox, short_bbox],
+        paused: false,
     }
 }
 
@@ -313,11 +425,16 @@ fn build_mesh_scene() -> SceneData {
     list.add(mesh_bvh);
 
     SceneData {
-        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:     vec![nee_light],
-        background: Some(Color::new(0.05, 0.07, 0.12)),
-        name:       "Mesh",
+        world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
+        lights:         vec![nee_light],
+        background:     Some(Color::new(0.05, 0.07, 0.12)),
+        name:           "Mesh",
         cam_init,
+        static_objects: vec![],
+        dynamic:        vec![],
+        bounds:         None,
+        colliders:      vec![],
+        paused:         false,
     }
 }
 
@@ -362,8 +479,8 @@ fn main() {
     let s2 = build_cornell_box();
     println!("Scene 3: Mesh");
     let s3 = build_mesh_scene();
-    let scenes = [s1, s2, s3];
-    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [[]]/[]] aperture  [Esc] quit");
+    let mut scenes = [s1, s2, s3];
+    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [[]]/[]] aperture  [Enter] pause motion  [Esc] quit");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -463,6 +580,9 @@ fn main() {
                                     cam_state.aperture += 0.025;
                                     cam_dirty = true;
                                 }
+                                VirtualKeyCode::Return => {
+                                    scenes[scene_idx].paused = !scenes[scene_idx].paused;
+                                }
                                 _ => {}
                             }
                         }
@@ -508,6 +628,11 @@ fn main() {
                     accumulator.fill(Color::default());
                     samples = 0;
                     pending_autofocus = false;
+                }
+
+                if scenes[scene_idx].tick() {
+                    accumulator.fill(Color::default());
+                    samples = 0;
                 }
 
                 if samples < MAX_SAMPLES {
