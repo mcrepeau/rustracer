@@ -69,7 +69,7 @@ impl Hittable for Triangle {
 // ── OBJ loader ────────────────────────────────────────────────────────────────
 
 /// Load an OBJ file. All vertex positions are multiplied by `scale`.
-/// Returns a flat HittableList of triangles — wrap in BvhNode before use.
+/// Returns a flat HittableList of triangles — wrap in BvhTree before use.
 pub fn load_obj(
     path: &str,
     scale: f32,

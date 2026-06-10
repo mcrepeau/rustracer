@@ -506,7 +506,7 @@ fn main() {
                     scratch.par_chunks_mut(64).enumerate().for_each(|(ci, chunk)| {
                         let mut rng = SmallRng::seed_from_u64(
                             (ci as u64).wrapping_mul(6364136223846793005)
-                                ^ (samples as u64).wrapping_mul(2654435761)
+                                ^ (samples as u64).wrapping_mul(0x9E3779B97F4A7C15)
                         );
                         for (li, out) in chunk.iter_mut().enumerate() {
                             let i     = ci * 64 + li;
