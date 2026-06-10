@@ -52,7 +52,8 @@ const TITLE_INTERVAL: Duration  = Duration::from_millis(200);
 const PHYSICS_DT:     Duration  = Duration::from_millis(16);  // ~60 Hz fixed physics step
 const ADAPTIVE_MIN_SAMPLES: u32 = 16;
 const ADAPTIVE_THRESHOLD:   f32 = 0.01;
-const CAM_RADIUS: f32 = 0.25;
+const CAM_RADIUS:  f32   = 0.25;
+const TILE_SIZE:   usize = 32;
 
 fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &[Light], rng: &mut impl Rng) -> Color {
     let mut throughput    = Color::new(1.0, 1.0, 1.0);
@@ -838,6 +839,56 @@ fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_na
     }
 }
 
+// ── Tile renderer ────────────────────────────────────────────────────────────
+
+/// Render one sample pass into `scratch` using 32×32 pixel tiles.
+/// Tiles are dispatched in parallel; each covers a unique, non-overlapping
+/// range of indices, making the unsafe write trivially data-race-free.
+/// Pass an empty slice for `conv` to disable adaptive-sampling skipping.
+fn render_tiles(
+    scratch:    &mut [Color],
+    sample_idx: u32,
+    width:      u32,
+    height:     u32,
+    camera:     &Camera,
+    world:      &dyn Hittable,
+    background: Background,
+    lights:     &[Light],
+    conv:       &[bool],
+) {
+    let w        = width  as usize;
+    let h        = height as usize;
+    let txn      = (w + TILE_SIZE - 1) / TILE_SIZE;
+    let tyn      = (h + TILE_SIZE - 1) / TILE_SIZE;
+    // Transmit the pointer as usize so the closure is Send + Sync without a wrapper type.
+    // SAFETY: tiles cover non-overlapping index ranges; each scratch[i] is written by one tile.
+    let ptr_addr = scratch.as_mut_ptr() as usize;
+    let adaptive = !conv.is_empty();
+
+    (0..txn * tyn).into_par_iter().for_each(|ti| {
+        let tx0 = (ti % txn) * TILE_SIZE;
+        let ty0 = (ti / txn) * TILE_SIZE;
+        let mut rng = SmallRng::seed_from_u64(
+            (ti as u64).wrapping_mul(6364136223846793005)
+                ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
+        );
+        for row in ty0..(ty0 + TILE_SIZE).min(h) {
+            for col in tx0..(tx0 + TILE_SIZE).min(w) {
+                let i = row * w + col;
+                let c = if adaptive && conv[i] {
+                    Color::default()
+                } else {
+                    let ray_y = height - 1 - row as u32;
+                    let u = (col as f32 + rng.gen::<f32>()) / (width  - 1) as f32;
+                    let v = (ray_y as f32 + rng.gen::<f32>()) / (height - 1) as f32;
+                    ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, &mut rng)
+                };
+                unsafe { *(ptr_addr as *mut Color).add(i) = c; }
+            }
+        }
+    });
+}
+
 // ── Bench ────────────────────────────────────────────────────────────────────
 
 fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Duration {
@@ -848,28 +899,11 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     let world   = scene.world.as_ref();
     let bg      = scene.background;
     let lights  = scene.lights.as_slice();
-    let n       = (WIDTH * HEIGHT) as usize;
-    let chunk   = WIDTH as usize;
-
-    scratch.resize(n, Color::default());
+    scratch.resize((WIDTH * HEIGHT) as usize, Color::default());
 
     let t0 = Instant::now();
     for s in 0..samples {
-        scratch.par_chunks_mut(chunk).enumerate().for_each(|(ci, row)| {
-            let mut rng = SmallRng::seed_from_u64(
-                (ci as u64).wrapping_mul(6364136223846793005)
-                    ^ (s as u64).wrapping_mul(0x9E3779B97F4A7C15),
-            );
-            for (li, out) in row.iter_mut().enumerate() {
-                let i     = ci * chunk + li;
-                let px    = (i % WIDTH as usize) as u32;
-                let py    = (i / WIDTH as usize) as u32;
-                let ray_y = HEIGHT - 1 - py;
-                let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
-                let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
-                *out = ray_color(&camera.get_ray(u, v, &mut rng), world, bg, lights, &mut rng);
-            }
-        });
+        render_tiles(scratch, s, WIDTH, HEIGHT, &camera, world, bg, lights, &[]);
     }
     t0.elapsed()
 }
@@ -964,8 +998,6 @@ fn main() {
     let mut welford_m2    = vec![Color::default(); (win_w * win_h) as usize];
     let mut converged     = vec![false;            (win_w * win_h) as usize];
     let mut samples       = 0u32;
-    let num_threads           = rayon::current_num_threads();
-    let mut chunk_size        = ((win_w * win_h) as usize / (num_threads * 4)).max(1);
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut exposure          = 1.0f32;
     let mut cam_dirty         = false;
@@ -995,7 +1027,6 @@ fn main() {
                         welford_mean.resize(n, Color::default());   welford_mean.fill(Color::default());
                         welford_m2.resize(n, Color::default());     welford_m2.fill(Color::default());
                         converged.resize(n, false);                 converged.fill(false);
-                        chunk_size = (n / (num_threads * 4)).max(1);
                         samples = 0;
                         cam_dirty = true;
                     }
@@ -1219,28 +1250,13 @@ fn main() {
                 }
 
                 if samples < MAX_SAMPLES {
-                    let scene     = &scenes[scene_idx];
-                    let world_ref = &scene.world;
-                    let bg        = scene.background;
-                    let lights    = scene.lights.as_slice();
-                    let conv_ref  = converged.as_slice();
+                    let scene  = &scenes[scene_idx];
+                    let bg     = scene.background;
+                    let lights = scene.lights.as_slice();
+                    let conv   = if adaptive { converged.as_slice() } else { &[] };
 
-                    scratch.par_chunks_mut(chunk_size).enumerate().for_each(|(ci, chunk)| {
-                        let mut rng = SmallRng::seed_from_u64(
-                            (ci as u64).wrapping_mul(6364136223846793005)
-                                ^ (samples as u64).wrapping_mul(0x9E3779B97F4A7C15)
-                        );
-                        for (li, out) in chunk.iter_mut().enumerate() {
-                            let i     = ci * chunk_size + li;
-                            if adaptive && conv_ref[i] { *out = Color::default(); continue; }
-                            let px    = (i % win_w as usize) as u32;
-                            let py    = (i / win_w as usize) as u32;
-                            let ray_y = win_h - 1 - py;
-                            let u = (px as f32 + rng.gen::<f32>()) / (win_w - 1) as f32;
-                            let v = (ray_y as f32 + rng.gen::<f32>()) / (win_h - 1) as f32;
-                            *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, lights, &mut rng);
-                        }
-                    });
+                    render_tiles(&mut scratch, samples, win_w, win_h, &camera,
+                                 scene.world.as_ref(), bg, lights, conv);
 
                     for i in 0..(win_w * win_h) as usize {
                         if adaptive && converged[i] { continue; }
