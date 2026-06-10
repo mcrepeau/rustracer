@@ -34,6 +34,7 @@ use winit::{
 };
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
+use std::time::{Duration, Instant};
 use image::{ImageBuffer, Rgb};
 use rayon::prelude::*;
 use rand::Rng;
@@ -632,7 +633,9 @@ fn main() {
     let mut chunk_size        = ((win_w * win_h) as usize / (num_threads * 4)).max(1);
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut cam_dirty         = false;
-    let mut pending_autofocus = false;
+    let mut pending_autofocus  = false;
+    let mut last_title_update  = Instant::now();
+    const TITLE_INTERVAL: Duration = Duration::from_millis(200);
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -766,9 +769,9 @@ fn main() {
                     samples = 0;
                 }
 
-                {
-                    let scene      = &scenes[scene_idx];
-                    let cam_hint   = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
+                if last_title_update.elapsed() >= TITLE_INTERVAL {
+                    let scene       = &scenes[scene_idx];
+                    let cam_hint    = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
                     let motion_hint = if scene.gravity > 0.0 {
                         if scene.settled     { "  settled — [R] restart" }
                         else if scene.paused { "  PAUSED — [Enter] resume  [R] restart" }
@@ -780,6 +783,7 @@ fn main() {
                         "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [ ] aperture {:.2}{}",
                         scene.name, samples, cam_hint, cam_state.aperture, motion_hint,
                     ));
+                    last_title_update = Instant::now();
                 }
 
                 if samples < MAX_SAMPLES {
