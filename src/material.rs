@@ -1,5 +1,5 @@
 use rand::{Rng, RngCore};
-use crate::vec3::{Color, Vec3};
+use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material};
 use crate::texture::Texture;
@@ -18,6 +18,10 @@ pub struct Lambertian {
 }
 
 impl Material for Lambertian {
+    fn albedo_at(&self, u: f32, v: f32, p: Point3) -> Option<Color> {
+        Some(self.texture.value(u, v, p))
+    }
+
     fn scatter(&self, _r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
         let mut dir = rec.normal + Vec3::random_unit_vector(rng);
         if dir.near_zero() { dir = rec.normal; }

@@ -10,6 +10,7 @@ mod quad;
 mod transform;
 mod mesh;
 mod camera;
+mod light;
 
 use vec3::{Color, Point3, Vec3};
 use ray::Ray;
@@ -22,6 +23,7 @@ use transform::{RotateY, Translate};
 use mesh::load_obj;
 use camera::Camera;
 use bvh::BvhNode;
+use light::Light;
 
 use winit::{
     dpi::PhysicalSize,
@@ -45,10 +47,11 @@ const MAX_SAMPLES: u32   = 2000;
 const MOUSE_SENS: f32    = 0.002;
 const MAX_LUMINANCE: f32 = 10.0;
 
-fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, rng: &mut impl Rng) -> Color {
-    let mut throughput = Color::new(1.0, 1.0, 1.0);
-    let mut color      = Color::default();
-    let mut ray        = *r;
+fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, lights: &[Light], rng: &mut impl Rng) -> Color {
+    let mut throughput    = Color::new(1.0, 1.0, 1.0);
+    let mut color         = Color::default();
+    let mut ray           = *r;
+    let mut specular_prev = true; // treat camera as specular so first-hit emitters are visible
 
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
@@ -61,10 +64,27 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, rng: &mut
                 break;
             }
             Some(rec) => {
-                color += throughput * rec.mat.emitted();
+                // Count emitted light only from specular/primary paths; diffuse paths get direct
+                // light via the explicit NEE shadow ray below to avoid double-counting.
+                if specular_prev {
+                    color += throughput * rec.mat.emitted();
+                }
+
                 let Some((mut attenuation, scattered)) = rec.mat.scatter(&ray, &rec, rng) else {
                     break;
                 };
+
+                if let Some(albedo) = rec.mat.albedo_at(rec.u, rec.v, rec.p) {
+                    // Diffuse surface: sample each light explicitly.
+                    for light in lights {
+                        color += throughput
+                            * light.sample_contribution(rec.p, rec.normal, albedo, world, rng);
+                    }
+                    specular_prev = false;
+                } else {
+                    specular_prev = true;
+                }
+
                 if depth >= 2 {
                     let survive = attenuation.x.max(attenuation.y).max(attenuation.z);
                     if rng.gen::<f32>() >= survive { break; }
@@ -135,6 +155,7 @@ impl CameraState {
 
 struct SceneData {
     world:      Arc<dyn Hittable>,
+    lights:     Vec<Light>,
     background: Option<Color>,
     name:       &'static str,
     cam_init:   SceneCameraParams,
@@ -172,6 +193,7 @@ fn build_random_scene() -> SceneData {
 
     SceneData {
         world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
+        lights:     vec![],
         background: None,
         name:       "Random Spheres",
         cam_init:   SceneCameraParams {
@@ -205,6 +227,12 @@ fn build_cornell_box() -> SceneData {
 
     SceneData {
         world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
+        lights:     vec![Light::new(
+            Point3::new(343.0, 554.0, 332.0),
+            Vec3::new(-130.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, -105.0),
+            Color::new(15.0, 15.0, 15.0),
+        )],
         background: Some(Color::default()),
         name:       "Cornell Box",
         cam_init:   SceneCameraParams {
@@ -268,6 +296,12 @@ fn build_mesh_scene() -> SceneData {
 
     SceneData {
         world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
+        lights:     vec![Light::new(
+            Point3::new(-200.0, 500.0, -200.0),
+            Vec3::new(400.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 400.0),
+            Color::new(6.0, 6.0, 6.0),
+        )],
         background: Some(Color::new(0.05, 0.07, 0.12)),
         name:       "Mesh",
         cam_init,
@@ -440,6 +474,7 @@ fn main() {
                     let scene     = &scenes[scene_idx];
                     let world_ref = &scene.world;
                     let bg        = scene.background;
+                    let lights    = scene.lights.as_slice();
 
                     scratch.par_chunks_mut(64).enumerate().for_each(|(ci, chunk)| {
                         let mut rng = SmallRng::seed_from_u64(
@@ -453,7 +488,7 @@ fn main() {
                             let ray_y = HEIGHT - 1 - py;
                             let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
                             let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
-                            *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, &mut rng);
+                            *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, lights, &mut rng);
                         }
                     });
 

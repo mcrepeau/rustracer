@@ -7,6 +7,8 @@ use crate::ray::Ray;
 pub trait Material: Send + Sync {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<(Color, Ray)>;
     fn emitted(&self) -> Color { Color::default() }
+    /// Returns the diffuse albedo at (u, v, p) for NEE. None means specular — skip direct sampling.
+    fn albedo_at(&self, _u: f32, _v: f32, _p: Point3) -> Option<Color> { None }
 }
 
 pub struct HitRecord<'a> {
