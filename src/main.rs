@@ -838,9 +838,92 @@ fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_na
     }
 }
 
+// ── Bench ────────────────────────────────────────────────────────────────────
+
+fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Duration {
+    let aspect = WIDTH as f32 / HEIGHT as f32;
+    let mut cam = CameraState::from_params(&scene.cam_init);
+    cam.autofocus(&*scene.world);
+    let camera  = cam.to_camera(aspect);
+    let world   = scene.world.as_ref();
+    let bg      = scene.background;
+    let lights  = scene.lights.as_slice();
+    let n       = (WIDTH * HEIGHT) as usize;
+    let chunk   = WIDTH as usize;
+
+    scratch.resize(n, Color::default());
+
+    let t0 = Instant::now();
+    for s in 0..samples {
+        scratch.par_chunks_mut(chunk).enumerate().for_each(|(ci, row)| {
+            let mut rng = SmallRng::seed_from_u64(
+                (ci as u64).wrapping_mul(6364136223846793005)
+                    ^ (s as u64).wrapping_mul(0x9E3779B97F4A7C15),
+            );
+            for (li, out) in row.iter_mut().enumerate() {
+                let i     = ci * chunk + li;
+                let px    = (i % WIDTH as usize) as u32;
+                let py    = (i / WIDTH as usize) as u32;
+                let ray_y = HEIGHT - 1 - py;
+                let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
+                let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
+                *out = ray_color(&camera.get_ray(u, v, &mut rng), world, bg, lights, &mut rng);
+            }
+        });
+    }
+    t0.elapsed()
+}
+
+fn run_bench() {
+    const WARMUP:   u32 = 4;
+    const SAMPLES:  u32 = 128;
+
+    let threads = rayon::current_num_threads();
+    println!("rustracer benchmark — {}×{}  {} threads  {} samples ({} warmup)\n",
+        WIDTH, HEIGHT, threads, SAMPLES, WARMUP);
+
+    let header = format!("{:<20}  {:>7}  {:>9}  {:>11}  {:>8}",
+        "Scene", "Samples", "Total", "ms/sample", "Mpx/s");
+    println!("{}", header);
+    println!("{}", "─".repeat(header.len()));
+
+    let builders: &[fn() -> SceneData] = &[
+        build_random_scene,
+        build_cornell_box,
+        build_mesh_scene,
+        build_labyrinth_scene,
+    ];
+
+    let mut scratch: Vec<Color> = Vec::new();
+
+    for build in builders {
+        let scene = build();
+        print!("  {:<18}  building…\r", scene.name);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        // warmup — brings BVH and scene data into CPU caches
+        bench_scene(&scene, &mut scratch, WARMUP);
+
+        let elapsed   = bench_scene(&scene, &mut scratch, SAMPLES);
+        let secs      = elapsed.as_secs_f64();
+        let ms_per_s  = secs * 1000.0 / SAMPLES as f64;
+        let mpx_s     = (WIDTH as f64 * HEIGHT as f64 * SAMPLES as f64) / (secs * 1e6);
+
+        println!("  {:<18}  {:>7}  {:>7.3}s  {:>9.1} ms  {:>7.2}",
+            scene.name, SAMPLES, secs, ms_per_s, mpx_s);
+    }
+
+    println!("\nDone.");
+}
+
 // ── Main loop ────────────────────────────────────────────────────────────────
 
 fn main() {
+    if std::env::args().any(|a| a == "--bench") {
+        run_bench();
+        return;
+    }
+
     println!("Building scenes…");
     println!("Scene 1: Random Spheres");
     let s1 = build_random_scene();
