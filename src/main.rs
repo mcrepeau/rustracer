@@ -605,7 +605,7 @@ fn main() {
     println!("Scene 3: Mesh");
     let s3 = build_mesh_scene();
     let mut scenes = [s1, s2, s3];
-    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [[]]/[]] aperture  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
+    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [ ] aperture  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -766,6 +766,22 @@ fn main() {
                     samples = 0;
                 }
 
+                {
+                    let scene      = &scenes[scene_idx];
+                    let cam_hint   = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
+                    let motion_hint = if scene.gravity > 0.0 {
+                        if scene.settled     { "  settled — [R] restart" }
+                        else if scene.paused { "  PAUSED — [Enter] resume  [R] restart" }
+                        else                 { "  [Enter] pause  [R] restart" }
+                    } else if !scene.dynamic.is_empty() {
+                        if scene.paused { "  PAUSED — [Enter] resume" } else { "" }
+                    } else { "" };
+                    window.set_title(&format!(
+                        "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [ ] aperture {:.2}{}",
+                        scene.name, samples, cam_hint, cam_state.aperture, motion_hint,
+                    ));
+                }
+
                 if samples < MAX_SAMPLES {
                     let scene     = &scenes[scene_idx];
                     let world_ref = &scene.world;
@@ -790,14 +806,6 @@ fn main() {
 
                     for (acc, s) in accumulator.iter_mut().zip(scratch.iter()) { *acc += *s; }
                     samples += 1;
-
-                    if samples == 1 || samples % 8 == 0 {
-                        let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
-                        window.set_title(&format!(
-                            "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [[]]/[]] f/{:.2}",
-                            scene.name, samples, cam_hint, cam_state.aperture,
-                        ));
-                    }
 
                     window.request_redraw();
                 } else {
