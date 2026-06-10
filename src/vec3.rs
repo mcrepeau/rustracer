@@ -88,7 +88,14 @@ impl SubAssign for Vec3 {
 
 impl std::ops::Index<usize> for Vec3 {
     type Output = f32;
+    #[inline]
     fn index(&self, i: usize) -> &f32 {
-        match i { 0 => &self.x, 1 => &self.y, 2 => &self.z, _ => panic!("Vec3 index out of range") }
+        match i {
+            0 => &self.x,
+            1 => &self.y,
+            2 => &self.z,
+            // SAFETY: only called with axis values 0, 1, 2 (AABB slab test)
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
     }
 }

@@ -318,9 +318,7 @@ fn aces(x: f32) -> f32 {
     (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)
 }
 
-fn to_rgb_u32(c: Color, samples: u32) -> u32 {
-    if samples == 0 { return 0; }
-    let scale = 1.0 / samples as f32;
+fn to_rgb_u32(c: Color, scale: f32) -> u32 {
     let r = (aces(c.x * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
     let g = (aces(c.y * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
     let b = (aces(c.z * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
@@ -329,9 +327,9 @@ fn to_rgb_u32(c: Color, samples: u32) -> u32 {
 
 fn save_png(accumulator: &[Color], samples: u32, scene_name: &str) {
     if samples == 0 { return; }
+    let scale = 1.0 / samples as f32;
     let img = ImageBuffer::from_fn(WIDTH, HEIGHT, |x, y| {
-        let c     = accumulator[(y * WIDTH + x) as usize];
-        let scale = 1.0 / samples as f32;
+        let c = accumulator[(y * WIDTH + x) as usize];
         let r = aces(c.x * scale).sqrt().clamp(0.0, 0.999);
         let g = aces(c.y * scale).sqrt().clamp(0.0, 0.999);
         let b = aces(c.z * scale).sqrt().clamp(0.0, 0.999);
@@ -514,8 +512,9 @@ fn main() {
 
             Event::RedrawRequested(_) => {
                 let mut buffer = surface.buffer_mut().unwrap();
+                let scale = 1.0 / samples.max(1) as f32;
                 for (i, &color) in accumulator.iter().enumerate() {
-                    buffer[i] = to_rgb_u32(color, samples);
+                    buffer[i] = to_rgb_u32(color, scale);
                 }
                 buffer.present().unwrap();
             }
