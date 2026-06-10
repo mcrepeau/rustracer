@@ -47,10 +47,12 @@ const HEIGHT: u32        = 800;
 const MAX_DEPTH: i32     = 50;
 const MAX_SAMPLES: u32   = 2000;
 const MOUSE_SENS: f32    = 0.002;
-const MAX_LUMINANCE: f32  = 10.0;
+const MAX_LUMINANCE: f32      = 10.0;
 const TITLE_INTERVAL: Duration = Duration::from_millis(200);
+const ADAPTIVE_MIN_SAMPLES: u32 = 16;
+const ADAPTIVE_THRESHOLD:   f32 = 0.01;
 
-fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, lights: &[Light], rng: &mut impl Rng) -> Color {
+fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &[Light], rng: &mut impl Rng) -> Color {
     let mut throughput    = Color::new(1.0, 1.0, 1.0);
     let mut color         = Color::default();
     let mut ray           = *r;
@@ -59,11 +61,7 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, lights: &
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
             None => {
-                let bg = background.unwrap_or_else(|| {
-                    let t = 0.5 * (ray.direction.unit().y + 1.0);
-                    (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
-                });
-                color += throughput * bg;
+                color += throughput * background.eval(ray.direction);
                 break;
             }
             Some(rec) => {
@@ -162,6 +160,29 @@ impl CameraState {
     }
 }
 
+// ── Sky / background ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+enum Background {
+    Gradient,
+    Solid(Color),
+    Physical { sun_dir: Vec3 },
+}
+
+impl Background {
+    fn eval(self, dir: Vec3) -> Color {
+        match self {
+            Background::Gradient => {
+                let t = 0.5 * (dir.unit().y + 1.0);
+                (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
+            }
+            Background::Solid(c) => c,
+            Background::Physical { sun_dir } => sky_color(dir, sun_dir),
+        }
+    }
+}
+
 // ── Scenes ───────────────────────────────────────────────────────────────────
 
 struct DynamicSphere {
@@ -176,7 +197,7 @@ struct DynamicSphere {
 struct SceneData {
     world:          Arc<dyn Hittable>,
     lights:         Vec<Light>,
-    background:     Option<Color>,
+    background:     Background,
     name:           &'static str,
     cam_init:       SceneCameraParams,
     static_objects: Vec<Arc<dyn Hittable>>,
@@ -191,7 +212,7 @@ struct SceneData {
 /// Sphere-vs-AABB collision response: if the sphere (center, radius) overlaps
 /// the AABB, push it out along the axis of minimum penetration and reflect
 /// velocity to point away from the box on that axis.
-fn bounce_sphere_off_aabb(center: &mut Point3, velocity: &mut Vec3, radius: f32, bbox: &Aabb) {
+fn bounce_sphere_off_aabb(center: &mut Point3, velocity: &mut Vec3, radius: f32, restitution: f32, bbox: &Aabb) {
     let lo = Point3::new(bbox.min.x - radius, bbox.min.y - radius, bbox.min.z - radius);
     let hi = Point3::new(bbox.max.x + radius, bbox.max.y + radius, bbox.max.z + radius);
     if center.x < lo.x || center.x > hi.x ||
@@ -207,14 +228,14 @@ fn bounce_sphere_off_aabb(center: &mut Point3, velocity: &mut Vec3, radius: f32,
     let min_z = dz_lo.min(dz_hi);
 
     if min_x <= min_y && min_x <= min_z {
-        if dx_lo < dx_hi { center.x = lo.x; velocity.x = -velocity.x.abs(); }
-        else              { center.x = hi.x; velocity.x =  velocity.x.abs(); }
+        if dx_lo < dx_hi { center.x = lo.x; velocity.x = -velocity.x.abs() * restitution; }
+        else              { center.x = hi.x; velocity.x =  velocity.x.abs() * restitution; }
     } else if min_y <= min_x && min_y <= min_z {
-        if dy_lo < dy_hi { center.y = lo.y; velocity.y = -velocity.y.abs(); }
-        else              { center.y = hi.y; velocity.y =  velocity.y.abs(); }
+        if dy_lo < dy_hi { center.y = lo.y; velocity.y = -velocity.y.abs() * restitution; }
+        else              { center.y = hi.y; velocity.y =  velocity.y.abs() * restitution; }
     } else {
-        if dz_lo < dz_hi { center.z = lo.z; velocity.z = -velocity.z.abs(); }
-        else              { center.z = hi.z; velocity.z =  velocity.z.abs(); }
+        if dz_lo < dz_hi { center.z = lo.z; velocity.z = -velocity.z.abs() * restitution; }
+        else              { center.z = hi.z; velocity.z =  velocity.z.abs() * restitution; }
     }
 }
 
@@ -264,7 +285,7 @@ impl SceneData {
         for ds in &mut self.dynamic {
             if ds.is_static { continue; }
             for bbox in &self.colliders {
-                bounce_sphere_off_aabb(&mut ds.center, &mut ds.velocity, ds.radius, bbox);
+                bounce_sphere_off_aabb(&mut ds.center, &mut ds.velocity, ds.radius, ds.restitution, bbox);
             }
         }
 
@@ -310,7 +331,7 @@ impl SceneData {
         // Settled detection: stop rebuilding once all mobile spheres are at rest
         if self.gravity > 0.0 {
             let at_rest = self.dynamic.iter().all(|ds| {
-                ds.is_static || (ds.velocity.length_squared() < 1e-4 && ds.center.y - ds.radius < 0.05)
+                ds.is_static || ds.velocity.length_squared() < 1e-4
             });
             if at_rest { self.settled = true; }
         }
@@ -368,13 +389,16 @@ fn build_random_scene() -> SceneData {
         for b in -11i32..11 {
             let cx = a as f32 + 0.9 * rng.gen::<f32>();
             let cz = b as f32 + 0.9 * rng.gen::<f32>();
-            if (Point3::new(cx, 0.2, cz) - Point3::new(4.0, 0.2, 0.0)).length() <= 0.9 { continue; }
+            let ground_pos = Point3::new(cx, 0.2, cz);
+            // min center-to-center at rest = 1.0 (large) + 0.2 (small) = 1.2
+            if (ground_pos - Point3::new( 4.0, 0.2, 0.0)).length() < 1.2 { continue; }
+            if (ground_pos - Point3::new( 0.0, 0.2, 0.0)).length() < 1.2 { continue; }
+            if (ground_pos - Point3::new(-4.0, 0.2, 0.0)).length() < 1.2 { continue; }
             let choose: f32 = rng.gen();
-            let (mat, restitution): (Arc<dyn hittable::Material>, f32) = if choose < 0.8 {
+            let (mat, restitution): (Arc<dyn hittable::Material>, f32) = if choose < 0.80 {
                 (Arc::new(Lambertian { texture: (Color::random(&mut rng) * Color::random(&mut rng)).into() }), 0.35)
             } else if choose < 0.95 {
                 let fuzz: f32 = rng.gen_range(0.0..0.5);
-                // smoother metal = more elastic
                 (Arc::new(Metal { albedo: Color::random_range(0.5, 1.0, &mut rng), fuzz }), 0.5 + (1.0 - fuzz) * 0.35)
             } else {
                 (Arc::new(Dielectric { ir: 1.5 }), 0.65)
@@ -397,7 +421,7 @@ fn build_random_scene() -> SceneData {
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights:         vec![],
-        background:     None,
+        background:     Background::Physical { sun_dir: Vec3::new(-0.4, 0.9, -0.3).unit() },
         name:           "Random Spheres",
         cam_init:       SceneCameraParams {
             pos: Point3::new(13.0, 2.0, 3.0), lookat: Point3::new(0.0, 0.0, 0.0),
@@ -475,7 +499,7 @@ fn build_cornell_box() -> SceneData {
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights:         vec![nee_light],
-        background:     Some(Color::default()),
+        background:     Background::Solid(Color::default()),
         name:           "Cornell Box",
         cam_init:       SceneCameraParams {
             pos: Point3::new(278.0, 278.0, -800.0), lookat: Point3::new(278.0, 278.0, 0.0),
@@ -549,7 +573,7 @@ fn build_mesh_scene() -> SceneData {
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights:         vec![nee_light],
-        background:     Some(Color::new(0.05, 0.07, 0.12)),
+        background:     Background::Solid(Color::new(0.05, 0.07, 0.12)),
         name:           "Mesh",
         cam_init,
         static_objects: vec![],
@@ -559,6 +583,34 @@ fn build_mesh_scene() -> SceneData {
         gravity:        0.0,
         settled:        false,
         paused:         false,
+    }
+}
+
+/// Physically-inspired sky model: blue zenith shading to warm horizon, soft Mie glow.
+/// No explicit sun disc — the sun contributes through the bright Mie halo instead,
+/// avoiding the need for sphere-light NEE sampling.
+fn sky_color(dir: Vec3, sun_dir: Vec3) -> Color {
+    let d        = dir.unit();
+    let sun      = sun_dir.unit();
+    let sun_elev = sun.y.clamp(0.0, 1.0);          // 0 = sunset, 1 = noon
+    let cos_a    = d.dot(sun).max(0.0);             // angle toward sun
+    let t        = d.y.max(0.0).powf(0.4);          // altitude blend (0 = horizon, 1 = zenith)
+
+    // Zenith: deep blue, dimmer at sunset
+    let zenith  = Color::new(0.08, 0.22, 0.75) * (0.4 + 0.6 * sun_elev);
+    // Horizon: warm orange-pink at sunset, cool blue-white at noon
+    let horizon = Color::new(0.70, 0.55, 0.35) * (1.0 - sun_elev)
+                + Color::new(0.65, 0.78, 0.92) *  sun_elev;
+    let sky = zenith * t + horizon * (1.0 - t);
+
+    // Mie scattering: broad soft glow in the direction of the sun
+    let mie = Color::new(1.0, 0.85, 0.60) * cos_a.powf(8.0) * 0.8 * sun_elev;
+
+    if d.y < 0.0 {
+        // Below horizon: fade to near-black ground
+        sky * (1.0 + d.y * 5.0).max(0.0)
+    } else {
+        sky + mie
     }
 }
 
@@ -578,15 +630,65 @@ fn to_rgb_u32(c: Color, scale: f32) -> u32 {
     (r as u32) << 16 | (g as u32) << 8 | (b as u32)
 }
 
-fn save_png(accumulator: &[Color], samples: u32, scene_name: &str, width: u32, height: u32) {
-    if samples == 0 { return; }
-    let scale = 1.0 / samples as f32;
-    let img = ImageBuffer::from_fn(width, height, |x, y| {
-        let [r, g, b] = tone_map(accumulator[(y * width + x) as usize], scale);
-        Rgb([r, g, b])
+fn denoise_bilateral(src: &[Color], pixel_samples: &[u32], dst: &mut [u32], w: usize, h: usize) {
+
+    // Precomputed 5×5 Gaussian spatial weights: sigma_s = 2  →  2σ² = 8
+    let sp: [f32; 25] = {
+        let mut a = [0.0f32; 25];
+        for dy in -2i32..=2 {
+            for dx in -2i32..=2 {
+                a[((dy + 2) * 5 + (dx + 2)) as usize] =
+                    (-(dx * dx + dy * dy) as f32 / 8.0).exp();
+            }
+        }
+        a
+    };
+    // Color sigma: 2σ_c² = 0.32  (sigma_c ≈ 0.4 in normalised linear space)
+    let inv_2sc2 = 1.0 / 0.32f32;
+
+    dst.par_iter_mut().enumerate().for_each(|(idx, out)| {
+        let px     = (idx % w) as i32;
+        let py     = (idx / w) as i32;
+        let center = src[idx] / pixel_samples[idx].max(1) as f32;
+
+        let mut acc_col = Color::default();
+        let mut acc_w   = 0.0f32;
+
+        for dy in -2i32..=2 {
+            for dx in -2i32..=2 {
+                let nx  = (px + dx).clamp(0, w as i32 - 1) as usize;
+                let ny  = (py + dy).clamp(0, h as i32 - 1) as usize;
+                let nbr  = src[ny * w + nx] / pixel_samples[ny * w + nx].max(1) as f32;
+                let diff = nbr - center;
+                let wt   = sp[((dy + 2) * 5 + (dx + 2)) as usize]
+                         * (-diff.length_squared() * inv_2sc2).exp();
+                acc_col += nbr * wt;
+                acc_w   += wt;
+            }
+        }
+
+        *out = to_rgb_u32(acc_col / acc_w, 1.0);
     });
+}
+
+fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_name: &str, width: u32, height: u32, use_denoise: bool) {
+    if samples == 0 { return; }
     let slug = scene_name.to_lowercase().replace(' ', "_");
     let path = format!("render_{}_{:04}spp.png", slug, samples);
+    let img = if use_denoise {
+        let mut buf = vec![0u32; (width * height) as usize];
+        denoise_bilateral(accumulator, pixel_samples, &mut buf, width as usize, height as usize);
+        ImageBuffer::from_fn(width, height, |x, y| {
+            let p = buf[(y * width + x) as usize];
+            Rgb([((p >> 16) & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, (p & 0xFF) as u8])
+        })
+    } else {
+        ImageBuffer::from_fn(width, height, |x, y| {
+            let i = (y * width + x) as usize;
+            let [r, g, b] = tone_map(accumulator[i], 1.0 / pixel_samples[i].max(1) as f32);
+            Rgb([r, g, b])
+        })
+    };
     match img.save(&path) {
         Ok(_)  => println!("Saved {path}"),
         Err(e) => eprintln!("Save failed: {e}"),
@@ -623,10 +725,16 @@ fn main() {
     let mut cam_state   = CameraState::from_params(&scenes[scene_idx].cam_init);
     cam_state.autofocus(scenes[scene_idx].world.as_ref());
     let mut camera      = cam_state.to_camera(win_w as f32 / win_h as f32);
-    let mut free_cam    = false;
-    let mut accumulator = vec![Color::default(); (win_w * win_h) as usize];
-    let mut scratch     = vec![Color::default(); (win_w * win_h) as usize];
-    let mut samples     = 0u32;
+    let mut free_cam      = false;
+    let mut denoise       = false;
+    let mut adaptive      = false;
+    let mut accumulator   = vec![Color::default(); (win_w * win_h) as usize];
+    let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
+    let mut pixel_samples = vec![0u32;             (win_w * win_h) as usize];
+    let mut welford_mean  = vec![Color::default(); (win_w * win_h) as usize];
+    let mut welford_m2    = vec![Color::default(); (win_w * win_h) as usize];
+    let mut converged     = vec![false;            (win_w * win_h) as usize];
+    let mut samples       = 0u32;
     let num_threads           = rayon::current_num_threads();
     let mut chunk_size        = ((win_w * win_h) as usize / (num_threads * 4)).max(1);
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
@@ -648,11 +756,14 @@ fn main() {
                         win_w = new_w;
                         win_h = new_h;
                         surface.resize(NonZeroU32::new(win_w).unwrap(), NonZeroU32::new(win_h).unwrap()).unwrap();
-                        accumulator.resize((win_w * win_h) as usize, Color::default());
-                        accumulator.fill(Color::default());
-                        scratch.resize((win_w * win_h) as usize, Color::default());
-                        scratch.fill(Color::default());
-                        chunk_size = ((win_w * win_h) as usize / (num_threads * 4)).max(1);
+                        let n = (win_w * win_h) as usize;
+                        accumulator.resize(n, Color::default());   accumulator.fill(Color::default());
+                        scratch.resize(n, Color::default());        scratch.fill(Color::default());
+                        pixel_samples.resize(n, 0);                pixel_samples.fill(0);
+                        welford_mean.resize(n, Color::default());   welford_mean.fill(Color::default());
+                        welford_m2.resize(n, Color::default());     welford_m2.fill(Color::default());
+                        converged.resize(n, false);                 converged.fill(false);
+                        chunk_size = (n / (num_threads * 4)).max(1);
                         samples = 0;
                         cam_dirty = true;
                     }
@@ -691,12 +802,13 @@ fn main() {
                                     let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, _ => 0 };
                                     scene_idx = idx;
                                     cam_state = CameraState::from_params(&scenes[idx].cam_init);
-                                    accumulator.fill(Color::default());
+                                    accumulator.fill(Color::default()); pixel_samples.fill(0);
+                                    welford_mean.fill(Color::default()); welford_m2.fill(Color::default()); converged.fill(false);
                                     samples = 0;
                                     cam_dirty = true;
                                     pending_autofocus = true;
                                 }
-                                VirtualKeyCode::P => save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h),
+                                VirtualKeyCode::P => save_png(&accumulator, &pixel_samples, samples, scenes[scene_idx].name, win_w, win_h, denoise),
                                 VirtualKeyCode::LBracket => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
                                     cam_dirty = true;
@@ -704,6 +816,16 @@ fn main() {
                                 VirtualKeyCode::RBracket => {
                                     cam_state.aperture += 0.025;
                                     cam_dirty = true;
+                                }
+                                VirtualKeyCode::N => {
+                                    denoise = !denoise;
+                                    window.request_redraw();
+                                }
+                                VirtualKeyCode::T => {
+                                    adaptive = !adaptive;
+                                    accumulator.fill(Color::default()); pixel_samples.fill(0);
+                                    welford_mean.fill(Color::default()); welford_m2.fill(Color::default());
+                                    converged.fill(false); samples = 0;
                                 }
                                 VirtualKeyCode::Return => {
                                     scenes[scene_idx].paused = !scenes[scene_idx].paused;
@@ -748,22 +870,27 @@ fn main() {
                     if moved { cam_dirty = true; pending_autofocus = true; }
                 }
 
+                macro_rules! reset_accum {
+                    () => {
+                        accumulator.fill(Color::default()); pixel_samples.fill(0);
+                        welford_mean.fill(Color::default()); welford_m2.fill(Color::default()); converged.fill(false);
+                        samples = 0;
+                    }
+                }
+
                 if cam_dirty {
                     camera = cam_state.to_camera(win_w as f32 / win_h as f32);
-                    accumulator.fill(Color::default());
-                    samples = 0;
+                    reset_accum!();
                     cam_dirty = false;
                 } else if pending_autofocus {
                     cam_state.autofocus(scenes[scene_idx].world.as_ref());
                     camera = cam_state.to_camera(win_w as f32 / win_h as f32);
-                    accumulator.fill(Color::default());
-                    samples = 0;
+                    reset_accum!();
                     pending_autofocus = false;
                 }
 
                 if scenes[scene_idx].tick() {
-                    accumulator.fill(Color::default());
-                    samples = 0;
+                    reset_accum!();
                 }
 
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
@@ -776,9 +903,17 @@ fn main() {
                     } else if !scene.dynamic.is_empty() {
                         if scene.paused { "  PAUSED — [Enter] resume" } else { "" }
                     } else { "" };
+                    let denoise_hint = if denoise { "  DENOISED [N] off" } else { "  [N] denoise" };
+                    let adaptive_hint = if adaptive {
+                        let pct = converged.iter().filter(|&&c| c).count() * 100
+                                / converged.len().max(1);
+                        format!("  ADAPTIVE {pct}% conv [T] off")
+                    } else {
+                        "  [T] adaptive".to_string()
+                    };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [ ] aperture {:.2}{}",
-                        scene.name, samples, cam_hint, cam_state.aperture, motion_hint,
+                        "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [ ] aperture {:.2}{}{}{}",
+                        scene.name, samples, cam_hint, cam_state.aperture, denoise_hint, adaptive_hint, motion_hint,
                     ));
                     last_title_update = Instant::now();
                 }
@@ -788,6 +923,7 @@ fn main() {
                     let world_ref = &scene.world;
                     let bg        = scene.background;
                     let lights    = scene.lights.as_slice();
+                    let conv_ref  = converged.as_slice();
 
                     scratch.par_chunks_mut(chunk_size).enumerate().for_each(|(ci, chunk)| {
                         let mut rng = SmallRng::seed_from_u64(
@@ -796,6 +932,7 @@ fn main() {
                         );
                         for (li, out) in chunk.iter_mut().enumerate() {
                             let i     = ci * chunk_size + li;
+                            if adaptive && conv_ref[i] { *out = Color::default(); continue; }
                             let px    = (i % win_w as usize) as u32;
                             let py    = (i / win_w as usize) as u32;
                             let ray_y = win_h - 1 - py;
@@ -805,7 +942,24 @@ fn main() {
                         }
                     });
 
-                    for (acc, s) in accumulator.iter_mut().zip(scratch.iter()) { *acc += *s; }
+                    for i in 0..(win_w * win_h) as usize {
+                        if adaptive && converged[i] { continue; }
+                        let s = scratch[i];
+                        accumulator[i] += s;
+                        pixel_samples[i] += 1;
+                        if adaptive {
+                            let n = pixel_samples[i] as f32;
+                            let delta = s - welford_mean[i];
+                            welford_mean[i] += delta / n;
+                            welford_m2[i]   += delta * (s - welford_mean[i]);
+                            if pixel_samples[i] >= ADAPTIVE_MIN_SAMPLES {
+                                let var = welford_m2[i] / n;
+                                if var.x.max(var.y).max(var.z) < ADAPTIVE_THRESHOLD {
+                                    converged[i] = true;
+                                }
+                            }
+                        }
+                    }
                     samples += 1;
 
                     window.request_redraw();
@@ -816,9 +970,12 @@ fn main() {
 
             Event::RedrawRequested(_) => {
                 let mut buffer = surface.buffer_mut().unwrap();
-                let scale = 1.0 / samples.max(1) as f32;
-                for (i, &color) in accumulator.iter().enumerate() {
-                    buffer[i] = to_rgb_u32(color, scale);
+                if denoise && samples > 0 {
+                    denoise_bilateral(&accumulator, &pixel_samples, &mut buffer, win_w as usize, win_h as usize);
+                } else {
+                    for (i, &color) in accumulator.iter().enumerate() {
+                        buffer[i] = to_rgb_u32(color, 1.0 / pixel_samples[i].max(1) as f32);
+                    }
                 }
                 buffer.present().unwrap();
             }
