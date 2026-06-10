@@ -327,22 +327,23 @@ fn aces(x: f32) -> f32 {
     (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)
 }
 
+#[inline]
+fn tone_map(c: Color, scale: f32) -> [u8; 3] {
+    let f = |x: f32| (aces(x * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u8;
+    [f(c.x), f(c.y), f(c.z)]
+}
+
 fn to_rgb_u32(c: Color, scale: f32) -> u32 {
-    let r = (aces(c.x * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
-    let g = (aces(c.y * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
-    let b = (aces(c.z * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
-    r << 16 | g << 8 | b
+    let [r, g, b] = tone_map(c, scale);
+    (r as u32) << 16 | (g as u32) << 8 | (b as u32)
 }
 
 fn save_png(accumulator: &[Color], samples: u32, scene_name: &str, width: u32, height: u32) {
     if samples == 0 { return; }
     let scale = 1.0 / samples as f32;
     let img = ImageBuffer::from_fn(width, height, |x, y| {
-        let c = accumulator[(y * width + x) as usize];
-        let r = aces(c.x * scale).sqrt().clamp(0.0, 0.999);
-        let g = aces(c.y * scale).sqrt().clamp(0.0, 0.999);
-        let b = aces(c.z * scale).sqrt().clamp(0.0, 0.999);
-        Rgb([(256.0 * r) as u8, (256.0 * g) as u8, (256.0 * b) as u8])
+        let [r, g, b] = tone_map(accumulator[(y * width + x) as usize], scale);
+        Rgb([r, g, b])
     });
     let slug = scene_name.to_lowercase().replace(' ', "_");
     let path = format!("render_{}_{:04}spp.png", slug, samples);
