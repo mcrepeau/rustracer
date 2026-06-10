@@ -38,10 +38,11 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::sync::Arc;
 
-const WIDTH: u32    = 1200;
-const HEIGHT: u32   = 800;
-const MAX_DEPTH: i32 = 50;
-const MOUSE_SENS: f32 = 0.002;
+const WIDTH: u32        = 1200;
+const HEIGHT: u32       = 800;
+const MAX_DEPTH: i32    = 50;
+const MOUSE_SENS: f32   = 0.002;
+const MAX_LUMINANCE: f32 = 10.0;
 
 fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, rng: &mut impl Rng) -> Color {
     let mut throughput = Color::new(1.0, 1.0, 1.0);
@@ -74,6 +75,8 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, rng: &mut
         }
     }
 
+    let lum = color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722;
+    if lum > MAX_LUMINANCE { color = color * (MAX_LUMINANCE / lum); }
     color
 }
 
@@ -270,12 +273,17 @@ fn build_mesh_scene() -> SceneData {
     }
 }
 
+fn aces(x: f32) -> f32 {
+    let x = x.max(0.0);
+    (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)
+}
+
 fn to_rgb_u32(c: Color, samples: u32) -> u32 {
     if samples == 0 { return 0; }
     let scale = 1.0 / samples as f32;
-    let r = ((c.x * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
-    let g = ((c.y * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
-    let b = ((c.z * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
+    let r = (aces(c.x * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
+    let g = (aces(c.y * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
+    let b = (aces(c.z * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u32;
     r << 16 | g << 8 | b
 }
 
@@ -284,9 +292,9 @@ fn save_png(accumulator: &[Color], samples: u32, scene_name: &str) {
     let img = ImageBuffer::from_fn(WIDTH, HEIGHT, |x, y| {
         let c     = accumulator[(y * WIDTH + x) as usize];
         let scale = 1.0 / samples as f32;
-        let r = (c.x * scale).sqrt().clamp(0.0, 0.999);
-        let g = (c.y * scale).sqrt().clamp(0.0, 0.999);
-        let b = (c.z * scale).sqrt().clamp(0.0, 0.999);
+        let r = aces(c.x * scale).sqrt().clamp(0.0, 0.999);
+        let g = aces(c.y * scale).sqrt().clamp(0.0, 0.999);
+        let b = aces(c.z * scale).sqrt().clamp(0.0, 0.999);
         Rgb([(256.0 * r) as u8, (256.0 * g) as u8, (256.0 * b) as u8])
     });
     let slug = scene_name.to_lowercase().replace(' ', "_");
