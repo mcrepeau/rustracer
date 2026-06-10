@@ -19,6 +19,7 @@ fn surface_area(b: &Aabb) -> f32 {
 impl BvhNode {
     pub fn from_list(list: HittableList) -> Self {
         let mut objects = list.objects;
+        assert!(!objects.is_empty(), "BvhNode::from_list requires at least one object");
         let len = objects.len();
         Self::build(&mut objects, 0, len)
     }

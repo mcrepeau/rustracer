@@ -99,8 +99,8 @@ pub fn load_obj(
                 Point3::new(pos[3*i2] as f32 * scale, pos[3*i2+1] as f32 * scale, pos[3*i2+2] as f32 * scale),
             ];
 
-            let max_nrm_idx = i0.max(i1).max(i2);
-            let n = if nrm.len() >= 3 * (max_nrm_idx + 1) {
+            let max_idx = i0.max(i1).max(i2);
+            let n = if nrm.len() >= 3 * (max_idx + 1) {
                 [
                     Vec3::new(nrm[3*i0] as f32, nrm[3*i0+1] as f32, nrm[3*i0+2] as f32),
                     Vec3::new(nrm[3*i1] as f32, nrm[3*i1+1] as f32, nrm[3*i1+2] as f32),
@@ -111,8 +111,7 @@ pub fn load_obj(
                 [face_n; 3]
             };
 
-            let max_tex_idx = i0.max(i1).max(i2);
-            let uv = if tex.len() >= 2 * (max_tex_idx + 1) {
+            let uv = if tex.len() >= 2 * (max_idx + 1) {
                 [
                     (tex[2*i0] as f32, tex[2*i0+1] as f32),
                     (tex[2*i1] as f32, tex[2*i1+1] as f32),
