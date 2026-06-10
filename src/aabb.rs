@@ -31,15 +31,13 @@ impl Aabb {
 
     pub fn hit(&self, r: &Ray, mut t_min: f32, mut t_max: f32) -> bool {
         for axis in 0..3 {
-            let inv_d = 1.0 / r.direction[axis];
+            let inv_d = r.inv_dir[axis];
             let orig  = r.origin[axis];
-            let mut t0 = (self.min[axis] - orig) * inv_d;
-            let mut t1 = (self.max[axis] - orig) * inv_d;
-            if inv_d < 0.0 { std::mem::swap(&mut t0, &mut t1); }
-            if t0 > t_min { t_min = t0; }
-            if t1 < t_max { t_max = t1; }
-            if t_max <= t_min { return false; }
+            let t0 = (self.min[axis] - orig) * inv_d;
+            let t1 = (self.max[axis] - orig) * inv_d;
+            t_min = t_min.max(t0.min(t1));
+            t_max = t_max.min(t0.max(t1));
         }
-        true
+        t_max > t_min
     }
 }
