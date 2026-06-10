@@ -38,10 +38,11 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::sync::Arc;
 
-const WIDTH: u32        = 1200;
-const HEIGHT: u32       = 800;
-const MAX_DEPTH: i32    = 50;
-const MOUSE_SENS: f32   = 0.002;
+const WIDTH: u32         = 1200;
+const HEIGHT: u32        = 800;
+const MAX_DEPTH: i32     = 50;
+const MAX_SAMPLES: u32   = 2000;
+const MOUSE_SENS: f32    = 0.002;
 const MAX_LUMINANCE: f32 = 10.0;
 
 fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, rng: &mut impl Rng) -> Color {
@@ -435,36 +436,40 @@ fn main() {
                     cam_dirty = false;
                 }
 
-                let scene     = &scenes[scene_idx];
-                let world_ref = &scene.world;
-                let bg        = scene.background;
+                if samples < MAX_SAMPLES {
+                    let scene     = &scenes[scene_idx];
+                    let world_ref = &scene.world;
+                    let bg        = scene.background;
 
-                scratch.par_chunks_mut(64).enumerate().for_each(|(ci, chunk)| {
-                    let mut rng = SmallRng::seed_from_u64(
-                        (ci as u64).wrapping_mul(6364136223846793005)
-                            ^ (samples as u64).wrapping_mul(2654435761)
-                    );
-                    for (li, out) in chunk.iter_mut().enumerate() {
-                        let i     = ci * 64 + li;
-                        let px    = (i % WIDTH as usize) as u32;
-                        let py    = (i / WIDTH as usize) as u32;
-                        let ray_y = HEIGHT - 1 - py;
-                        let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
-                        let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
-                        *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, &mut rng);
-                    }
-                });
+                    scratch.par_chunks_mut(64).enumerate().for_each(|(ci, chunk)| {
+                        let mut rng = SmallRng::seed_from_u64(
+                            (ci as u64).wrapping_mul(6364136223846793005)
+                                ^ (samples as u64).wrapping_mul(2654435761)
+                        );
+                        for (li, out) in chunk.iter_mut().enumerate() {
+                            let i     = ci * 64 + li;
+                            let px    = (i % WIDTH as usize) as u32;
+                            let py    = (i / WIDTH as usize) as u32;
+                            let ray_y = HEIGHT - 1 - py;
+                            let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
+                            let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
+                            *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, &mut rng);
+                        }
+                    });
 
-                for (acc, s) in accumulator.iter_mut().zip(scratch.iter()) { *acc += *s; }
-                samples += 1;
+                    for (acc, s) in accumulator.iter_mut().zip(scratch.iter()) { *acc += *s; }
+                    samples += 1;
 
-                let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
-                window.set_title(&format!(
-                    "Ray Tracer — {} — {} spp  |  [1] Random [2] Cornell [3] Mesh  {}  [P] Save",
-                    scene.name, samples, cam_hint,
-                ));
+                    let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
+                    window.set_title(&format!(
+                        "Ray Tracer — {} — {} spp  |  [1] Random [2] Cornell [3] Mesh  {}  [P] Save",
+                        scene.name, samples, cam_hint,
+                    ));
 
-                window.request_redraw();
+                    window.request_redraw();
+                } else {
+                    *control_flow = ControlFlow::Wait;
+                }
             }
 
             Event::RedrawRequested(_) => {
