@@ -47,7 +47,8 @@ const HEIGHT: u32        = 800;
 const MAX_DEPTH: i32     = 50;
 const MAX_SAMPLES: u32   = 2000;
 const MOUSE_SENS: f32    = 0.002;
-const MAX_LUMINANCE: f32 = 10.0;
+const MAX_LUMINANCE: f32  = 10.0;
+const TITLE_INTERVAL: Duration = Duration::from_millis(200);
 
 fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, lights: &[Light], rng: &mut impl Rng) -> Color {
     let mut throughput    = Color::new(1.0, 1.0, 1.0);
@@ -222,24 +223,13 @@ impl SceneData {
         if self.dynamic.is_empty() || self.paused { return false; }
         if self.settled { return false; }
 
-        // Gravity + air drag (skipped for Cornell-style constant-velocity scenes)
+        // Gravity, drag, movement, ground bounce — one pass per sphere
         if self.gravity > 0.0 {
             for ds in &mut self.dynamic {
                 if ds.is_static { continue; }
                 ds.velocity.y -= self.gravity;
                 ds.velocity   *= 0.995;
-            }
-        }
-
-        // Movement
-        for ds in &mut self.dynamic {
-            if !ds.is_static { ds.center += ds.velocity; }
-        }
-
-        // Ground plane bounce (y = 0)
-        if self.gravity > 0.0 {
-            for ds in &mut self.dynamic {
-                if ds.is_static { continue; }
+                ds.center     += ds.velocity;
                 if ds.center.y - ds.radius < 0.0 {
                     ds.center.y = ds.radius;
                     if ds.velocity.y < 0.0 {
@@ -249,6 +239,10 @@ impl SceneData {
                     }
                     if ds.velocity.y < 0.05 { ds.velocity.y = 0.0; }
                 }
+            }
+        } else {
+            for ds in &mut self.dynamic {
+                if !ds.is_static { ds.center += ds.velocity; }
             }
         }
 
@@ -291,8 +285,12 @@ impl SceneData {
                 let ma = a.radius * a.radius * a.radius;
                 let mb = b.radius * b.radius * b.radius;
                 let e  = (a.restitution + b.restitution) * 0.5;
-                if b.is_static {
-                    // Infinite-mass wall: only a bounces
+                if a.is_static {
+                    // a is immovable: only b bounces
+                    b.velocity -= (1.0 + e) * rel_v * normal;
+                    b.center    = a.center - normal * min_dist;
+                } else if b.is_static {
+                    // b is immovable: only a bounces
                     a.velocity -= (1.0 + e) * rel_v * normal;
                     a.center    = b.center + normal * min_dist;
                 } else {
@@ -633,9 +631,8 @@ fn main() {
     let mut chunk_size        = ((win_w * win_h) as usize / (num_threads * 4)).max(1);
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut cam_dirty         = false;
-    let mut pending_autofocus  = false;
-    let mut last_title_update  = Instant::now();
-    const TITLE_INTERVAL: Duration = Duration::from_millis(200);
+    let mut pending_autofocus = false;
+    let mut last_title_update = Instant::now();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
