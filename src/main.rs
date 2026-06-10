@@ -22,7 +22,7 @@ use quad::{Quad, make_box};
 use transform::{RotateY, Translate};
 use mesh::load_obj;
 use camera::Camera;
-use bvh::BvhNode;
+use bvh::BvhTree;
 use light::Light;
 
 use winit::{
@@ -201,7 +201,7 @@ fn build_random_scene() -> SceneData {
     list.add(Sphere::new(Point3::new( 4.0, 1.0, 0.0), 1.0, Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 })));
 
     SceneData {
-        world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
+        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights:     vec![],
         background: None,
         name:       "Random Spheres",
@@ -247,7 +247,7 @@ fn build_cornell_box() -> SceneData {
     list.add(Translate::new(short, Vec3::new(130.0, 0.0, 65.0)));
 
     SceneData {
-        world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
+        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights:     vec![nee_light],
         background: Some(Color::default()),
         name:       "Cornell Box",
@@ -275,7 +275,7 @@ fn build_mesh_scene() -> SceneData {
             let mut list = HittableList::new();
             list.add(Sphere::new(Point3::new(0.0, 1.0, 0.0), 1.0,
                 Arc::new(Metal { albedo: Color::new(0.8, 0.85, 0.9), fuzz: 0.02 })));
-            (BvhNode::from_list(list), SceneCameraParams {
+            (BvhTree::from_list(list), SceneCameraParams {
                 pos: Point3::new(0.0, 2.0, 6.0), lookat: Point3::new(0.0, 1.0, 0.0),
                 vfov: 40.0, aperture: 0.0, focus_dist: 6.0, move_speed: 0.3,
             })
@@ -289,7 +289,7 @@ fn build_mesh_scene() -> SceneData {
             let size = (bb.max.x - bb.min.x).max(bb.max.y - bb.min.y).max(bb.max.z - bb.min.z);
             println!("  center ({cx:.2}, {cy:.2}, {cz:.2}), extent {size:.2}");
             let cam_pos = Point3::new(cx, cy + size * 0.3, cz + size * 1.8);
-            (BvhNode::from_list(mesh_list), SceneCameraParams {
+            (BvhTree::from_list(mesh_list), SceneCameraParams {
                 pos: cam_pos, lookat: Point3::new(cx, cy, cz),
                 vfov: 40.0, aperture: 0.0, focus_dist: size * 2.0, move_speed: size * 0.02,
             })
@@ -314,7 +314,7 @@ fn build_mesh_scene() -> SceneData {
     list.add(mesh_bvh);
 
     SceneData {
-        world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
+        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights:     vec![nee_light],
         background: Some(Color::new(0.05, 0.07, 0.12)),
         name:       "Mesh",
