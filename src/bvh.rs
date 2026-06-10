@@ -168,22 +168,40 @@ impl BvhTree {
         Self::build(&r_objs, &r_boxes, nodes, prims);
     }
 
-    fn hit_node<'a>(&'a self, r: &Ray, idx: usize, t_min: f32, t_max: f32) -> Option<HitRecord<'a>> {
-        let node = &self.nodes[idx];
-        if !node.bbox.hit(r, t_min, t_max) { return None; }
-        if node.data < 0 {
-            return self.objects[(-node.data - 1) as usize].hit(r, t_min, t_max);
-        }
-        let left  = self.hit_node(r, idx + 1, t_min, t_max);
-        let t_mid = left.as_ref().map_or(t_max, |h| h.t);
-        let right = self.hit_node(r, node.data as usize, t_min, t_mid);
-        right.or(left)
-    }
 }
 
 impl Hittable for BvhTree {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
-        self.hit_node(r, 0, t_min, t_max)
+        if self.nodes.is_empty() { return None; }
+
+        let mut stack = [0u32; 64];
+        let mut top   = 1usize;   // stack[0] = 0 (root)
+        let mut best: Option<HitRecord<'_>> = None;
+        let mut closest = t_max;
+
+        while top > 0 {
+            top -= 1;
+            let idx  = stack[top] as usize;
+            let node = &self.nodes[idx];
+
+            if !node.bbox.hit(r, t_min, closest) { continue; }
+
+            if node.data < 0 {
+                if let Some(rec) = self.objects[(-node.data - 1) as usize].hit(r, t_min, closest) {
+                    closest = rec.t;
+                    best = Some(rec);
+                }
+            } else {
+                // Push right first so left (idx + 1) is popped and visited first,
+                // tightening `closest` before we test the right subtree's AABB.
+                stack[top] = node.data as u32;
+                top += 1;
+                stack[top] = (idx + 1) as u32;
+                top += 1;
+            }
+        }
+
+        best
     }
 
     fn bounding_box(&self) -> Option<Aabb> {
