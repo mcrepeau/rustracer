@@ -130,19 +130,26 @@ impl BvhNode {
         }
 
         // Partition objects by their bucket assignment on the best axis.
+        // Use precomputed boxes to avoid calling bounding_box() again via virtual dispatch.
         let extent = c_max[best_axis] - c_min[best_axis];
-        let bucket_of = |o: &Arc<dyn Hittable>| -> usize {
-            let b = o.bounding_box().unwrap_or_default();
-            let c = (b.min[best_axis] + b.max[best_axis]) * 0.5;
+        let bucket_from_box = |b: &Aabb| -> usize {
             if extent < 1e-6 { return 0; }
+            let c = (b.min[best_axis] + b.max[best_axis]) * 0.5;
             let t = (c - c_min[best_axis]) / extent;
             ((NUM_BUCKETS as f32 * t) as usize).min(NUM_BUCKETS - 1)
         };
 
-        objects[start..end].sort_by_key(|o| bucket_of(o));
+        let mut pairs: Vec<(Arc<dyn Hittable>, usize)> = objects[start..end]
+            .iter()
+            .zip(boxes.iter())
+            .map(|(obj, b)| (Arc::clone(obj), bucket_from_box(b)))
+            .collect();
+        pairs.sort_by_key(|(_, id)| *id);
+        let mid_off = pairs.partition_point(|(_, id)| *id <= best_split);
+        for (i, (obj, _)) in pairs.into_iter().enumerate() {
+            objects[start + i] = obj;
+        }
 
-        // partition_point does binary search on the now-sorted slice.
-        let mid_off = objects[start..end].partition_point(|o| bucket_of(o) <= best_split);
         let mid = if mid_off == 0 || mid_off == span {
             start + span / 2  // degenerate: all centroids coincide, fall back to median
         } else {

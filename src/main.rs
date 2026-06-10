@@ -87,7 +87,7 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, lights: &
 
                 if depth >= 2 {
                     let survive = attenuation.x.max(attenuation.y).max(attenuation.z);
-                    if rng.gen::<f32>() >= survive { break; }
+                    if survive <= 0.0 || rng.gen::<f32>() >= survive { break; }
                     attenuation = attenuation / survive;
                 }
                 throughput = throughput * attenuation;
@@ -203,16 +203,28 @@ fn build_random_scene() -> SceneData {
     }
 }
 
+/// Creates a matched (Quad geometry, Light for NEE) pair from one set of parameters,
+/// ensuring geometry and shadow-ray target never drift out of sync.
+fn emissive_quad(q: Point3, u: Vec3, v: Vec3, emit: Color) -> (Quad, Light) {
+    let mat: Arc<dyn hittable::Material> = Arc::new(DiffuseLight { emit });
+    (Quad::new(q, u, v, mat), Light::new(q, u, v, emit))
+}
+
 fn build_cornell_box() -> SceneData {
     let mut list = HittableList::new();
     let red:   Arc<dyn hittable::Material> = Arc::new(Lambertian { texture: Color::new(0.65, 0.05, 0.05).into() });
     let white: Arc<dyn hittable::Material> = Arc::new(Lambertian { texture: Color::new(0.73, 0.73, 0.73).into() });
     let green: Arc<dyn hittable::Material> = Arc::new(Lambertian { texture: Color::new(0.12, 0.45, 0.15).into() });
-    let light: Arc<dyn hittable::Material> = Arc::new(DiffuseLight { emit: Color::new(15.0, 15.0, 15.0) });
+    let (light_quad, nee_light) = emissive_quad(
+        Point3::new(343.0, 554.0, 332.0),
+        Vec3::new(-130.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -105.0),
+        Color::new(15.0, 15.0, 15.0),
+    );
 
     list.add(Quad::new(Point3::new(555.0, 0.0,   0.0),   Vec3::new(0.0, 555.0,  0.0), Vec3::new(0.0, 0.0,  555.0), green));
     list.add(Quad::new(Point3::new(0.0,   0.0,   0.0),   Vec3::new(0.0, 555.0,  0.0), Vec3::new(0.0, 0.0,  555.0), red));
-    list.add(Quad::new(Point3::new(343.0, 554.0, 332.0), Vec3::new(-130.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -105.0), light));
+    list.add(light_quad);
     list.add(Quad::new(Point3::new(0.0,   0.0,   0.0),   Vec3::new(555.0, 0.0,  0.0), Vec3::new(0.0, 0.0,  555.0), Arc::clone(&white)));
     list.add(Quad::new(Point3::new(555.0, 555.0, 555.0), Vec3::new(-555.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -555.0), Arc::clone(&white)));
     list.add(Quad::new(Point3::new(0.0,   0.0,   555.0), Vec3::new(555.0, 0.0,  0.0), Vec3::new(0.0, 555.0, 0.0),  Arc::clone(&white)));
@@ -227,12 +239,7 @@ fn build_cornell_box() -> SceneData {
 
     SceneData {
         world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
-        lights:     vec![Light::new(
-            Point3::new(343.0, 554.0, 332.0),
-            Vec3::new(-130.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, -105.0),
-            Color::new(15.0, 15.0, 15.0),
-        )],
+        lights:     vec![nee_light],
         background: Some(Color::default()),
         name:       "Cornell Box",
         cam_init:   SceneCameraParams {
@@ -288,20 +295,18 @@ fn build_mesh_scene() -> SceneData {
             scale: 1.0, even: Color::new(0.15, 0.15, 0.15), odd: Color::new(0.85, 0.85, 0.85),
         }}),
     ));
-    list.add(Quad::new(
-        Point3::new(-200.0, 500.0, -200.0), Vec3::new(400.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 400.0),
-        Arc::new(DiffuseLight { emit: Color::new(6.0, 6.0, 6.0) }),
-    ));
+    let (overhead_quad, nee_light) = emissive_quad(
+        Point3::new(-200.0, 500.0, -200.0),
+        Vec3::new(400.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 400.0),
+        Color::new(6.0, 6.0, 6.0),
+    );
+    list.add(overhead_quad);
     list.add_arc(Arc::new(mesh_bvh));
 
     SceneData {
         world:      Arc::new(BvhNode::from_list(list)) as Arc<dyn Hittable>,
-        lights:     vec![Light::new(
-            Point3::new(-200.0, 500.0, -200.0),
-            Vec3::new(400.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 400.0),
-            Color::new(6.0, 6.0, 6.0),
-        )],
+        lights:     vec![nee_light],
         background: Some(Color::new(0.05, 0.07, 0.12)),
         name:       "Mesh",
         cam_init,
