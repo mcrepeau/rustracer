@@ -630,7 +630,7 @@ fn to_rgb_u32(c: Color, scale: f32) -> u32 {
     (r as u32) << 16 | (g as u32) << 8 | (b as u32)
 }
 
-fn denoise_bilateral(src: &[Color], pixel_samples: &[u32], dst: &mut [u32], w: usize, h: usize) {
+fn denoise_bilateral(src: &[Color], pixel_samples: &[u32], dst: &mut [u32], w: usize, h: usize, exposure: f32) {
 
     // Precomputed 5×5 Gaussian spatial weights: sigma_s = 2  →  2σ² = 8
     let sp: [f32; 25] = {
@@ -667,17 +667,17 @@ fn denoise_bilateral(src: &[Color], pixel_samples: &[u32], dst: &mut [u32], w: u
             }
         }
 
-        *out = to_rgb_u32(acc_col / acc_w, 1.0);
+        *out = to_rgb_u32(acc_col / acc_w, exposure);
     });
 }
 
-fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_name: &str, width: u32, height: u32, use_denoise: bool) {
+fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_name: &str, width: u32, height: u32, use_denoise: bool, exposure: f32) {
     if samples == 0 { return; }
     let slug = scene_name.to_lowercase().replace(' ', "_");
     let path = format!("render_{}_{:04}spp.png", slug, samples);
     let img = if use_denoise {
         let mut buf = vec![0u32; (width * height) as usize];
-        denoise_bilateral(accumulator, pixel_samples, &mut buf, width as usize, height as usize);
+        denoise_bilateral(accumulator, pixel_samples, &mut buf, width as usize, height as usize, exposure);
         ImageBuffer::from_fn(width, height, |x, y| {
             let p = buf[(y * width + x) as usize];
             Rgb([((p >> 16) & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, (p & 0xFF) as u8])
@@ -685,7 +685,7 @@ fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_na
     } else {
         ImageBuffer::from_fn(width, height, |x, y| {
             let i = (y * width + x) as usize;
-            let [r, g, b] = tone_map(accumulator[i], 1.0 / pixel_samples[i].max(1) as f32);
+            let [r, g, b] = tone_map(accumulator[i], exposure / pixel_samples[i].max(1) as f32);
             Rgb([r, g, b])
         })
     };
@@ -706,7 +706,9 @@ fn main() {
     println!("Scene 3: Mesh");
     let s3 = build_mesh_scene();
     let mut scenes = [s1, s2, s3];
-    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [ ] aperture  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
+    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
+    println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
+    println!("        [N] denoise  [T] adaptive  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -738,6 +740,7 @@ fn main() {
     let num_threads           = rayon::current_num_threads();
     let mut chunk_size        = ((win_w * win_h) as usize / (num_threads * 4)).max(1);
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
+    let mut exposure          = 1.0f32;
     let mut cam_dirty         = false;
     let mut pending_autofocus = false;
     let mut last_title_update = Instant::now();
@@ -810,7 +813,7 @@ fn main() {
                                     cam_dirty = true;
                                     pending_autofocus = true;
                                 }
-                                VirtualKeyCode::P => save_png(&accumulator, &pixel_samples, samples, scenes[scene_idx].name, win_w, win_h, denoise),
+                                VirtualKeyCode::P => save_png(&accumulator, &pixel_samples, samples, scenes[scene_idx].name, win_w, win_h, denoise, exposure),
                                 VirtualKeyCode::LBracket => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
                                     cam_dirty = true;
@@ -818,6 +821,54 @@ fn main() {
                                 VirtualKeyCode::RBracket => {
                                     cam_state.aperture += 0.025;
                                     cam_dirty = true;
+                                }
+                                VirtualKeyCode::Comma => {
+                                    cam_state.vfov = (cam_state.vfov - 5.0).max(5.0);
+                                    cam_dirty = true;
+                                }
+                                VirtualKeyCode::Period => {
+                                    cam_state.vfov = (cam_state.vfov + 5.0).min(120.0);
+                                    cam_dirty = true;
+                                }
+                                VirtualKeyCode::Minus => {
+                                    exposure = (exposure * 0.8).max(0.125);
+                                    window.request_redraw();
+                                }
+                                VirtualKeyCode::Equals => {
+                                    exposure = (exposure / 0.8).min(8.0);
+                                    window.request_redraw();
+                                }
+                                VirtualKeyCode::Left | VirtualKeyCode::Right => {
+                                    if let Background::Physical { sun_dir } = &mut scenes[scene_idx].background {
+                                        let step = if key == VirtualKeyCode::Right { 0.1f32 } else { -0.1f32 };
+                                        let (s, c) = step.sin_cos();
+                                        *sun_dir = Vec3::new(
+                                            sun_dir.x * c - sun_dir.z * s,
+                                            sun_dir.y,
+                                            sun_dir.x * s + sun_dir.z * c,
+                                        ).unit();
+                                        accumulator.fill(Color::default()); pixel_samples.fill(0);
+                                        welford_mean.fill(Color::default()); welford_m2.fill(Color::default());
+                                        converged.fill(false); samples = 0;
+                                    }
+                                }
+                                VirtualKeyCode::Up | VirtualKeyCode::Down => {
+                                    if let Background::Physical { sun_dir } = &mut scenes[scene_idx].background {
+                                        let step = if key == VirtualKeyCode::Up { 0.1f32 } else { -0.1f32 };
+                                        let el = sun_dir.y.asin();
+                                        let new_el = (el + step).clamp(-10f32.to_radians(), 85f32.to_radians());
+                                        let horiz = Vec3::new(sun_dir.x, 0.0, sun_dir.z).length().max(1e-6);
+                                        let scale = new_el.cos() / horiz;
+                                        *sun_dir = Vec3::new(sun_dir.x * scale, new_el.sin(), sun_dir.z * scale);
+                                        accumulator.fill(Color::default()); pixel_samples.fill(0);
+                                        welford_mean.fill(Color::default()); welford_m2.fill(Color::default());
+                                        converged.fill(false); samples = 0;
+                                    }
+                                }
+                                VirtualKeyCode::C => {
+                                    cam_state = CameraState::from_params(&scenes[scene_idx].cam_init);
+                                    cam_dirty = true;
+                                    pending_autofocus = true;
                                 }
                                 VirtualKeyCode::N => {
                                     denoise = !denoise;
@@ -927,9 +978,14 @@ fn main() {
                     } else {
                         format!("{samples} spp")
                     };
+                    let sun_hint = if let Background::Physical { sun_dir } = scene.background {
+                        format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
+                    } else { String::new() };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  [1/2/3] scene  {}  [P] Save  [ ] aperture {:.2}{}{}{}",
-                        scene.name, spp_label, cam_hint, cam_state.aperture, denoise_hint, adaptive_hint, motion_hint,
+                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}{}",
+                        scene.name, spp_label, cam_hint,
+                        cam_state.aperture, cam_state.vfov, exposure,
+                        sun_hint, denoise_hint, adaptive_hint, motion_hint,
                     ));
                     last_title_update = Instant::now();
                 }
@@ -987,10 +1043,10 @@ fn main() {
             Event::RedrawRequested(_) => {
                 let mut buffer = surface.buffer_mut().unwrap();
                 if denoise && samples > 0 {
-                    denoise_bilateral(&accumulator, &pixel_samples, &mut buffer, win_w as usize, win_h as usize);
+                    denoise_bilateral(&accumulator, &pixel_samples, &mut buffer, win_w as usize, win_h as usize, exposure);
                 } else {
                     for (i, &color) in accumulator.iter().enumerate() {
-                        buffer[i] = to_rgb_u32(color, 1.0 / pixel_samples[i].max(1) as f32);
+                        buffer[i] = to_rgb_u32(color, exposure / pixel_samples[i].max(1) as f32);
                     }
                 }
                 buffer.present().unwrap();
