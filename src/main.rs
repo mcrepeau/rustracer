@@ -140,14 +140,23 @@ impl CameraState {
     fn forward_horiz(&self) -> Vec3 { Vec3::new( self.yaw.sin(), 0.0, -self.yaw.cos()) }
     fn right_horiz(&self)   -> Vec3 { Vec3::new( self.yaw.cos(), 0.0,  self.yaw.sin()) }
 
-    fn to_camera(&self, aspect: f32) -> Camera {
-        let fwd = Vec3::new(
+    fn fwd(&self) -> Vec3 {
+        Vec3::new(
             self.yaw.sin() * self.pitch.cos(),
             self.pitch.sin(),
             -self.yaw.cos() * self.pitch.cos(),
-        );
-        Camera::new(self.pos, self.pos + fwd, Vec3::new(0.0, 1.0, 0.0),
+        )
+    }
+
+    fn to_camera(&self, aspect: f32) -> Camera {
+        Camera::new(self.pos, self.pos + self.fwd(), Vec3::new(0.0, 1.0, 0.0),
                     self.vfov, aspect, self.aperture, self.focus_dist)
+    }
+
+    fn autofocus(&mut self, world: &dyn Hittable) {
+        if let Some(rec) = world.hit(&Ray::new(self.pos, self.fwd()), 0.001, f32::INFINITY) {
+            self.focus_dist = rec.t;
+        }
     }
 }
 
@@ -198,7 +207,7 @@ fn build_random_scene() -> SceneData {
         name:       "Random Spheres",
         cam_init:   SceneCameraParams {
             pos: Point3::new(13.0, 2.0, 3.0), lookat: Point3::new(0.0, 0.0, 0.0),
-            vfov: 20.0, aperture: 0.0, focus_dist: 10.0, move_speed: 0.3,
+            vfov: 20.0, aperture: 0.1, focus_dist: 10.0, move_speed: 0.3,
         },
     }
 }
@@ -325,11 +334,11 @@ fn to_rgb_u32(c: Color, scale: f32) -> u32 {
     r << 16 | g << 8 | b
 }
 
-fn save_png(accumulator: &[Color], samples: u32, scene_name: &str) {
+fn save_png(accumulator: &[Color], samples: u32, scene_name: &str, width: u32, height: u32) {
     if samples == 0 { return; }
     let scale = 1.0 / samples as f32;
-    let img = ImageBuffer::from_fn(WIDTH, HEIGHT, |x, y| {
-        let c = accumulator[(y * WIDTH + x) as usize];
+    let img = ImageBuffer::from_fn(width, height, |x, y| {
+        let c = accumulator[(y * width + x) as usize];
         let r = aces(c.x * scale).sqrt().clamp(0.0, 0.999);
         let g = aces(c.y * scale).sqrt().clamp(0.0, 0.999);
         let b = aces(c.z * scale).sqrt().clamp(0.0, 0.999);
@@ -354,7 +363,7 @@ fn main() {
     println!("Scene 3: Mesh");
     let s3 = build_mesh_scene();
     let scenes = [s1, s2, s3];
-    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [Esc] quit");
+    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [[]]/[]] aperture  [Esc] quit");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -367,12 +376,15 @@ fn main() {
     let mut surface = unsafe { Surface::new(&_context, &window) }.unwrap();
     surface.resize(NonZeroU32::new(WIDTH).unwrap(), NonZeroU32::new(HEIGHT).unwrap()).unwrap();
 
+    let mut win_w       = WIDTH;
+    let mut win_h       = HEIGHT;
     let mut scene_idx   = 0usize;
     let mut cam_state   = CameraState::from_params(&scenes[scene_idx].cam_init);
-    let mut camera      = cam_state.to_camera(WIDTH as f32 / HEIGHT as f32);
+    cam_state.autofocus(scenes[scene_idx].world.as_ref());
+    let mut camera      = cam_state.to_camera(win_w as f32 / win_h as f32);
     let mut free_cam    = false;
-    let mut accumulator = vec![Color::default(); (WIDTH * HEIGHT) as usize];
-    let mut scratch     = vec![Color::default(); (WIDTH * HEIGHT) as usize];
+    let mut accumulator = vec![Color::default(); (win_w * win_h) as usize];
+    let mut scratch     = vec![Color::default(); (win_w * win_h) as usize];
     let mut samples     = 0u32;
     let mut pressed     = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut cam_dirty   = false;
@@ -383,6 +395,21 @@ fn main() {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+
+                WindowEvent::Resized(size) => {
+                    let new_w = size.width.max(1);
+                    let new_h = size.height.max(1);
+                    if new_w != win_w || new_h != win_h {
+                        win_w = new_w;
+                        win_h = new_h;
+                        surface.resize(NonZeroU32::new(win_w).unwrap(), NonZeroU32::new(win_h).unwrap()).unwrap();
+                        accumulator.resize((win_w * win_h) as usize, Color::default());
+                        accumulator.fill(Color::default());
+                        scratch.resize((win_w * win_h) as usize, Color::default());
+                        samples = 0;
+                        cam_dirty = true;
+                    }
+                }
 
                 WindowEvent::KeyboardInput {
                     input: KeyboardInput { state, virtual_keycode: Some(key), .. }, ..
@@ -421,7 +448,15 @@ fn main() {
                                     samples = 0;
                                     cam_dirty = true;
                                 }
-                                VirtualKeyCode::P => save_png(&accumulator, samples, scenes[scene_idx].name),
+                                VirtualKeyCode::P => save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h),
+                                VirtualKeyCode::LBracket => {
+                                    cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
+                                    cam_dirty = true;
+                                }
+                                VirtualKeyCode::RBracket => {
+                                    cam_state.aperture += 0.025;
+                                    cam_dirty = true;
+                                }
                                 _ => {}
                             }
                         }
@@ -454,7 +489,8 @@ fn main() {
                 }
 
                 if cam_dirty {
-                    camera = cam_state.to_camera(WIDTH as f32 / HEIGHT as f32);
+                    cam_state.autofocus(scenes[scene_idx].world.as_ref());
+                    camera = cam_state.to_camera(win_w as f32 / win_h as f32);
                     accumulator.fill(Color::default());
                     samples = 0;
                     cam_dirty = false;
@@ -473,11 +509,11 @@ fn main() {
                         );
                         for (li, out) in chunk.iter_mut().enumerate() {
                             let i     = ci * 64 + li;
-                            let px    = (i % WIDTH as usize) as u32;
-                            let py    = (i / WIDTH as usize) as u32;
-                            let ray_y = HEIGHT - 1 - py;
-                            let u = (px as f32 + rng.gen::<f32>()) / (WIDTH  - 1) as f32;
-                            let v = (ray_y as f32 + rng.gen::<f32>()) / (HEIGHT - 1) as f32;
+                            let px    = (i % win_w as usize) as u32;
+                            let py    = (i / win_w as usize) as u32;
+                            let ray_y = win_h - 1 - py;
+                            let u = (px as f32 + rng.gen::<f32>()) / (win_w - 1) as f32;
+                            let v = (ray_y as f32 + rng.gen::<f32>()) / (win_h - 1) as f32;
                             *out = ray_color(&camera.get_ray(u, v, &mut rng), world_ref.as_ref(), bg, lights, &mut rng);
                         }
                     });
@@ -487,8 +523,8 @@ fn main() {
 
                     let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {} spp  |  [1] Random [2] Cornell [3] Mesh  {}  [P] Save",
-                        scene.name, samples, cam_hint,
+                        "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [[]]/[]] f/{:.2}",
+                        scene.name, samples, cam_hint, cam_state.aperture,
                     ));
 
                     window.request_redraw();
