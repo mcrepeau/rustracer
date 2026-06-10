@@ -586,6 +586,147 @@ fn build_mesh_scene() -> SceneData {
     }
 }
 
+// ── Labyrinth ────────────────────────────────────────────────────────────────
+
+fn generate_maze(width: usize, height: usize, rng: &mut impl Rng) -> (Vec<bool>, Vec<bool>) {
+    // h_walls[r*width+c] = wall between row r and r+1 at col c
+    // v_walls[r*(width-1)+c] = wall between col c and c+1 at row r
+    let mut h_walls = vec![true; (height - 1) * width];
+    let mut v_walls = vec![true; height * (width - 1)];
+    let mut visited = vec![false; width * height];
+    let mut stack   = vec![(0usize, 0usize)];
+    visited[0] = true;
+
+    while let Some(&(r, c)) = stack.last() {
+        let mut nbrs: Vec<(usize, usize, u8)> = Vec::new();
+        if r > 0          && !visited[(r-1)*width + c]  { nbrs.push((r-1, c,   0)); }
+        if c + 1 < width  && !visited[r*width + c+1]    { nbrs.push((r,   c+1, 1)); }
+        if r + 1 < height && !visited[(r+1)*width + c]  { nbrs.push((r+1, c,   2)); }
+        if c > 0          && !visited[r*width + c-1]    { nbrs.push((r,   c-1, 3)); }
+        if nbrs.is_empty() {
+            stack.pop();
+        } else {
+            let (nr, nc, dir) = nbrs[rng.gen_range(0..nbrs.len())];
+            visited[nr * width + nc] = true;
+            match dir {
+                0 => h_walls[(r-1) * width + c]     = false,
+                1 => v_walls[r * (width-1) + c]     = false,
+                2 => h_walls[r * width + c]          = false,
+                _ => v_walls[r * (width-1) + c - 1] = false,
+            }
+            stack.push((nr, nc));
+        }
+    }
+    (h_walls, v_walls)
+}
+
+fn build_labyrinth_scene() -> SceneData {
+    const W: usize = 12;
+    const H: usize = 12;
+    const CELL:   f32 = 3.5;            // corridor width
+    const WALL_T: f32 = 0.5;            // wall thickness
+    const WALL_H: f32 = 3.5;            // wall height
+    const STEP:   f32 = CELL + WALL_T;  // 4.0 – pitch between cell origins
+
+    let mut rng = rand::thread_rng();
+    let (h_walls, v_walls) = generate_maze(W, H, &mut rng);
+
+    let stone: Arc<dyn hittable::Material> = Arc::new(Lambertian {
+        texture: Color::new(0.55, 0.52, 0.47).into(),
+    });
+    let floor_mat: Arc<dyn hittable::Material> = Arc::new(Lambertian {
+        texture: Texture::Checker {
+            scale: 0.25,
+            even:  Color::new(0.35, 0.33, 0.30),
+            odd:   Color::new(0.55, 0.53, 0.49),
+        },
+    });
+
+    let total_w = W as f32 * STEP + WALL_T;
+    let total_d = H as f32 * STEP + WALL_T;
+
+    let mut list = HittableList::new();
+
+    // Floor
+    list.add(Quad::new(
+        Point3::new(0.0, 0.0, total_d),
+        Vec3::new(total_w, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -total_d),
+        Arc::clone(&floor_mat),
+    ));
+
+    let add_wall = |list: &mut HittableList, x0: f32, z0: f32, x1: f32, z1: f32| {
+        list.add(make_box(
+            Point3::new(x0, 0.0, z0),
+            Point3::new(x1, WALL_H, z1),
+            Arc::clone(&stone),
+        ));
+    };
+
+    // Outer boundary (four perimeter walls; corners intentionally overlap)
+    add_wall(&mut list, 0.0,            0.0,            total_w, WALL_T);
+    add_wall(&mut list, 0.0,            total_d-WALL_T, total_w, total_d);
+    add_wall(&mut list, 0.0,            0.0,            WALL_T,  total_d);
+    add_wall(&mut list, total_w-WALL_T, 0.0,            total_w, total_d);
+
+    // Interior vertical walls (between col c and c+1 at row r)
+    for r in 0..H {
+        for c in 0..W-1 {
+            if v_walls[r * (W-1) + c] {
+                let x0 = (c + 1) as f32 * STEP;
+                let z0 = r as f32 * STEP + WALL_T;
+                add_wall(&mut list, x0, z0, x0 + WALL_T, z0 + CELL);
+            }
+        }
+    }
+
+    // Interior horizontal walls (between row r and r+1 at col c)
+    for r in 0..H-1 {
+        for c in 0..W {
+            if h_walls[r * W + c] {
+                let x0 = c as f32 * STEP + WALL_T;
+                let z0 = (r + 1) as f32 * STEP;
+                add_wall(&mut list, x0, z0, x0 + CELL, z0 + WALL_T);
+            }
+        }
+    }
+
+    // Corner posts at every interior intersection (always solid)
+    for r in 0..H-1 {
+        for c in 0..W-1 {
+            let x0 = (c + 1) as f32 * STEP;
+            let z0 = (r + 1) as f32 * STEP;
+            add_wall(&mut list, x0, z0, x0 + WALL_T, z0 + WALL_T);
+        }
+    }
+
+    // Start inside cell (0,0) at eye height, looking south into the maze
+    let cx = WALL_T + CELL * 0.5;
+    let cz = WALL_T + CELL * 0.5;
+
+    SceneData {
+        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
+        lights:     vec![],
+        background: Background::Physical { sun_dir: Vec3::new(0.4, 0.9, 0.2).unit() },
+        name:       "Labyrinth",
+        cam_init:   SceneCameraParams {
+            pos:        Point3::new(cx, 1.7, cz),
+            lookat:     Point3::new(cx, 1.7, cz + 2.0),
+            vfov:       80.0,
+            aperture:   0.0,
+            focus_dist: 10.0,
+            move_speed: 0.12,
+        },
+        static_objects: vec![],
+        dynamic:        vec![],
+        bounds:         None,
+        colliders:      vec![],
+        gravity:        0.0,
+        settled:        true,
+        paused:         false,
+    }
+}
+
 /// Physically-inspired sky model: blue zenith shading to warm horizon, soft Mie glow.
 /// No explicit sun disc — the sun contributes through the bright Mie halo instead,
 /// avoiding the need for sphere-light NEE sampling.
@@ -655,8 +796,10 @@ fn main() {
     let s2 = build_cornell_box();
     println!("Scene 3: Mesh");
     let s3 = build_mesh_scene();
-    let mut scenes = [s1, s2, s3];
-    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
+    println!("Scene 4: Labyrinth");
+    let s4 = build_labyrinth_scene();
+    let mut scenes = [s1, s2, s3, s4];
+    println!("Ready.  [1/2/3/4] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
     println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
     println!("        [T] adaptive  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
 
@@ -752,8 +895,8 @@ fn main() {
                                         window.set_cursor_visible(true);
                                     }
                                 }
-                                VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 => {
-                                    let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, _ => 0 };
+                                VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 | VirtualKeyCode::Key4 => {
+                                    let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, VirtualKeyCode::Key4 => 3, _ => 0 };
                                     scene_idx = idx;
                                     cam_state = CameraState::from_params(&scenes[idx].cam_init);
                                     accumulator.fill(Color::default()); pixel_samples.fill(0);
