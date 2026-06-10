@@ -630,65 +630,15 @@ fn to_rgb_u32(c: Color, scale: f32) -> u32 {
     (r as u32) << 16 | (g as u32) << 8 | (b as u32)
 }
 
-fn denoise_bilateral(src: &[Color], pixel_samples: &[u32], dst: &mut [u32], w: usize, h: usize, exposure: f32) {
-
-    // Precomputed 5×5 Gaussian spatial weights: sigma_s = 2  →  2σ² = 8
-    let sp: [f32; 25] = {
-        let mut a = [0.0f32; 25];
-        for dy in -2i32..=2 {
-            for dx in -2i32..=2 {
-                a[((dy + 2) * 5 + (dx + 2)) as usize] =
-                    (-(dx * dx + dy * dy) as f32 / 8.0).exp();
-            }
-        }
-        a
-    };
-    // Color sigma: 2σ_c² = 0.32  (sigma_c ≈ 0.4 in normalised linear space)
-    let inv_2sc2 = 1.0 / 0.32f32;
-
-    dst.par_iter_mut().enumerate().for_each(|(idx, out)| {
-        let px     = (idx % w) as i32;
-        let py     = (idx / w) as i32;
-        let center = src[idx] / pixel_samples[idx].max(1) as f32;
-
-        let mut acc_col = Color::default();
-        let mut acc_w   = 0.0f32;
-
-        for dy in -2i32..=2 {
-            for dx in -2i32..=2 {
-                let nx  = (px + dx).clamp(0, w as i32 - 1) as usize;
-                let ny  = (py + dy).clamp(0, h as i32 - 1) as usize;
-                let nbr  = src[ny * w + nx] / pixel_samples[ny * w + nx].max(1) as f32;
-                let diff = nbr - center;
-                let wt   = sp[((dy + 2) * 5 + (dx + 2)) as usize]
-                         * (-diff.length_squared() * inv_2sc2).exp();
-                acc_col += nbr * wt;
-                acc_w   += wt;
-            }
-        }
-
-        *out = to_rgb_u32(acc_col / acc_w, exposure);
-    });
-}
-
-fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_name: &str, width: u32, height: u32, use_denoise: bool, exposure: f32) {
+fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_name: &str, width: u32, height: u32, exposure: f32) {
     if samples == 0 { return; }
     let slug = scene_name.to_lowercase().replace(' ', "_");
     let path = format!("render_{}_{:04}spp.png", slug, samples);
-    let img = if use_denoise {
-        let mut buf = vec![0u32; (width * height) as usize];
-        denoise_bilateral(accumulator, pixel_samples, &mut buf, width as usize, height as usize, exposure);
-        ImageBuffer::from_fn(width, height, |x, y| {
-            let p = buf[(y * width + x) as usize];
-            Rgb([((p >> 16) & 0xFF) as u8, ((p >> 8) & 0xFF) as u8, (p & 0xFF) as u8])
-        })
-    } else {
-        ImageBuffer::from_fn(width, height, |x, y| {
-            let i = (y * width + x) as usize;
-            let [r, g, b] = tone_map(accumulator[i], exposure / pixel_samples[i].max(1) as f32);
-            Rgb([r, g, b])
-        })
-    };
+    let img = ImageBuffer::from_fn(width, height, |x, y| {
+        let i = (y * width + x) as usize;
+        let [r, g, b] = tone_map(accumulator[i], exposure / pixel_samples[i].max(1) as f32);
+        Rgb([r, g, b])
+    });
     match img.save(&path) {
         Ok(_)  => println!("Saved {path}"),
         Err(e) => eprintln!("Save failed: {e}"),
@@ -708,7 +658,7 @@ fn main() {
     let mut scenes = [s1, s2, s3];
     println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
     println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
-    println!("        [N] denoise  [T] adaptive  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
+    println!("        [T] adaptive  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -728,7 +678,6 @@ fn main() {
     cam_state.autofocus(scenes[scene_idx].world.as_ref());
     let mut camera      = cam_state.to_camera(win_w as f32 / win_h as f32);
     let mut free_cam      = false;
-    let mut denoise       = false;
     let mut adaptive      = false;
     let mut accumulator   = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
@@ -813,7 +762,7 @@ fn main() {
                                     cam_dirty = true;
                                     pending_autofocus = true;
                                 }
-                                VirtualKeyCode::P => save_png(&accumulator, &pixel_samples, samples, scenes[scene_idx].name, win_w, win_h, denoise, exposure),
+                                VirtualKeyCode::P => save_png(&accumulator, &pixel_samples, samples, scenes[scene_idx].name, win_w, win_h, exposure),
                                 VirtualKeyCode::LBracket => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
                                     cam_dirty = true;
@@ -869,10 +818,6 @@ fn main() {
                                     cam_state = CameraState::from_params(&scenes[scene_idx].cam_init);
                                     cam_dirty = true;
                                     pending_autofocus = true;
-                                }
-                                VirtualKeyCode::N => {
-                                    denoise = !denoise;
-                                    window.request_redraw();
                                 }
                                 VirtualKeyCode::T => {
                                     adaptive = !adaptive;
@@ -964,7 +909,6 @@ fn main() {
                     } else if !scene.dynamic.is_empty() {
                         if scene.paused { "  PAUSED — [Enter] resume" } else { "" }
                     } else { "" };
-                    let denoise_hint = if denoise { "  DENOISED [N] off" } else { "  [N] denoise" };
                     let adaptive_hint = if adaptive {
                         let pct = converged.iter().filter(|&&c| c).count() * 100
                                 / converged.len().max(1);
@@ -982,10 +926,10 @@ fn main() {
                         format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}{}",
+                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
                         scene.name, spp_label, cam_hint,
                         cam_state.aperture, cam_state.vfov, exposure,
-                        sun_hint, denoise_hint, adaptive_hint, motion_hint,
+                        sun_hint, adaptive_hint, motion_hint,
                     ));
                     last_title_update = Instant::now();
                 }
@@ -1042,12 +986,8 @@ fn main() {
 
             Event::RedrawRequested(_) => {
                 let mut buffer = surface.buffer_mut().unwrap();
-                if denoise && samples > 0 {
-                    denoise_bilateral(&accumulator, &pixel_samples, &mut buffer, win_w as usize, win_h as usize, exposure);
-                } else {
-                    for (i, &color) in accumulator.iter().enumerate() {
-                        buffer[i] = to_rgb_u32(color, exposure / pixel_samples[i].max(1) as f32);
-                    }
+                for (i, &color) in accumulator.iter().enumerate() {
+                    buffer[i] = to_rgb_u32(color, exposure / pixel_samples[i].max(1) as f32);
                 }
                 buffer.present().unwrap();
             }
