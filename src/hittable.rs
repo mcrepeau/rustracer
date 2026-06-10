@@ -4,11 +4,17 @@ use crate::aabb::Aabb;
 use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 
+pub struct ScatterRecord {
+    pub attenuation: Color,
+    pub ray:         Ray,
+    /// Some(albedo) → diffuse surface; use this albedo for NEE direct-light sampling.
+    /// None → specular; skip direct sampling.
+    pub albedo: Option<Color>,
+}
+
 pub trait Material: Send + Sync {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<(Color, Ray)>;
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord>;
     fn emitted(&self) -> Color { Color::default() }
-    /// Returns the diffuse albedo at (u, v, p) for NEE. None means specular — skip direct sampling.
-    fn albedo_at(&self, _u: f32, _v: f32, _p: Point3) -> Option<Color> { None }
 }
 
 pub struct HitRecord<'a> {

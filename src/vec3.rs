@@ -86,6 +86,16 @@ impl SubAssign for Vec3 {
     fn sub_assign(&mut self, rhs: Self) { self.x -= rhs.x; self.y -= rhs.y; self.z -= rhs.z; }
 }
 
+impl MulAssign for Vec3 {
+    fn mul_assign(&mut self, rhs: Self) { self.x *= rhs.x; self.y *= rhs.y; self.z *= rhs.z; }
+}
+impl MulAssign<f32> for Vec3 {
+    fn mul_assign(&mut self, t: f32) { self.x *= t; self.y *= t; self.z *= t; }
+}
+impl DivAssign<f32> for Vec3 {
+    fn div_assign(&mut self, t: f32) { let inv = 1.0 / t; self.x *= inv; self.y *= inv; self.z *= inv; }
+}
+
 impl std::ops::Index<usize> for Vec3 {
     type Output = f32;
     #[inline]

@@ -70,11 +70,10 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, lights: &
                     color += throughput * rec.mat.emitted();
                 }
 
-                let Some((mut attenuation, scattered)) = rec.mat.scatter(&ray, &rec, rng) else {
-                    break;
-                };
+                let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
+                let mut attenuation = sr.attenuation;
 
-                if let Some(albedo) = rec.mat.albedo_at(rec.u, rec.v, rec.p) {
+                if let Some(albedo) = sr.albedo {
                     // Diffuse surface: sample each light explicitly.
                     for light in lights {
                         color += throughput
@@ -88,10 +87,10 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Option<Color>, lights: &
                 if depth >= 2 {
                     let survive = attenuation.x.max(attenuation.y).max(attenuation.z);
                     if survive <= 0.0 || rng.gen::<f32>() >= survive { break; }
-                    attenuation = attenuation / survive;
+                    attenuation /= survive;
                 }
-                throughput = throughput * attenuation;
-                ray = scattered;
+                throughput *= attenuation;
+                ray = sr.ray;
             }
         }
     }
@@ -387,6 +386,8 @@ fn main() {
     let mut accumulator = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch     = vec![Color::default(); (win_w * win_h) as usize];
     let mut samples     = 0u32;
+    let num_threads           = rayon::current_num_threads();
+    let mut chunk_size        = ((win_w * win_h) as usize / (num_threads * 4)).max(1);
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut cam_dirty         = false;
     let mut pending_autofocus = false;
@@ -408,6 +409,8 @@ fn main() {
                         accumulator.resize((win_w * win_h) as usize, Color::default());
                         accumulator.fill(Color::default());
                         scratch.resize((win_w * win_h) as usize, Color::default());
+                        scratch.fill(Color::default());
+                        chunk_size = ((win_w * win_h) as usize / (num_threads * 4)).max(1);
                         samples = 0;
                         cam_dirty = true;
                     }
@@ -449,6 +452,7 @@ fn main() {
                                     accumulator.fill(Color::default());
                                     samples = 0;
                                     cam_dirty = true;
+                                    pending_autofocus = true;
                                 }
                                 VirtualKeyCode::P => save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h),
                                 VirtualKeyCode::LBracket => {
@@ -474,6 +478,7 @@ fn main() {
                     cam_state.pitch  = (cam_state.pitch - dy as f32 * MOUSE_SENS)
                         .clamp(-89f32.to_radians(), 89f32.to_radians());
                     cam_dirty = true;
+                    pending_autofocus = true;
                 }
             }
 
@@ -482,12 +487,14 @@ fn main() {
                     let spd = cam_state.move_speed;
                     let fwd = cam_state.forward_horiz();
                     let rgt = cam_state.right_horiz();
-                    if pressed.contains(&VirtualKeyCode::W)      { cam_state.pos += fwd * spd; cam_dirty = true; }
-                    if pressed.contains(&VirtualKeyCode::S)      { cam_state.pos -= fwd * spd; cam_dirty = true; }
-                    if pressed.contains(&VirtualKeyCode::A)      { cam_state.pos -= rgt * spd; cam_dirty = true; }
-                    if pressed.contains(&VirtualKeyCode::D)      { cam_state.pos += rgt * spd; cam_dirty = true; }
-                    if pressed.contains(&VirtualKeyCode::Space)  { cam_state.pos.y += spd;     cam_dirty = true; }
-                    if pressed.contains(&VirtualKeyCode::LShift) { cam_state.pos.y -= spd;     cam_dirty = true; }
+                    let mut moved = false;
+                    if pressed.contains(&VirtualKeyCode::W)      { cam_state.pos += fwd * spd; moved = true; }
+                    if pressed.contains(&VirtualKeyCode::S)      { cam_state.pos -= fwd * spd; moved = true; }
+                    if pressed.contains(&VirtualKeyCode::A)      { cam_state.pos -= rgt * spd; moved = true; }
+                    if pressed.contains(&VirtualKeyCode::D)      { cam_state.pos += rgt * spd; moved = true; }
+                    if pressed.contains(&VirtualKeyCode::Space)  { cam_state.pos.y += spd;     moved = true; }
+                    if pressed.contains(&VirtualKeyCode::LShift) { cam_state.pos.y -= spd;     moved = true; }
+                    if moved { cam_dirty = true; pending_autofocus = true; }
                 }
 
                 if cam_dirty {
@@ -495,7 +502,6 @@ fn main() {
                     accumulator.fill(Color::default());
                     samples = 0;
                     cam_dirty = false;
-                    pending_autofocus = true;
                 } else if pending_autofocus {
                     cam_state.autofocus(scenes[scene_idx].world.as_ref());
                     camera = cam_state.to_camera(win_w as f32 / win_h as f32);
@@ -510,7 +516,6 @@ fn main() {
                     let bg        = scene.background;
                     let lights    = scene.lights.as_slice();
 
-                    let chunk_size = ((win_w * win_h) as usize / (rayon::current_num_threads() * 4)).max(1);
                     scratch.par_chunks_mut(chunk_size).enumerate().for_each(|(ci, chunk)| {
                         let mut rng = SmallRng::seed_from_u64(
                             (ci as u64).wrapping_mul(6364136223846793005)
@@ -530,11 +535,13 @@ fn main() {
                     for (acc, s) in accumulator.iter_mut().zip(scratch.iter()) { *acc += *s; }
                     samples += 1;
 
-                    let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
-                    window.set_title(&format!(
-                        "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [[]]/[]] f/{:.2}",
-                        scene.name, samples, cam_hint, cam_state.aperture,
-                    ));
+                    if samples == 1 || samples % 8 == 0 {
+                        let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
+                        window.set_title(&format!(
+                            "Ray Tracer — {} — {} spp  |  [1/2/3] scene  {}  [P] Save  [[]]/[]] f/{:.2}",
+                            scene.name, samples, cam_hint, cam_state.aperture,
+                        ));
+                    }
 
                     window.request_redraw();
                 } else {
