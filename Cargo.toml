@@ -11,3 +11,12 @@ rand = { version = "0.8", features = ["small_rng"] }
 image = "0.25"
 tobj  = "4"
 
+[profile.release]
+opt-level       = 3
+lto             = "fat"
+codegen-units   = 1
+panic           = "abort"
+
+[profile.dev]
+opt-level       = 1
+
