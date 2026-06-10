@@ -52,6 +52,7 @@ const TITLE_INTERVAL: Duration  = Duration::from_millis(200);
 const PHYSICS_DT:     Duration  = Duration::from_millis(16);  // ~60 Hz fixed physics step
 const ADAPTIVE_MIN_SAMPLES: u32 = 16;
 const ADAPTIVE_THRESHOLD:   f32 = 0.01;
+const CAM_RADIUS: f32 = 0.25;
 
 fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &[Light], rng: &mut impl Rng) -> Color {
     let mut throughput    = Color::new(1.0, 1.0, 1.0);
@@ -231,6 +232,24 @@ fn bounce_sphere_off_aabb(center: &mut Point3, velocity: &mut Vec3, radius: f32,
     } else {
         if dz_lo < dz_hi { center.z = lo.z; velocity.z = -velocity.z.abs() * restitution; }
         else              { center.z = hi.z; velocity.z =  velocity.z.abs() * restitution; }
+    }
+}
+
+/// Push the camera point out of an AABB in XZ only (walls span full height).
+/// Skips if camera is above or below the wall's Y extent.
+fn resolve_camera_aabb(pos: &mut Point3, radius: f32, bbox: &Aabb) {
+    if pos.y - radius >= bbox.max.y || pos.y + radius <= bbox.min.y { return; }
+    let x_lo = bbox.min.x - radius;  let x_hi = bbox.max.x + radius;
+    let z_lo = bbox.min.z - radius;  let z_hi = bbox.max.z + radius;
+    if pos.x <= x_lo || pos.x >= x_hi || pos.z <= z_lo || pos.z >= z_hi { return; }
+    let dx_lo = pos.x - x_lo;  let dx_hi = x_hi - pos.x;
+    let dz_lo = pos.z - z_lo;  let dz_hi = z_hi - pos.z;
+    let min_x = dx_lo.min(dx_hi);
+    let min_z = dz_lo.min(dz_hi);
+    if min_x <= min_z {
+        pos.x = if dx_lo < dx_hi { x_lo } else { x_hi };
+    } else {
+        pos.z = if dz_lo < dz_hi { z_lo } else { z_hi };
     }
 }
 
@@ -641,11 +660,23 @@ fn build_labyrinth_scene() -> SceneData {
             odd:   Color::new(0.55, 0.53, 0.49),
         },
     });
+    // Entry marker (green) in cell (0,0), exit marker (red) in cell (H-1, W-1)
+    let entry_mat: Arc<dyn hittable::Material> = Arc::new(Lambertian {
+        texture: Color::new(0.15, 0.75, 0.15).into(),
+    });
+    let exit_mat: Arc<dyn hittable::Material> = Arc::new(Lambertian {
+        texture: Color::new(0.85, 0.15, 0.15).into(),
+    });
 
     let total_w = W as f32 * STEP + WALL_T;
     let total_d = H as f32 * STEP + WALL_T;
 
-    let mut list = HittableList::new();
+    // Entry gap: North wall (z=0) has opening at x∈[WALL_T, STEP]
+    // Exit  gap: South wall (z=total_d-WALL_T) has opening at x∈[exit_x0, total_w-WALL_T]
+    let exit_x0 = (W - 1) as f32 * STEP + WALL_T;
+
+    let mut list      = HittableList::new();
+    let mut colliders = Vec::<Aabb>::new();
 
     // Floor
     list.add(Quad::new(
@@ -655,19 +686,40 @@ fn build_labyrinth_scene() -> SceneData {
         Arc::clone(&floor_mat),
     ));
 
-    let add_wall = |list: &mut HittableList, x0: f32, z0: f32, x1: f32, z1: f32| {
+    // Entry/exit floor markers (slightly above floor to avoid z-fighting)
+    list.add(Quad::new(
+        Point3::new(WALL_T, 0.01, WALL_T + CELL),
+        Vec3::new(CELL, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -CELL),
+        Arc::clone(&entry_mat),
+    ));
+    let exit_cz0 = (H - 1) as f32 * STEP + WALL_T;
+    list.add(Quad::new(
+        Point3::new(exit_x0, 0.01, exit_cz0 + CELL),
+        Vec3::new(CELL, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -CELL),
+        Arc::clone(&exit_mat),
+    ));
+
+    let add_wall = |list: &mut HittableList, cols: &mut Vec<Aabb>, x0: f32, z0: f32, x1: f32, z1: f32| {
         list.add(make_box(
             Point3::new(x0, 0.0, z0),
             Point3::new(x1, WALL_H, z1),
             Arc::clone(&stone),
         ));
+        cols.push(Aabb::new(Point3::new(x0, 0.0, z0), Point3::new(x1, WALL_H, z1)));
     };
 
-    // Outer boundary (four perimeter walls; corners intentionally overlap)
-    add_wall(&mut list, 0.0,            0.0,            total_w, WALL_T);
-    add_wall(&mut list, 0.0,            total_d-WALL_T, total_w, total_d);
-    add_wall(&mut list, 0.0,            0.0,            WALL_T,  total_d);
-    add_wall(&mut list, total_w-WALL_T, 0.0,            total_w, total_d);
+    // Outer boundary — North wall split for entry gap, South wall split for exit gap
+    // North (z=0): West segment [0, WALL_T] then East segment [STEP, total_w]
+    add_wall(&mut list, &mut colliders, 0.0,   0.0, WALL_T, WALL_T);
+    add_wall(&mut list, &mut colliders, STEP,  0.0, total_w, WALL_T);
+    // South (z=total_d-WALL_T): West segment [0, exit_x0] then East segment [total_w-WALL_T, total_w]
+    add_wall(&mut list, &mut colliders, 0.0,            total_d-WALL_T, exit_x0,         total_d);
+    add_wall(&mut list, &mut colliders, total_w-WALL_T, total_d-WALL_T, total_w,          total_d);
+    // West and East walls span full depth
+    add_wall(&mut list, &mut colliders, 0.0,            0.0,            WALL_T,           total_d);
+    add_wall(&mut list, &mut colliders, total_w-WALL_T, 0.0,            total_w,          total_d);
 
     // Interior vertical walls (between col c and c+1 at row r)
     for r in 0..H {
@@ -675,7 +727,7 @@ fn build_labyrinth_scene() -> SceneData {
             if v_walls[r * (W-1) + c] {
                 let x0 = (c + 1) as f32 * STEP;
                 let z0 = r as f32 * STEP + WALL_T;
-                add_wall(&mut list, x0, z0, x0 + WALL_T, z0 + CELL);
+                add_wall(&mut list, &mut colliders, x0, z0, x0 + WALL_T, z0 + CELL);
             }
         }
     }
@@ -686,7 +738,7 @@ fn build_labyrinth_scene() -> SceneData {
             if h_walls[r * W + c] {
                 let x0 = c as f32 * STEP + WALL_T;
                 let z0 = (r + 1) as f32 * STEP;
-                add_wall(&mut list, x0, z0, x0 + CELL, z0 + WALL_T);
+                add_wall(&mut list, &mut colliders, x0, z0, x0 + CELL, z0 + WALL_T);
             }
         }
     }
@@ -696,7 +748,7 @@ fn build_labyrinth_scene() -> SceneData {
         for c in 0..W-1 {
             let x0 = (c + 1) as f32 * STEP;
             let z0 = (r + 1) as f32 * STEP;
-            add_wall(&mut list, x0, z0, x0 + WALL_T, z0 + WALL_T);
+            add_wall(&mut list, &mut colliders, x0, z0, x0 + WALL_T, z0 + WALL_T);
         }
     }
 
@@ -720,7 +772,7 @@ fn build_labyrinth_scene() -> SceneData {
         static_objects: vec![],
         dynamic:        vec![],
         bounds:         None,
-        colliders:      vec![],
+        colliders,
         gravity:        0.0,
         settled:        true,
         paused:         false,
@@ -1008,7 +1060,13 @@ fn main() {
                     if pressed.contains(&VirtualKeyCode::D)      { cam_state.pos += rgt * spd; moved = true; }
                     if pressed.contains(&VirtualKeyCode::Space)  { cam_state.pos.y += spd;     moved = true; }
                     if pressed.contains(&VirtualKeyCode::LShift) { cam_state.pos.y -= spd;     moved = true; }
-                    if moved { cam_dirty = true; pending_autofocus = true; }
+                    if moved {
+                        for bbox in &scenes[scene_idx].colliders {
+                            resolve_camera_aabb(&mut cam_state.pos, CAM_RADIUS, bbox);
+                        }
+                        cam_dirty = true;
+                        pending_autofocus = true;
+                    }
                 }
 
                 macro_rules! reset_accum {
