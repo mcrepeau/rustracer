@@ -163,10 +163,12 @@ impl CameraState {
 // ── Scenes ───────────────────────────────────────────────────────────────────
 
 struct DynamicSphere {
-    center:   Point3,
-    velocity: Vec3,   // world units per frame
-    radius:   f32,
-    mat:      Arc<dyn hittable::Material>,
+    center:      Point3,
+    velocity:    Vec3,
+    radius:      f32,
+    mat:         Arc<dyn hittable::Material>,
+    restitution: f32,
+    is_static:   bool,  // no gravity/movement; acts as infinite-mass wall in collisions
 }
 
 struct SceneData {
@@ -178,7 +180,9 @@ struct SceneData {
     static_objects: Vec<Arc<dyn Hittable>>,
     dynamic:        Vec<DynamicSphere>,
     bounds:         Option<Aabb>,
-    colliders:      Vec<Aabb>,  // internal objects dynamic spheres bounce off
+    colliders:      Vec<Aabb>,
+    gravity:        f32,
+    settled:        bool,
     paused:         bool,
 }
 
@@ -215,24 +219,103 @@ fn bounce_sphere_off_aabb(center: &mut Point3, velocity: &mut Vec3, radius: f32,
 impl SceneData {
     fn tick(&mut self) -> bool {
         if self.dynamic.is_empty() || self.paused { return false; }
-        if let Some(b) = self.bounds {
+        if self.settled { return false; }
+
+        // Gravity + air drag (skipped for Cornell-style constant-velocity scenes)
+        if self.gravity > 0.0 {
             for ds in &mut self.dynamic {
-                ds.center += ds.velocity;
-                let r = ds.radius;
-                if ds.center.x - r < b.min.x { ds.center.x = b.min.x + r; ds.velocity.x =  ds.velocity.x.abs(); }
-                if ds.center.x + r > b.max.x { ds.center.x = b.max.x - r; ds.velocity.x = -ds.velocity.x.abs(); }
-                if ds.center.y - r < b.min.y { ds.center.y = b.min.y + r; ds.velocity.y =  ds.velocity.y.abs(); }
-                if ds.center.y + r > b.max.y { ds.center.y = b.max.y - r; ds.velocity.y = -ds.velocity.y.abs(); }
-                if ds.center.z - r < b.min.z { ds.center.z = b.min.z + r; ds.velocity.z =  ds.velocity.z.abs(); }
-                if ds.center.z + r > b.max.z { ds.center.z = b.max.z - r; ds.velocity.z = -ds.velocity.z.abs(); }
+                if ds.is_static { continue; }
+                ds.velocity.y -= self.gravity;
+                ds.velocity   *= 0.995;
             }
         }
+
+        // Movement
         for ds in &mut self.dynamic {
+            if !ds.is_static { ds.center += ds.velocity; }
+        }
+
+        // Ground plane bounce (y = 0)
+        if self.gravity > 0.0 {
+            for ds in &mut self.dynamic {
+                if ds.is_static { continue; }
+                if ds.center.y - ds.radius < 0.0 {
+                    ds.center.y = ds.radius;
+                    if ds.velocity.y < 0.0 {
+                        ds.velocity.y = -ds.velocity.y * ds.restitution;
+                        ds.velocity.x *= 0.8;
+                        ds.velocity.z *= 0.8;
+                    }
+                    if ds.velocity.y < 0.05 { ds.velocity.y = 0.0; }
+                }
+            }
+        }
+
+        // Wall bounds (Cornell box)
+        if let Some(b) = self.bounds {
+            for ds in &mut self.dynamic {
+                if ds.is_static { continue; }
+                let r = ds.radius;
+                if ds.center.x - r < b.min.x { ds.center.x = b.min.x + r; ds.velocity.x =  ds.velocity.x.abs() * ds.restitution; }
+                if ds.center.x + r > b.max.x { ds.center.x = b.max.x - r; ds.velocity.x = -ds.velocity.x.abs() * ds.restitution; }
+                if ds.center.y - r < b.min.y { ds.center.y = b.min.y + r; ds.velocity.y =  ds.velocity.y.abs() * ds.restitution; }
+                if ds.center.y + r > b.max.y { ds.center.y = b.max.y - r; ds.velocity.y = -ds.velocity.y.abs() * ds.restitution; }
+                if ds.center.z - r < b.min.z { ds.center.z = b.min.z + r; ds.velocity.z =  ds.velocity.z.abs() * ds.restitution; }
+                if ds.center.z + r > b.max.z { ds.center.z = b.max.z - r; ds.velocity.z = -ds.velocity.z.abs() * ds.restitution; }
+            }
+        }
+
+        // AABB colliders (Cornell box internal boxes)
+        for ds in &mut self.dynamic {
+            if ds.is_static { continue; }
             for bbox in &self.colliders {
                 bounce_sphere_off_aabb(&mut ds.center, &mut ds.velocity, ds.radius, bbox);
             }
         }
+
+        // Sphere-sphere collisions; mass ∝ r³ so large spheres barely move when hit
+        let n = self.dynamic.len();
+        for i in 0..n {
+            let (left, right) = self.dynamic.split_at_mut(i + 1);
+            let a = &mut left[i];
+            for b in right.iter_mut() {
+                let diff     = a.center - b.center;
+                let dist_sq  = diff.length_squared();
+                let min_dist = a.radius + b.radius;
+                if dist_sq >= min_dist * min_dist { continue; }
+                let dist   = dist_sq.sqrt().max(1e-6);
+                let normal = diff / dist;
+                let rel_v  = (a.velocity - b.velocity).dot(normal);
+                if rel_v >= 0.0 { continue; } // already separating
+                let ma = a.radius * a.radius * a.radius;
+                let mb = b.radius * b.radius * b.radius;
+                let e  = (a.restitution + b.restitution) * 0.5;
+                if b.is_static {
+                    // Infinite-mass wall: only a bounces
+                    a.velocity -= (1.0 + e) * rel_v * normal;
+                    a.center    = b.center + normal * min_dist;
+                } else {
+                    let j  = -(1.0 + e) * rel_v / (1.0/ma + 1.0/mb);
+                    a.velocity += (j / ma) * normal;
+                    b.velocity -= (j / mb) * normal;
+                    let overlap = min_dist - dist;
+                    let ra = mb / (ma + mb);
+                    a.center += (overlap * ra) * normal;
+                    b.center -= (overlap * (1.0 - ra)) * normal;
+                }
+            }
+        }
+
         self.rebuild();
+
+        // Settled detection: stop rebuilding once all mobile spheres are at rest
+        if self.gravity > 0.0 {
+            let at_rest = self.dynamic.iter().all(|ds| {
+                ds.is_static || (ds.velocity.length_squared() < 1e-4 && ds.center.y - ds.radius < 0.05)
+            });
+            if at_rest { self.settled = true; }
+        }
+
         true
     }
 
@@ -249,34 +332,68 @@ impl SceneData {
 }
 
 fn build_random_scene() -> SceneData {
-    let mut list = HittableList::new();
-    let mut rng  = rand::thread_rng();
+    let mut rng = rand::thread_rng();
 
-    list.add(Sphere::new(Point3::new(0.0, -1000.0, 0.0), 1000.0,
+    // Ground sphere — never moves, stays in static_objects
+    let ground: Arc<dyn Hittable> = Arc::new(Sphere::new(
+        Point3::new(0.0, -1000.0, 0.0), 1000.0,
         Arc::new(Lambertian { texture: Texture::Checker {
             scale: 10.0,
             even:  Color::new(0.2, 0.3, 0.1),
             odd:   Color::new(0.9, 0.9, 0.9),
-        }})));
+        }}),
+    ));
+    let static_objects = vec![ground];
 
-    for a in -11..11 {
-        for b in -11..11 {
-            let center = Point3::new(a as f32 + 0.9*rng.gen::<f32>(), 0.2, b as f32 + 0.9*rng.gen::<f32>());
-            if (center - Point3::new(4.0, 0.2, 0.0)).length() <= 0.9 { continue; }
+    let mut dynamic: Vec<DynamicSphere> = Vec::new();
+
+    // Three feature spheres — is_static: true so they never move but small balls bounce off them
+    dynamic.push(DynamicSphere {
+        center: Point3::new( 0.0, 1.0, 0.0), velocity: Vec3::default(),
+        radius: 1.0, mat: Arc::new(Dielectric { ir: 1.5 }),
+        restitution: 0.65, is_static: true,
+    });
+    dynamic.push(DynamicSphere {
+        center: Point3::new(-4.0, 1.0, 0.0), velocity: Vec3::default(),
+        radius: 1.0, mat: Arc::new(Lambertian { texture: Color::new(0.4, 0.2, 0.1).into() }),
+        restitution: 0.35, is_static: true,
+    });
+    dynamic.push(DynamicSphere {
+        center: Point3::new( 4.0, 1.0, 0.0), velocity: Vec3::default(),
+        radius: 1.0, mat: Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 }),
+        restitution: 0.80, is_static: true,
+    });
+
+    // Small random balls — fall from random heights, different bounciness by material
+    for a in -11i32..11 {
+        for b in -11i32..11 {
+            let cx = a as f32 + 0.9 * rng.gen::<f32>();
+            let cz = b as f32 + 0.9 * rng.gen::<f32>();
+            if (Point3::new(cx, 0.2, cz) - Point3::new(4.0, 0.2, 0.0)).length() <= 0.9 { continue; }
             let choose: f32 = rng.gen();
-            let mat: Arc<dyn hittable::Material> = if choose < 0.8 {
-                Arc::new(Lambertian { texture: (Color::random(&mut rng) * Color::random(&mut rng)).into() })
+            let (mat, restitution): (Arc<dyn hittable::Material>, f32) = if choose < 0.8 {
+                (Arc::new(Lambertian { texture: (Color::random(&mut rng) * Color::random(&mut rng)).into() }), 0.35)
             } else if choose < 0.95 {
-                Arc::new(Metal { albedo: Color::random_range(0.5, 1.0, &mut rng), fuzz: rng.gen_range(0.0..0.5) })
+                let fuzz: f32 = rng.gen_range(0.0..0.5);
+                // smoother metal = more elastic
+                (Arc::new(Metal { albedo: Color::random_range(0.5, 1.0, &mut rng), fuzz }), 0.5 + (1.0 - fuzz) * 0.35)
             } else {
-                Arc::new(Dielectric { ir: 1.5 })
+                (Arc::new(Dielectric { ir: 1.5 }), 0.65)
             };
-            list.add(Sphere::new(center, 0.2, mat));
+            dynamic.push(DynamicSphere {
+                center:      Point3::new(cx, 0.2 + rng.gen_range(3.0..12.0), cz),
+                velocity:    Vec3::default(),
+                radius:      0.2,
+                mat,
+                restitution,
+                is_static:   false,
+            });
         }
     }
-    list.add(Sphere::new(Point3::new( 0.0, 1.0, 0.0), 1.0, Arc::new(Dielectric { ir: 1.5 })));
-    list.add(Sphere::new(Point3::new(-4.0, 1.0, 0.0), 1.0, Arc::new(Lambertian { texture: Color::new(0.4, 0.2, 0.1).into() })));
-    list.add(Sphere::new(Point3::new( 4.0, 1.0, 0.0), 1.0, Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 })));
+
+    let mut list = HittableList::new();
+    for obj in &static_objects { list.objects.push(Arc::clone(obj)); }
+    for ds in &dynamic { list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat))); }
 
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
@@ -287,11 +404,13 @@ fn build_random_scene() -> SceneData {
             pos: Point3::new(13.0, 2.0, 3.0), lookat: Point3::new(0.0, 0.0, 0.0),
             vfov: 20.0, aperture: 0.1, focus_dist: 10.0, move_speed: 0.3,
         },
-        static_objects: vec![],
-        dynamic:        vec![],
-        bounds:         None,
-        colliders:      vec![],
-        paused:         false,
+        static_objects,
+        dynamic,
+        bounds:   None,
+        colliders: vec![],
+        gravity:  0.03,
+        settled:  false,
+        paused:   false,
     }
 }
 
@@ -337,10 +456,12 @@ fn build_cornell_box() -> SceneData {
     let static_objects = list.objects.clone();
 
     let dynamic = vec![DynamicSphere {
-        center:   Point3::new(190.0, 100.0, 190.0),
-        velocity: Vec3::new(3.0, 5.0, 2.0),
-        radius:   80.0,
-        mat:      Arc::new(Dielectric { ir: 1.5 }),
+        center:      Point3::new(190.0, 100.0, 190.0),
+        velocity:    Vec3::new(3.0, 5.0, 2.0),
+        radius:      80.0,
+        mat:         Arc::new(Dielectric { ir: 1.5 }),
+        restitution: 1.0,
+        is_static:   false,
     }];
     let bounds = Aabb::new(
         Point3::new(1.0, 1.0, 1.0),
@@ -363,9 +484,11 @@ fn build_cornell_box() -> SceneData {
         },
         static_objects,
         dynamic,
-        bounds: Some(bounds),
+        bounds:    Some(bounds),
         colliders: vec![tall_bbox, short_bbox],
-        paused: false,
+        gravity:   0.0,
+        settled:   false,
+        paused:    false,
     }
 }
 
@@ -434,6 +557,8 @@ fn build_mesh_scene() -> SceneData {
         dynamic:        vec![],
         bounds:         None,
         colliders:      vec![],
+        gravity:        0.0,
+        settled:        false,
         paused:         false,
     }
 }
@@ -480,7 +605,7 @@ fn main() {
     println!("Scene 3: Mesh");
     let s3 = build_mesh_scene();
     let mut scenes = [s1, s2, s3];
-    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [[]]/[]] aperture  [Enter] pause motion  [Esc] quit");
+    println!("Ready.  [1/2/3] scene  [F] free camera  WASD+mouse  Space/Shift up/down  [P] save  [[]]/[]] aperture  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -582,6 +707,12 @@ fn main() {
                                 }
                                 VirtualKeyCode::Return => {
                                     scenes[scene_idx].paused = !scenes[scene_idx].paused;
+                                }
+                                VirtualKeyCode::R => {
+                                    if scene_idx == 0 {
+                                        scenes[0] = build_random_scene();
+                                        cam_dirty = true;
+                                    }
                                 }
                                 _ => {}
                             }
