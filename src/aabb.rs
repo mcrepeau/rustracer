@@ -29,6 +29,7 @@ impl Aabb {
         }
     }
 
+    #[allow(dead_code)]
     pub fn hit(&self, r: &Ray, mut t_min: f32, mut t_max: f32) -> bool {
         for axis in 0..3 {
             let inv_d = r.inv_dir[axis];

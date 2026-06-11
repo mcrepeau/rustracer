@@ -6,7 +6,7 @@ use crate::vec3::Point3;
 
 const NUM_BUCKETS: usize = 12;
 
-// 4-wide BVH node. AABBs stored SoA ([axis][child]) for autovectorization.
+// 4-wide BVH node. AABBs stored SoA ([axis][child]) for SIMD intersection.
 struct QbvhNode {
     min: [[f32; 4]; 3],
     max: [[f32; 4]; 3],
@@ -26,7 +26,6 @@ fn surface_area(b: &Aabb) -> f32 {
     2.0 * (d.x * d.y + d.y * d.z + d.z * d.x)
 }
 
-// SAH binary partition. Returns (left_objs, left_boxes, right_objs, right_boxes).
 fn sah_partition(
     objs:  &[Arc<dyn Hittable>],
     boxes: &[Aabb],
@@ -127,7 +126,6 @@ fn sah_partition(
     (lo, lb, ro, rb)
 }
 
-// Two rounds of SAH splitting yield up to 4 child groups for a QBVH node.
 fn split_four(
     objs:  &[Arc<dyn Hittable>],
     boxes: &[Aabb],
@@ -180,7 +178,6 @@ impl BvhTree {
         let mut objects = Vec::with_capacity(objs.len());
         let (root, _) = Self::build(&objs, &boxes, &mut nodes, &mut objects);
         if root < 0 {
-            // Single primitive: wrap in a trivial root node so nodes[0] is always valid.
             let mut children = [i32::MIN; 4];
             children[0] = root;
             let bboxes = [boxes[0], Aabb::default(), Aabb::default(), Aabb::default()];
@@ -189,9 +186,6 @@ impl BvhTree {
         Self { nodes, objects }
     }
 
-    // Returns (child_data, bbox):
-    //   child_data ≥ 0 → QBVH inner node pushed at nodes[child_data]
-    //   child_data < 0 → leaf primitive pushed at objects[(-child_data - 1)]
     fn build(
         objs:  &[Arc<dyn Hittable>],
         boxes: &[Aabb],
@@ -207,7 +201,7 @@ impl BvhTree {
         let groups = split_four(objs, boxes);
 
         let my_idx = nodes.len();
-        nodes.push(QbvhNode::sentinel()); // placeholder; filled after children are built
+        nodes.push(QbvhNode::sentinel());
 
         let mut children  = [i32::MIN; 4];
         let mut bboxes    = [Aabb::default(); 4];
@@ -228,13 +222,77 @@ impl BvhTree {
     }
 }
 
+// Test all 4 child AABBs simultaneously using SSE2.
+// Returns (hit_mask, t_near) where bit c of hit_mask = 1 means child c was hit.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn test_children_sse(
+    node: &QbvhNode,
+    ro:   [f32; 3],
+    id:   [f32; 3],
+    t_min: f32,
+    t_max: f32,
+) -> (u32, [f32; 4]) {
+    use std::arch::x86_64::*;
+
+    // Build validity mask: bit c = 1 where children[c] != i32::MIN.
+    let ch       = _mm_loadu_si128(node.children.as_ptr() as *const __m128i);
+    let sentinel = _mm_set1_epi32(i32::MIN);
+    let invalid  = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(ch, sentinel))) as u32;
+    let valid    = (!invalid) & 0xf;
+
+    // Slab test: all 4 children in parallel, 3 axes.
+    let mut t0 = _mm_set1_ps(t_min);
+    let mut t1 = _mm_set1_ps(t_max);
+    for axis in 0..3usize {
+        let orig = _mm_set1_ps(ro[axis]);
+        let inv  = _mm_set1_ps(id[axis]);
+        let da = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(node.min[axis].as_ptr()), orig), inv);
+        let db = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(node.max[axis].as_ptr()), orig), inv);
+        t0 = _mm_max_ps(t0, _mm_min_ps(da, db));
+        t1 = _mm_min_ps(t1, _mm_max_ps(da, db));
+    }
+
+    // hit when t0 <= t1 (sign bit of 0xFFFFFFFF = 1, of 0x00000000 = 0)
+    let hit_mask = _mm_movemask_ps(_mm_cmple_ps(t0, t1)) as u32;
+
+    let mut t_near = [0.0f32; 4];
+    _mm_storeu_ps(t_near.as_mut_ptr(), t0);
+    (hit_mask & valid, t_near)
+}
+
+// Scalar fallback for non-x86_64 targets.
+#[allow(dead_code)]
+fn test_children_scalar(
+    node:  &QbvhNode,
+    ro:    [f32; 3],
+    id:    [f32; 3],
+    t_min: f32,
+    t_max: f32,
+) -> (u32, [f32; 4]) {
+    let mut mask   = 0u32;
+    let mut t_near = [0.0f32; 4];
+    for c in 0..4 {
+        if node.children[c] == i32::MIN { continue; }
+        let mut t0 = t_min;
+        let mut t1 = t_max;
+        for axis in 0..3 {
+            let da = (node.min[axis][c] - ro[axis]) * id[axis];
+            let db = (node.max[axis][c] - ro[axis]) * id[axis];
+            t0 = t0.max(da.min(db));
+            t1 = t1.min(da.max(db));
+        }
+        if t0 <= t1 { mask |= 1 << c; t_near[c] = t0; }
+    }
+    (mask, t_near)
+}
+
 impl Hittable for BvhTree {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         if self.nodes.is_empty() { return None; }
 
-        // Stack stores child_data values: ≥ 0 = node index, < 0 = leaf primitive
         let mut stack = [0i32; 128];
-        let mut top   = 1usize; // stack[0] = 0 (root node)
+        let mut top   = 1usize;
         let mut best: Option<HitRecord<'_>> = None;
         let mut closest = t_max;
 
@@ -246,7 +304,6 @@ impl Hittable for BvhTree {
             let entry = stack[top];
 
             if entry < 0 {
-                // Leaf: test primitive directly
                 let prim_idx = (-entry - 1) as usize;
                 if let Some(rec) = self.objects[prim_idx].hit(r, t_min, closest) {
                     closest = rec.t;
@@ -257,30 +314,24 @@ impl Hittable for BvhTree {
 
             let node = &self.nodes[entry as usize];
 
-            // Test all 4 child AABBs; collect hits with entry t
+            // 4-wide AABB test: SSE2 on x86_64, scalar elsewhere.
+            #[cfg(target_arch = "x86_64")]
+            let (mask, t_near) = unsafe { test_children_sse(node, ro, id, t_min, closest) };
+            #[cfg(not(target_arch = "x86_64"))]
+            let (mask, t_near) = test_children_scalar(node, ro, id, t_min, closest);
+
+            if mask == 0 { continue; }
+
+            // Collect hits and sort far-to-near so nearest is popped first.
             let mut hits   = [(f32::INFINITY, i32::MIN); 4];
             let mut n_hits = 0usize;
-
             for c in 0..4 {
-                let child = node.children[c];
-                if child == i32::MIN { continue; }
-
-                let mut t0 = t_min;
-                let mut t1 = closest;
-                for axis in 0..3 {
-                    let da = (node.min[axis][c] - ro[axis]) * id[axis];
-                    let db = (node.max[axis][c] - ro[axis]) * id[axis];
-                    t0 = t0.max(da.min(db));
-                    t1 = t1.min(da.max(db));
-                }
-                if t0 <= t1 {
-                    hits[n_hits] = (t0, child);
+                if mask & (1 << c) != 0 {
+                    hits[n_hits] = (t_near[c], node.children[c]);
                     n_hits += 1;
                 }
             }
 
-            // Insertion-sort descending by tmin: push far children first so near
-            // children sit at the top of the stack and are visited first.
             for i in 1..n_hits {
                 let key = hits[i];
                 let mut j = i;

@@ -6,6 +6,7 @@ use crate::hittable::{HitRecord, Hittable, HittableList, Material};
 
 // ── Triangle ──────────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct Triangle {
     v:   [Point3; 3],
     n:   [Vec3; 3],         // per-vertex normals (interpolated at hit)

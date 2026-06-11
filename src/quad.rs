@@ -4,6 +4,7 @@ use crate::vec3::{Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Hittable, HittableList, Material};
 
+#[derive(Clone)]
 pub struct Quad {
     q:      Point3,
     u:      Vec3,

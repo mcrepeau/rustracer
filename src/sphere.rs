@@ -12,6 +12,7 @@ fn sphere_uv(p: Vec3) -> (f32, f32) {
     (phi / (2.0 * PI), theta / PI)
 }
 
+#[derive(Clone)]
 pub struct Sphere {
     pub center: Point3,
     pub radius: f32,
