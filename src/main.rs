@@ -53,7 +53,6 @@ const PHYSICS_DT:     Duration  = Duration::from_millis(16);  // ~60 Hz fixed ph
 const ADAPTIVE_MIN_SAMPLES: u32 = 16;
 const ADAPTIVE_THRESHOLD:   f32 = 0.01;
 const CAM_RADIUS:  f32   = 0.25;
-const TILE_SIZE:   usize = 32;
 
 fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &[Light], rng: &mut impl Rng) -> Color {
     let mut throughput    = Color::new(1.0, 1.0, 1.0);
@@ -841,9 +840,7 @@ fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_na
 
 // ── Tile renderer ────────────────────────────────────────────────────────────
 
-/// Render one sample pass into `scratch` using 32×32 pixel tiles.
-/// Tiles are dispatched in parallel; each covers a unique, non-overlapping
-/// range of indices, making the unsafe write trivially data-race-free.
+/// Render one sample pass into `scratch` in parallel.
 /// Pass an empty slice for `conv` to disable adaptive-sampling skipping.
 fn render_tiles(
     scratch:    &mut [Color],
@@ -857,35 +854,25 @@ fn render_tiles(
     conv:       &[bool],
 ) {
     let w        = width  as usize;
-    let h        = height as usize;
-    let txn      = (w + TILE_SIZE - 1) / TILE_SIZE;
-    let tyn      = (h + TILE_SIZE - 1) / TILE_SIZE;
-    // Transmit the pointer as usize so the closure is Send + Sync without a wrapper type.
-    // SAFETY: tiles cover non-overlapping index ranges; each scratch[i] is written by one tile.
-    let ptr_addr = scratch.as_mut_ptr() as usize;
+    let w_denom  = (width  - 1).max(1) as f32;
+    let h_denom  = (height - 1).max(1) as f32;
     let adaptive = !conv.is_empty();
 
-    (0..txn * tyn).into_par_iter().for_each(|ti| {
-        let tx0 = (ti % txn) * TILE_SIZE;
-        let ty0 = (ti / txn) * TILE_SIZE;
-        let mut rng = SmallRng::seed_from_u64(
-            (ti as u64).wrapping_mul(6364136223846793005)
-                ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
-        );
-        for row in ty0..(ty0 + TILE_SIZE).min(h) {
-            for col in tx0..(tx0 + TILE_SIZE).min(w) {
-                let i = row * w + col;
-                let c = if adaptive && conv[i] {
-                    Color::default()
-                } else {
-                    let ray_y = height - 1 - row as u32;
-                    let u = (col as f32 + rng.gen::<f32>()) / (width  - 1) as f32;
-                    let v = (ray_y as f32 + rng.gen::<f32>()) / (height - 1) as f32;
-                    ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, &mut rng)
-                };
-                unsafe { *(ptr_addr as *mut Color).add(i) = c; }
-            }
-        }
+    scratch.par_iter_mut().enumerate().for_each(|(i, out)| {
+        *out = if adaptive && conv[i] {
+            Color::default()
+        } else {
+            let row = i / w;
+            let col = i % w;
+            let mut rng = SmallRng::seed_from_u64(
+                (i as u64).wrapping_mul(6364136223846793005)
+                    ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
+            );
+            let ray_y = height - 1 - row as u32;
+            let u = (col as f32 + rng.gen::<f32>()) / w_denom;
+            let v = (ray_y as f32 + rng.gen::<f32>()) / h_denom;
+            ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, &mut rng)
+        };
     });
 }
 

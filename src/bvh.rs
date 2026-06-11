@@ -360,7 +360,11 @@ impl Hittable for BvhTree {
 
             // 4-wide AABB test: SIMD on known architectures, scalar elsewhere.
             #[cfg(target_arch = "x86_64")]
-            let (mask, t_near) = unsafe { test_children_sse(node, ro, id, t_min, closest) };
+            let (mask, t_near) = if is_x86_feature_detected!("sse2") {
+                unsafe { test_children_sse(node, ro, id, t_min, closest) }
+            } else {
+                test_children_scalar(node, ro, id, t_min, closest)
+            };
             #[cfg(target_arch = "aarch64")]
             let (mask, t_near) = unsafe { test_children_neon(node, ro, id, t_min, closest) };
             #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
