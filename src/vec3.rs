@@ -104,8 +104,7 @@ impl std::ops::Index<usize> for Vec3 {
             0 => &self.x,
             1 => &self.y,
             2 => &self.z,
-            // SAFETY: only called with axis values 0, 1, 2 (AABB slab test)
-            _ => unsafe { std::hint::unreachable_unchecked() },
+            _ => panic!("Vec3 index out of bounds: {i}"),
         }
     }
 }

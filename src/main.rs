@@ -1192,14 +1192,13 @@ fn main() {
                 }
 
                 if cam_dirty {
+                    if pending_autofocus {
+                        cam_state.autofocus(scenes[scene_idx].world.as_ref());
+                        pending_autofocus = false;
+                    }
                     camera = cam_state.to_camera(win_w as f32 / win_h as f32);
                     reset_accum!();
                     cam_dirty = false;
-                } else if pending_autofocus {
-                    cam_state.autofocus(scenes[scene_idx].world.as_ref());
-                    camera = cam_state.to_camera(win_w as f32 / win_h as f32);
-                    reset_accum!();
-                    pending_autofocus = false;
                 }
 
                 let now = Instant::now();
@@ -1269,7 +1268,7 @@ fn main() {
                             welford_mean[i] += delta / n;
                             welford_m2[i]   += delta * (s - welford_mean[i]);
                             if pixel_samples[i] >= ADAPTIVE_MIN_SAMPLES {
-                                let var = welford_m2[i] / n;
+                                let var = welford_m2[i] / (n - 1.0);
                                 if var.x.max(var.y).max(var.z) < ADAPTIVE_THRESHOLD {
                                     converged[i] = true;
                                 }
