@@ -183,6 +183,7 @@ impl Background {
 
 struct DynamicSphere {
     center:      Point3,
+    prev_center: Point3,  // position at start of last physics step; used for motion-blur BVH
     velocity:    Vec3,
     radius:      f32,
     mat:         Arc<dyn hittable::Material>,
@@ -257,6 +258,8 @@ impl SceneData {
     fn tick(&mut self) -> bool {
         if self.dynamic.is_empty() || self.paused { return false; }
         if self.settled { return false; }
+
+        for ds in &mut self.dynamic { ds.prev_center = ds.center; }
 
         // Gravity, drag, movement, ground bounce — one pass per sphere
         if self.gravity > 0.0 {
@@ -364,7 +367,12 @@ impl SceneData {
             list.objects.push(Arc::clone(obj));
         }
         for ds in &self.dynamic {
-            list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
+            let s = if !ds.is_static {
+                Sphere::new_moving(ds.prev_center, ds.center, ds.radius, Arc::clone(&ds.mat))
+            } else {
+                Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat))
+            };
+            list.add(s);
         }
         self.world = Arc::new(BvhTree::from_list(list));
     }
@@ -388,17 +396,20 @@ fn build_random_scene() -> SceneData {
 
     // Three feature spheres — is_static: true so they never move but small balls bounce off them
     dynamic.push(DynamicSphere {
-        center: Point3::new( 0.0, 1.0, 0.0), velocity: Vec3::default(),
+        center: Point3::new( 0.0, 1.0, 0.0), prev_center: Point3::new( 0.0, 1.0, 0.0),
+        velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Dielectric { ir: 1.5 }),
         restitution: 0.65, is_static: true,
     });
     dynamic.push(DynamicSphere {
-        center: Point3::new(-4.0, 1.0, 0.0), velocity: Vec3::default(),
+        center: Point3::new(-4.0, 1.0, 0.0), prev_center: Point3::new(-4.0, 1.0, 0.0),
+        velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Lambertian { texture: Color::new(0.4, 0.2, 0.1).into() }),
         restitution: 0.35, is_static: true,
     });
     dynamic.push(DynamicSphere {
-        center: Point3::new( 4.0, 1.0, 0.0), velocity: Vec3::default(),
+        center: Point3::new( 4.0, 1.0, 0.0), prev_center: Point3::new( 4.0, 1.0, 0.0),
+        velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 }),
         restitution: 0.80, is_static: true,
     });
@@ -422,8 +433,10 @@ fn build_random_scene() -> SceneData {
             } else {
                 (Arc::new(Dielectric { ir: 1.5 }), 0.65)
             };
+            let center = Point3::new(cx, 0.2 + rng.gen_range(3.0..12.0), cz);
             dynamic.push(DynamicSphere {
-                center:      Point3::new(cx, 0.2 + rng.gen_range(3.0..12.0), cz),
+                center,
+                prev_center: center,
                 velocity:    Vec3::default(),
                 radius:      0.2,
                 mat,
@@ -499,6 +512,7 @@ fn build_cornell_box() -> SceneData {
 
     let dynamic = vec![DynamicSphere {
         center:      Point3::new(190.0, 100.0, 190.0),
+        prev_center: Point3::new(190.0, 100.0, 190.0),
         velocity:    Vec3::new(3.0, 5.0, 2.0),
         radius:      80.0,
         mat:         Arc::new(Dielectric { ir: 1.5 }),
