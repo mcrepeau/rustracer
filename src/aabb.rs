@@ -1,5 +1,4 @@
 use crate::vec3::Point3;
-use crate::ray::Ray;
 
 #[derive(Clone, Copy, Default)]
 pub struct Aabb {
@@ -29,16 +28,4 @@ impl Aabb {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn hit(&self, r: &Ray, mut t_min: f32, mut t_max: f32) -> bool {
-        for axis in 0..3 {
-            let inv_d = r.inv_dir[axis];
-            let orig  = r.origin[axis];
-            let t0 = (self.min[axis] - orig) * inv_d;
-            let t1 = (self.max[axis] - orig) * inv_d;
-            t_min = t_min.max(t0.min(t1));
-            t_max = t_max.min(t0.max(t1));
-        }
-        t_max > t_min
-    }
 }

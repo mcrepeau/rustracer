@@ -2,7 +2,6 @@ use std::sync::Arc;
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable, HittableList};
 use crate::ray::Ray;
-use crate::vec3::Point3;
 
 const NUM_BUCKETS: usize = 12;
 
@@ -19,6 +18,7 @@ struct QbvhNode {
 pub struct BvhTree {
     nodes:   Vec<QbvhNode>,
     objects: Vec<Arc<dyn Hittable>>,
+    bbox:    Aabb,
 }
 
 fn surface_area(b: &Aabb) -> f32 {
@@ -67,6 +67,7 @@ fn sah_partition(
             });
         }
 
+        // Prefix sweep: left-side surface area and count for each split candidate.
         let mut left_sa    = [0.0f32; NUM_BUCKETS];
         let mut left_count = [0u32;   NUM_BUCKETS];
         let mut acc_box: Option<Aabb> = None;
@@ -80,24 +81,19 @@ fn sah_partition(
             left_sa[i]    = acc_box.map_or(0.0, |b| surface_area(&b));
         }
 
-        let mut right_sa    = [0.0f32; NUM_BUCKETS];
-        let mut right_count = [0u32;   NUM_BUCKETS];
+        // Single backward pass evaluates the right side without suffix arrays.
         acc_box = None;
         acc_n   = 0;
-        for i in (0..NUM_BUCKETS).rev() {
-            acc_n += bucket_count[i];
-            if let Some(b) = bucket_bbox[i] {
+        for split in (0..NUM_BUCKETS - 1).rev() {
+            acc_n += bucket_count[split + 1];
+            if let Some(b) = bucket_bbox[split + 1] {
                 acc_box = Some(match acc_box { None => b, Some(a) => Aabb::surrounding(&a, &b) });
             }
-            right_count[i] = acc_n;
-            right_sa[i]    = acc_box.map_or(0.0, |b| surface_area(&b));
-        }
-
-        for split in 0..NUM_BUCKETS - 1 {
             let nl = left_count[split];
-            let nr = right_count[split + 1];
+            let nr = acc_n;
             if nl == 0 || nr == 0 { continue; }
-            let cost = 1.0 + (left_sa[split] * nl as f32 + right_sa[split + 1] * nr as f32) / node_sa;
+            let right_sa = acc_box.map_or(0.0, |b| surface_area(&b));
+            let cost = 1.0 + (left_sa[split] * nl as f32 + right_sa * nr as f32) / node_sa;
             if cost < best_cost { best_cost = cost; best_axis = axis; best_split = split; }
         }
     }
@@ -110,19 +106,18 @@ fn sah_partition(
         ((NUM_BUCKETS as f32 * t) as usize).min(NUM_BUCKETS - 1)
     };
 
-    let mut pairs: Vec<(Arc<dyn Hittable>, Aabb, usize)> = objs.iter()
-        .zip(boxes.iter())
-        .map(|(o, b)| (Arc::clone(o), *b, bucket_id(b)))
-        .collect();
-    pairs.sort_by_key(|(_, _, id)| *id);
-    let mid_off = pairs.partition_point(|(_, _, id)| *id <= best_split);
+    // Sort indices by bucket; no Arc clones until the final gather.
+    let bid: Vec<usize> = boxes.iter().map(|b| bucket_id(b)).collect();
+    let mut order: Vec<usize> = (0..span).collect();
+    order.sort_by_key(|&i| bid[i]);
+    let mid_off = order.partition_point(|&i| bid[i] <= best_split);
     let mid = if mid_off == 0 || mid_off == span { span / 2 } else { mid_off };
 
-    let (lp, rp) = pairs.split_at(mid);
-    let lo: Vec<Arc<dyn Hittable>> = lp.iter().map(|(o, _, _)| Arc::clone(o)).collect();
-    let lb: Vec<Aabb>               = lp.iter().map(|(_, b, _)| *b).collect();
-    let ro: Vec<Arc<dyn Hittable>> = rp.iter().map(|(o, _, _)| Arc::clone(o)).collect();
-    let rb: Vec<Aabb>               = rp.iter().map(|(_, b, _)| *b).collect();
+    let (li, ri) = order.split_at(mid);
+    let lo: Vec<Arc<dyn Hittable>> = li.iter().map(|&i| Arc::clone(&objs[i])).collect();
+    let lb: Vec<Aabb>               = li.iter().map(|&i| boxes[i]).collect();
+    let ro: Vec<Arc<dyn Hittable>> = ri.iter().map(|&i| Arc::clone(&objs[i])).collect();
+    let rb: Vec<Aabb>               = ri.iter().map(|&i| boxes[i]).collect();
     (lo, lb, ro, rb)
 }
 
@@ -176,14 +171,14 @@ impl BvhTree {
             .collect();
         let mut nodes   = Vec::with_capacity(objs.len());
         let mut objects = Vec::with_capacity(objs.len());
-        let (root, _) = Self::build(&objs, &boxes, &mut nodes, &mut objects);
+        let (root, bbox) = Self::build(&objs, &boxes, &mut nodes, &mut objects);
         if root < 0 {
             let mut children = [i32::MIN; 4];
             children[0] = root;
             let bboxes = [boxes[0], Aabb::default(), Aabb::default(), Aabb::default()];
             nodes.push(QbvhNode::from_children(children, &bboxes));
         }
-        Self { nodes, objects }
+        Self { nodes, objects, bbox }
     }
 
     fn build(
@@ -372,7 +367,7 @@ impl Hittable for BvhTree {
 
             if mask == 0 { continue; }
 
-            // Collect hits and sort far-to-near so nearest is popped first.
+            // Collect hits sorted far-to-near so nearest is popped first.
             let mut hits   = [(f32::INFINITY, i32::MIN); 4];
             let mut n_hits = 0usize;
             for c in 0..4 {
@@ -381,16 +376,9 @@ impl Hittable for BvhTree {
                     n_hits += 1;
                 }
             }
-
-            for i in 1..n_hits {
-                let key = hits[i];
-                let mut j = i;
-                while j > 0 && hits[j - 1].0 < key.0 {
-                    hits[j] = hits[j - 1];
-                    j -= 1;
-                }
-                hits[j] = key;
-            }
+            hits[..n_hits].sort_unstable_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
 
             for k in 0..n_hits {
                 stack[top] = hits[k].1;
@@ -402,20 +390,6 @@ impl Hittable for BvhTree {
     }
 
     fn bounding_box(&self) -> Option<Aabb> {
-        let root = self.nodes.first()?;
-        let mut mn = [f32::INFINITY;     3];
-        let mut mx = [f32::NEG_INFINITY; 3];
-        for c in 0..4 {
-            if root.children[c] == i32::MIN { continue; }
-            for axis in 0..3 {
-                mn[axis] = mn[axis].min(root.min[axis][c]);
-                mx[axis] = mx[axis].max(root.max[axis][c]);
-            }
-        }
-        if mn[0] == f32::INFINITY { return None; }
-        Some(Aabb::new(
-            Point3::new(mn[0], mn[1], mn[2]),
-            Point3::new(mx[0], mx[1], mx[2]),
-        ))
+        if self.nodes.is_empty() { None } else { Some(self.bbox) }
     }
 }
