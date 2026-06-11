@@ -261,7 +261,51 @@ unsafe fn test_children_sse(
     (hit_mask & valid, t_near)
 }
 
-// Scalar fallback for non-x86_64 targets.
+// Test all 4 child AABBs simultaneously using ARM NEON.
+// Returns (hit_mask, t_near) where bit c of hit_mask = 1 means child c was hit.
+// NEON has no movemask: instead AND each comparison lane with its bit-weight
+// (1/2/4/8) then horizontally sum to collapse into a 4-bit integer.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn test_children_neon(
+    node:  &QbvhNode,
+    ro:    [f32; 3],
+    id:    [f32; 3],
+    t_min: f32,
+    t_max: f32,
+) -> (u32, [f32; 4]) {
+    use std::arch::aarch64::*;
+
+    // Build validity mask: bit c = 1 where children[c] != i32::MIN.
+    let ch        = vld1q_s32(node.children.as_ptr());
+    let sentinel  = vdupq_n_s32(i32::MIN);
+    let eq_mask   = vceqq_s32(ch, sentinel);     // 0xFFFF…=sentinel=invalid
+    let lane_bits = [1u32, 2, 4, 8];
+    let weights   = vld1q_u32(lane_bits.as_ptr());
+    let invalid   = vaddvq_u32(vandq_u32(eq_mask, weights));
+    let valid     = (!invalid) & 0xf;
+
+    // Slab test: all 4 children in parallel, 3 axes.
+    let mut t0 = vdupq_n_f32(t_min);
+    let mut t1 = vdupq_n_f32(t_max);
+    for axis in 0..3usize {
+        let orig = vdupq_n_f32(ro[axis]);
+        let inv  = vdupq_n_f32(id[axis]);
+        let da   = vmulq_f32(vsubq_f32(vld1q_f32(node.min[axis].as_ptr()), orig), inv);
+        let db   = vmulq_f32(vsubq_f32(vld1q_f32(node.max[axis].as_ptr()), orig), inv);
+        t0 = vmaxq_f32(t0, vminq_f32(da, db));
+        t1 = vminq_f32(t1, vmaxq_f32(da, db));
+    }
+
+    // hit when t0 <= t1
+    let hit_mask = vaddvq_u32(vandq_u32(vcleq_f32(t0, t1), weights));
+
+    let mut t_near = [0.0f32; 4];
+    vst1q_f32(t_near.as_mut_ptr(), t0);
+    (hit_mask & valid, t_near)
+}
+
+// Scalar fallback for targets without SSE2 or NEON.
 #[allow(dead_code)]
 fn test_children_scalar(
     node:  &QbvhNode,
@@ -314,10 +358,12 @@ impl Hittable for BvhTree {
 
             let node = &self.nodes[entry as usize];
 
-            // 4-wide AABB test: SSE2 on x86_64, scalar elsewhere.
+            // 4-wide AABB test: SIMD on known architectures, scalar elsewhere.
             #[cfg(target_arch = "x86_64")]
             let (mask, t_near) = unsafe { test_children_sse(node, ro, id, t_min, closest) };
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(target_arch = "aarch64")]
+            let (mask, t_near) = unsafe { test_children_neon(node, ro, id, t_min, closest) };
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             let (mask, t_near) = test_children_scalar(node, ro, id, t_min, closest);
 
             if mask == 0 { continue; }
