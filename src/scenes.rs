@@ -9,7 +9,7 @@ use crate::mesh::load_obj;
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
-use crate::scene::{DynamicSphere, Orbit, SceneData};
+use crate::scene::{DynamicSphere, Orbit, RingData, SceneData};
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::transform::{Rotate, Translate};
@@ -47,18 +47,21 @@ pub fn build_random_scene() -> SceneData {
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Dielectric { ir: 1.5 }),
         restitution: 0.65, is_static: true, orbit: None,
+        axial_angle: 0.0, axial_speed: 0.0, ring: None,
     });
     dynamic.push(DynamicSphere {
         center: Point3::new(-4.0, 1.0, 0.0),
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Lambertian { texture: Color::new(0.4, 0.2, 0.1).into() }),
         restitution: 0.35, is_static: true, orbit: None,
+        axial_angle: 0.0, axial_speed: 0.0, ring: None,
     });
     dynamic.push(DynamicSphere {
         center: Point3::new( 4.0, 1.0, 0.0),
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 }),
         restitution: 0.80, is_static: true, orbit: None,
+        axial_angle: 0.0, axial_speed: 0.0, ring: None,
     });
 
     for a in -11i32..11 {
@@ -79,7 +82,7 @@ pub fn build_random_scene() -> SceneData {
                 (Arc::new(Dielectric { ir: 1.5 }), 0.65)
             };
             let center = Point3::new(cx, 0.2 + rng.gen_range(3.0..12.0), cz);
-            dynamic.push(DynamicSphere { center, velocity: Vec3::default(), radius: 0.2, mat, restitution, is_static: false, orbit: None });
+            dynamic.push(DynamicSphere { center, velocity: Vec3::default(), radius: 0.2, mat, restitution, is_static: false, orbit: None, axial_angle: 0.0, axial_speed: 0.0, ring: None });
         }
     }
 
@@ -152,6 +155,9 @@ pub fn build_cornell_box() -> SceneData {
         restitution: 1.0,
         is_static:   false,
         orbit:       None,
+        axial_angle: 0.0,
+        axial_speed: 0.0,
+        ring:        None,
     }];
     let bounds = Aabb::new(
         Point3::new(1.0, 1.0, 1.0),
@@ -399,7 +405,7 @@ pub fn build_solar_system_scene() -> SceneData {
     let mut dynamic: Vec<DynamicSphere> = Vec::new();
 
     let mut planet = |orbit_r: f32, speed: f32, angle: f32, incl: f32,
-                      body_r: f32, mat: Arc<dyn Material>| {
+                      body_r: f32, axial_speed: f32, mat: Arc<dyn Material>| {
         let a = angle;
         dynamic.push(DynamicSphere {
             center: Point3::new(orbit_r * a.cos(), 0.0, orbit_r * a.sin()),
@@ -409,31 +415,47 @@ pub fn build_solar_system_scene() -> SceneData {
             restitution: 0.0,
             is_static:   false,
             orbit: Some(Orbit { parent_idx: None, radius: orbit_r, speed, angle, inclination: incl }),
+            axial_angle: 0.0,
+            axial_speed,
+            ring: None,
         });
     };
 
     // ── Planets (indices 0-7) ─────────────────────────────────────────────────
-    // Speeds: Earth year = 18000 ticks (10 min @ 60 fps). Each planet speed =
-    // 2π / (orbital_period_in_years × 18000).
-    planet(18.0, 0.001448, 0.0,  0.10, 0.8,
-        Arc::new(Lambertian { texture: Color::new(0.60, 0.58, 0.55).into() })); // Mercury  (~2.4 min)
-    planet(26.0, 0.000566, 1.2,  0.05, 1.5,
-        Arc::new(Lambertian { texture: Color::new(0.90, 0.80, 0.50).into() })); // Venus    (~6.2 min)
-    planet(35.0, 0.0003491, 2.5,  0.03, 1.6,
+    // Orbital speeds: Earth year = 18000 ticks (10 min @ 60 fps).
+    // Axial speeds: Earth day ≈ 49.3 ticks → 2π/49.3 ≈ 0.1274 rad/tick.
+    //   Each planet's axial_speed = 2π / (day_period_in_earth_days × 49.3).
+    planet(18.0, 0.001448, 0.0,  0.10, 0.8,  0.00218,
+        Arc::new(Lambertian { texture: Color::new(0.60, 0.58, 0.55).into() })); // Mercury
+    planet(26.0, 0.000566, 1.2,  0.05, 1.5, -0.000524,
+        Arc::new(Lambertian { texture: Color::new(0.90, 0.80, 0.50).into() })); // Venus (retrograde)
+    planet(35.0, 0.0003491, 2.5,  0.03, 1.6,  0.1274,
         Arc::new(Lambertian { texture:
             Texture::load("assets/earthmap.jpg")
                 .unwrap_or_else(|_| Color::new(0.20, 0.45, 0.85).into())
-        }));                                                                      // Earth    (~10 min)
-    planet(47.0, 0.0001855, 0.8,  0.08, 1.0,
-        Arc::new(Lambertian { texture: Color::new(0.78, 0.32, 0.12).into() })); // Mars     (~18.8 min)
-    planet(65.0, 0.0000294, 3.5,  0.02, 4.5,
-        Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.40).into() })); // Jupiter  (~2 hr)
-    planet(87.0, 0.0000118, 1.8,  0.04, 3.5,
-        Arc::new(Metal { albedo: Color::new(0.88, 0.80, 0.55), fuzz: 0.1 }));  // Saturn   (~4.9 hr)
-    planet(108.0, 0.00000415, 4.2, 0.12, 2.2,
-        Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus   (~16.7 hr)
-    planet(130.0, 0.00000212, 2.9, 0.03, 2.1,
-        Arc::new(Lambertian { texture: Color::new(0.18, 0.28, 0.80).into() })); // Neptune  (~1.4 day)
+        }));                                                                      // Earth
+    planet(47.0, 0.0001855, 0.8,  0.08, 1.0,  0.1241,
+        Arc::new(Lambertian { texture: Color::new(0.78, 0.32, 0.12).into() })); // Mars
+    planet(65.0, 0.0000294, 3.5,  0.02, 4.5,  0.3083,
+        Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.40).into() })); // Jupiter (fast)
+    planet(87.0, 0.0000118, 1.8,  0.04, 3.5,  0.2873,
+        Arc::new(Metal { albedo: Color::new(0.88, 0.80, 0.55), fuzz: 0.1 }));  // Saturn
+    planet(108.0, 0.00000415, 4.2, 0.12, 2.2, -0.1776,
+        Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus (retrograde)
+    planet(130.0, 0.00000212, 2.9, 0.03, 2.1,  0.1900,
+        Arc::new(Lambertian { texture: Color::new(0.18, 0.28, 0.80).into() })); // Neptune
+
+    // Add Saturn's rings (index 5). Inner/outer radii relative to body radius 3.5:
+    //   inner ≈ 1.4× → 5.0,  outer ≈ 2.6× → 9.0. Tilted ~27° from orbital plane.
+    let ring_mat: Arc<dyn Material> = Arc::new(Lambertian {
+        texture: Color::new(0.87, 0.80, 0.65).into(),
+    });
+    dynamic[5].ring = Some(RingData {
+        inner_r: 5.0,
+        outer_r: 9.0,
+        normal:  Vec3::new(0.0, 0.9, 0.35).unit(),
+        mat:     ring_mat,
+    });
 
     // ── Moons ─────────────────────────────────────────────────────────────────
     // Moon speeds scaled to the same 18000-ticks-per-Earth-year base.
@@ -448,6 +470,9 @@ pub fn build_solar_system_scene() -> SceneData {
             restitution: 0.0,
             is_static:   false,
             orbit: Some(Orbit { parent_idx: Some(parent_idx), radius: orbit_r, speed, angle, inclination: 0.0 }),
+            axial_angle: 0.0,
+            axial_speed: 0.0,
+            ring:        None,
         });
     };
 

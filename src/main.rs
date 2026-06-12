@@ -15,6 +15,7 @@ mod transform;
 mod mesh;
 mod camera;
 mod renderer;
+mod ring;
 mod scene;
 mod scenes;
 mod output;

@@ -5,7 +5,9 @@ use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
 use crate::renderer::Background;
+use crate::ring::Ring;
 use crate::sphere::Sphere;
+use crate::transform::{Rotate, Translate};
 use crate::vec3::{Point3, Vec3};
 
 pub struct Orbit {
@@ -16,6 +18,13 @@ pub struct Orbit {
     pub inclination: f32,           // tilt of orbital plane from XZ (radians)
 }
 
+pub struct RingData {
+    pub inner_r: f32,
+    pub outer_r: f32,
+    pub normal:  Vec3,
+    pub mat:     Arc<dyn Material>,
+}
+
 pub struct DynamicSphere {
     pub center:      Point3,
     pub velocity:    Vec3,
@@ -24,6 +33,12 @@ pub struct DynamicSphere {
     pub restitution: f32,
     pub is_static:   bool,
     pub orbit:       Option<Orbit>,
+    /// Rotation around the Y axis, accumulated each tick (radians).
+    pub axial_angle: f32,
+    /// Rotation speed in radians per physics tick (0 = no rotation).
+    pub axial_speed: f32,
+    /// Optional flat ring (e.g. Saturn's rings) centred on this body.
+    pub ring:        Option<RingData>,
 }
 
 pub struct SceneData {
@@ -145,6 +160,10 @@ impl SceneData {
                     }
                 }
             }
+            // Advance axial rotation for all bodies.
+            for ds in &mut self.dynamic {
+                if !ds.is_static { ds.axial_angle += ds.axial_speed; }
+            }
         }
 
         if let Some(b) = self.bounds {
@@ -223,7 +242,21 @@ impl SceneData {
             list.objects.push(Arc::clone(obj));
         }
         for ds in &self.dynamic {
-            list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
+            if ds.axial_speed != 0.0 {
+                // Sphere at origin, rotated then translated to its orbit position.
+                let sphere: Arc<dyn Hittable> = Arc::new(
+                    Sphere::new(Point3::new(0.0, 0.0, 0.0), ds.radius, Arc::clone(&ds.mat))
+                );
+                let rotated: Arc<dyn Hittable> = Arc::new(
+                    Rotate::around_y(sphere, ds.axial_angle.to_degrees())
+                );
+                list.objects.push(Arc::new(Translate::new(rotated, ds.center)));
+            } else {
+                list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
+            }
+            if let Some(rd) = &ds.ring {
+                list.add(Ring::new(ds.center, rd.inner_r, rd.outer_r, rd.normal, Arc::clone(&rd.mat)));
+            }
         }
         self.world = Arc::new(BvhTree::from_list(list));
     }
