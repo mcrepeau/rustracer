@@ -57,9 +57,10 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     let bg     = scene.background;
     scratch.resize((WIDTH * HEIGHT) as usize, Color::default());
 
+    let strata = (samples as f32).sqrt() as u32;
     let t0 = Instant::now();
     for s in 0..samples {
-        render_tiles(scratch, s, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, &[]);
+        render_tiles(scratch, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, &[]);
     }
     t0.elapsed()
 }
@@ -151,6 +152,7 @@ fn main() {
     let mut welford_m2    = vec![Color::default(); (win_w * win_h) as usize];
     let mut converged     = vec![false;            (win_w * win_h) as usize];
     let mut samples       = 0u32;
+    let strata = (MAX_SAMPLES as f32).sqrt() as u32;
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut exposure          = 1.0f32;
     let mut cam_dirty         = false;
@@ -402,7 +404,7 @@ fn main() {
                     let bg    = scene.background;
                     let conv  = if adaptive { converged.as_slice() } else { &[] };
 
-                    render_tiles(&mut scratch, samples, win_w, win_h, &camera,
+                    render_tiles(&mut scratch, samples, strata, win_w, win_h, &camera,
                                  scene.world.as_ref(), bg, &scene.lights, conv);
 
                     for i in 0..(win_w * win_h) as usize {

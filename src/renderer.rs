@@ -113,11 +113,13 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
 // ── Tile renderer ─────────────────────────────────────────────────────────────
 
 /// Render one sample pass into `scratch` in parallel.
+/// `strata` = floor(sqrt(max_samples)); controls the stratified-sampling grid size.
 /// Pass an empty slice for `conv` to disable adaptive-sampling skipping.
 #[allow(clippy::too_many_arguments)]
 pub fn render_tiles(
     scratch:    &mut [Color],
     sample_idx: u32,
+    strata:     u32,
     width:      u32,
     height:     u32,
     camera:     &Camera,
@@ -130,6 +132,8 @@ pub fn render_tiles(
     let w_denom  = (width  - 1).max(1) as f32;
     let h_denom  = (height - 1).max(1) as f32;
     let adaptive = !conv.is_empty();
+    let strata2  = strata * strata;
+    let strata_f = strata as f32;
 
     scratch.par_iter_mut().enumerate().for_each(|(i, out)| {
         *out = if adaptive && conv[i] {
@@ -142,8 +146,25 @@ pub fn render_tiles(
                     ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
             );
             let ray_y = height - 1 - row as u32;
-            let u = (col as f32 + rng.gen::<f32>()) / w_denom;
-            let v = (ray_y as f32 + rng.gen::<f32>()) / h_denom;
+
+            // Stratified pixel sampling: map sample_idx into a strata×strata grid.
+            // A per-pixel cyclic offset (Fibonacci hash) ensures neighboring pixels
+            // visit strata in different orders, avoiding spatial correlation.
+            let (u_jitter, v_jitter) = if strata2 > 0 && sample_idx < strata2 {
+                let offset = (i as u32).wrapping_mul(0x9E3779B9) % strata2;
+                let s  = (sample_idx + offset) % strata2;
+                let sx = s % strata;
+                let sy = s / strata;
+                (
+                    (sx as f32 + rng.gen::<f32>()) / strata_f,
+                    (sy as f32 + rng.gen::<f32>()) / strata_f,
+                )
+            } else {
+                (rng.gen::<f32>(), rng.gen::<f32>())
+            };
+
+            let u = (col as f32 + u_jitter) / w_denom;
+            let v = (ray_y as f32 + v_jitter) / h_denom;
             ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, &mut rng)
         };
     });
