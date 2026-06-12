@@ -47,21 +47,21 @@ pub fn build_random_scene() -> SceneData {
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Dielectric { ir: 1.5 }),
         restitution: 0.65, is_static: true, orbit: None,
-        axial_angle: 0.0, axial_speed: 0.0, ring: None,
+        axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
     });
     dynamic.push(DynamicSphere {
         center: Point3::new(-4.0, 1.0, 0.0),
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Lambertian { texture: Color::new(0.4, 0.2, 0.1).into() }),
         restitution: 0.35, is_static: true, orbit: None,
-        axial_angle: 0.0, axial_speed: 0.0, ring: None,
+        axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
     });
     dynamic.push(DynamicSphere {
         center: Point3::new( 4.0, 1.0, 0.0),
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 }),
         restitution: 0.80, is_static: true, orbit: None,
-        axial_angle: 0.0, axial_speed: 0.0, ring: None,
+        axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
     });
 
     for a in -11i32..11 {
@@ -82,7 +82,7 @@ pub fn build_random_scene() -> SceneData {
                 (Arc::new(Dielectric { ir: 1.5 }), 0.65)
             };
             let center = Point3::new(cx, 0.2 + rng.gen_range(3.0..12.0), cz);
-            dynamic.push(DynamicSphere { center, velocity: Vec3::default(), radius: 0.2, mat, restitution, is_static: false, orbit: None, axial_angle: 0.0, axial_speed: 0.0, ring: None });
+            dynamic.push(DynamicSphere { center, velocity: Vec3::default(), radius: 0.2, mat, restitution, is_static: false, orbit: None, axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None });
         }
     }
 
@@ -157,6 +157,7 @@ pub fn build_cornell_box() -> SceneData {
         orbit:       None,
         axial_angle: 0.0,
         axial_speed: 0.0,
+        axial_tilt:  0.0,
         ring:        None,
     }];
     let bounds = Aabb::new(
@@ -405,7 +406,8 @@ pub fn build_solar_system_scene() -> SceneData {
     let mut dynamic: Vec<DynamicSphere> = Vec::new();
 
     let mut planet = |orbit_r: f32, speed: f32, angle: f32, incl: f32,
-                      body_r: f32, axial_speed: f32, mat: Arc<dyn Material>| {
+                      body_r: f32, axial_speed: f32, axial_tilt_deg: f32,
+                      mat: Arc<dyn Material>| {
         let a = angle;
         dynamic.push(DynamicSphere {
             center: Point3::new(orbit_r * a.cos(), 0.0, orbit_r * a.sin()),
@@ -417,43 +419,55 @@ pub fn build_solar_system_scene() -> SceneData {
             orbit: Some(Orbit { parent_idx: None, radius: orbit_r, speed, angle, inclination: incl }),
             axial_angle: 0.0,
             axial_speed,
+            axial_tilt: axial_tilt_deg.to_radians(),
             ring: None,
         });
     };
 
     // ── Planets (indices 0-7) ─────────────────────────────────────────────────
     // Orbital speeds: Earth year = 18000 ticks (10 min @ 60 fps).
-    // Axial speeds: Earth day ≈ 49.3 ticks → 2π/49.3 ≈ 0.1274 rad/tick.
-    //   Each planet's axial_speed = 2π / (day_period_in_earth_days × 49.3).
-    planet(18.0, 0.001448, 0.0,  0.10, 0.8,  0.00218,
-        Arc::new(Lambertian { texture: Color::new(0.60, 0.58, 0.55).into() })); // Mercury
-    planet(26.0, 0.000566, 1.2,  0.05, 1.5, -0.000524,
-        Arc::new(Lambertian { texture: Color::new(0.90, 0.80, 0.50).into() })); // Venus (retrograde)
-    planet(35.0, 0.0003491, 2.5,  0.03, 1.6,  0.1274,
+    // Axial speeds:   Earth day ≈ 49.3 ticks → 2π/49.3 ≈ 0.1274 rad/tick.
+    // Axial tilts:    real obliquities in degrees (Rotate::around_x so the pole
+    //                 appears at (0, cos(tilt), sin(tilt)) in world space).
+    planet(18.0,  0.001448,  0.0,  0.10, 0.8,  0.00218,   0.0,
+        Arc::new(Lambertian { texture: Color::new(0.60, 0.58, 0.55).into() })); // Mercury  ~0°
+    planet(26.0,  0.000566,  1.2,  0.05, 1.5, -0.000524,  0.0,
+        Arc::new(Lambertian { texture: Color::new(0.90, 0.80, 0.50).into() })); // Venus    retrograde
+    planet(35.0,  0.0003491, 2.5,  0.03, 1.6,  0.1274,   23.4,
         Arc::new(Lambertian { texture:
             Texture::load("assets/earthmap.jpg")
                 .unwrap_or_else(|_| Color::new(0.20, 0.45, 0.85).into())
-        }));                                                                      // Earth
-    planet(47.0, 0.0001855, 0.8,  0.08, 1.0,  0.1241,
-        Arc::new(Lambertian { texture: Color::new(0.78, 0.32, 0.12).into() })); // Mars
-    planet(65.0, 0.0000294, 3.5,  0.02, 4.5,  0.3083,
-        Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.40).into() })); // Jupiter (fast)
-    planet(87.0, 0.0000118, 1.8,  0.04, 3.5,  0.2873,
-        Arc::new(Lambertian { texture: Color::new(0.88, 0.80, 0.55).into() })); // Saturn
-    planet(108.0, 0.00000415, 4.2, 0.12, 2.2, -0.1776,
-        Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus (retrograde)
-    planet(130.0, 0.00000212, 2.9, 0.03, 2.1,  0.1900,
-        Arc::new(Lambertian { texture: Color::new(0.18, 0.28, 0.80).into() })); // Neptune
+        }));                                                                      // Earth   23.4°
+    planet(47.0,  0.0001855, 0.8,  0.08, 1.0,  0.1241,   25.2,
+        Arc::new(Lambertian { texture: Color::new(0.78, 0.32, 0.12).into() })); // Mars    25.2°
+    planet(65.0,  0.0000294, 3.5,  0.02, 4.5,  0.3083,    3.1,
+        Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.40).into() })); // Jupiter  3.1°
+    planet(87.0,  0.0000118, 1.8,  0.04, 3.5,  0.2873,   26.7,
+        Arc::new(Lambertian { texture: Color::new(0.88, 0.80, 0.55).into() })); // Saturn  26.7°
+    planet(108.0, 0.00000415, 4.2, 0.12, 2.2, -0.1776,   97.8,
+        Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus  97.8° (on side)
+    planet(130.0, 0.00000212, 2.9, 0.03, 2.1,  0.1900,   28.3,
+        Arc::new(Lambertian { texture: Color::new(0.18, 0.28, 0.80).into() })); // Neptune 28.3°
 
-    // Add Saturn's rings (index 5). Inner/outer radii relative to body radius 3.5:
-    //   inner ≈ 1.4× → 5.0,  outer ≈ 2.6× → 9.0. Tilted ~27° from orbital plane.
+    // Saturn's rings (index 5).
+    // Ring normal matches Saturn's axial tilt: Rotate::around_x(26.7°) maps the
+    // pole to (0, cos(26.7°), sin(26.7°)), so the equatorial ring has that normal.
+    let saturn_tilt = 26.7_f32.to_radians();
     let ring_mat: Arc<dyn Material> = Arc::new(Lambertian {
-        texture: Color::new(0.87, 0.80, 0.65).into(),
+        texture: Texture::RingBands(Arc::new(vec![
+            (0.20, Color::new(0.62, 0.55, 0.40)), // C ring:           faint, dusty brown
+            (0.55, Color::new(0.92, 0.88, 0.75)), // B ring:           brightest, creamy white
+            (0.63, Color::new(0.06, 0.05, 0.04)), // Cassini division: dark gap
+            (0.82, Color::new(0.82, 0.76, 0.62)), // A ring:           medium brightness
+            (0.85, Color::new(0.10, 0.09, 0.07)), // Encke gap:        narrow dark band
+            (0.97, Color::new(0.75, 0.70, 0.57)), // outer A ring:     slightly fainter
+            (1.00, Color::new(0.48, 0.44, 0.36)), // outer fringe:     very faint
+        ])),
     });
     dynamic[5].ring = Some(RingData {
         inner_r: 5.0,
         outer_r: 9.0,
-        normal:  Vec3::new(0.0, 0.9, 0.35).unit(),
+        normal:  Vec3::new(0.0, saturn_tilt.cos(), saturn_tilt.sin()),
         mat:     ring_mat,
     });
 
@@ -472,6 +486,7 @@ pub fn build_solar_system_scene() -> SceneData {
             orbit: Some(Orbit { parent_idx: Some(parent_idx), radius: orbit_r, speed, angle, inclination: 0.0 }),
             axial_angle: 0.0,
             axial_speed: 0.0,
+            axial_tilt:  0.0,
             ring:        None,
         });
     };

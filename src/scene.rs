@@ -37,6 +37,10 @@ pub struct DynamicSphere {
     pub axial_angle: f32,
     /// Rotation speed in radians per physics tick (0 = no rotation).
     pub axial_speed: f32,
+    /// Tilt of the spin axis from world Y toward world +Z (radians).
+    /// Applied as Rotate::around_x after the Y spin so the pole appears at
+    /// (0, cos(tilt), sin(tilt)) in world space.
+    pub axial_tilt:  f32,
     /// Optional flat ring (e.g. Saturn's rings) centred on this body.
     pub ring:        Option<RingData>,
 }
@@ -242,15 +246,22 @@ impl SceneData {
             list.objects.push(Arc::clone(obj));
         }
         for ds in &self.dynamic {
-            if ds.axial_speed != 0.0 {
-                // Sphere at origin, rotated then translated to its orbit position.
+            if ds.axial_speed != 0.0 || ds.axial_tilt != 0.0 {
+                // Build sphere at origin, spin around Y, tilt around X, translate.
                 let sphere: Arc<dyn Hittable> = Arc::new(
                     Sphere::new(Point3::new(0.0, 0.0, 0.0), ds.radius, Arc::clone(&ds.mat))
                 );
-                let rotated: Arc<dyn Hittable> = Arc::new(
-                    Rotate::around_y(sphere, ds.axial_angle.to_degrees())
-                );
-                list.objects.push(Arc::new(Translate::new(rotated, ds.center)));
+                let obj: Arc<dyn Hittable> = if ds.axial_speed != 0.0 {
+                    Arc::new(Rotate::around_y(sphere, ds.axial_angle.to_degrees()))
+                } else {
+                    sphere
+                };
+                let obj: Arc<dyn Hittable> = if ds.axial_tilt != 0.0 {
+                    Arc::new(Rotate::around_x(obj, ds.axial_tilt.to_degrees()))
+                } else {
+                    obj
+                };
+                list.objects.push(Arc::new(Translate::new(obj, ds.center)));
             } else {
                 list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
             }
