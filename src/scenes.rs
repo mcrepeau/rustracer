@@ -9,6 +9,7 @@ use crate::mesh::load_obj;
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
+use crate::ring::Ring;
 use crate::scene::{DynamicSphere, Orbit, RingData, SceneData};
 use crate::sphere::Sphere;
 use crate::texture::Texture;
@@ -18,6 +19,7 @@ use crate::volume::ConstantMedium;
 use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use std::f32::consts::PI;
 
 /// Creates a matched (world quad, light-sampler quad) pair with identical geometry.
 fn emissive_quad(q: Point3, u: Vec3, v: Vec3, emit: Color) -> (Quad, Quad) {
@@ -397,9 +399,35 @@ pub fn build_solar_system_scene() -> SceneData {
     });
     let mut lights = HittableList::new();
     lights.add(Sphere::new(Point3::new(0.0, 0.0, 0.0), 8.0, Arc::clone(&sun_mat)));
-    let static_objects: Vec<Arc<dyn Hittable>> = vec![
+    let mut static_objects: Vec<Arc<dyn Hittable>> = vec![
         Arc::new(Sphere::new(Point3::new(0.0, 0.0, 0.0), 8.0, sun_mat)),
     ];
+
+    // ── Sun corona ─────────────────────────────────────────────────────────────
+    // Low-density warm-orange participating medium just outside the sun's surface.
+    let corona_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
+        Point3::new(0.0, 0.0, 0.0), 14.0,
+        Arc::new(Dielectric { ir: 1.0 }),
+    ));
+    static_objects.push(
+        Arc::new(ConstantMedium::new(corona_boundary, 0.007, Color::new(1.0, 0.60, 0.18)))
+            as Arc<dyn Hittable>,
+    );
+
+    // ── Orbital trail rings ────────────────────────────────────────────────────
+    // Hairline dim-emissive rings in the orbital plane for all 8 planets.
+    let trail_mat: Arc<dyn Material> = Arc::new(DiffuseLight {
+        emit: Color::new(0.05, 0.05, 0.10).into(),
+    });
+    for &r in &[18.0_f32, 26.0, 35.0, 47.0, 65.0, 87.0, 108.0, 130.0] {
+        static_objects.push(Arc::new(Ring::new(
+            Point3::new(0.0, 0.0, 0.0),
+            r - 0.2,
+            r + 0.2,
+            Vec3::new(0.0, 1.0, 0.0),
+            Arc::clone(&trail_mat),
+        )) as Arc<dyn Hittable>);
+    }
 
     // ── Planet + moon helper ──────────────────────────────────────────────────
     // Planets are pushed first (indices 0-7); moons reference planet indices.
@@ -470,6 +498,38 @@ pub fn build_solar_system_scene() -> SceneData {
         normal:  Vec3::new(0.0, saturn_tilt.cos(), saturn_tilt.sin()),
         mat:     ring_mat,
     });
+
+    // ── Asteroid belt ─────────────────────────────────────────────────────────
+    // ~45 small rocky bodies between Mars (r=47) and Jupiter (r=65).
+    // Speeds interpolated between the two planets' orbital speeds.
+    let mut belt_rng = SmallRng::seed_from_u64(999);
+    for _ in 0..45 {
+        let orbit_r = 48.0_f32 + belt_rng.gen::<f32>() * 14.0;
+        let angle   = belt_rng.gen::<f32>() * 2.0 * PI;
+        let incl    = (belt_rng.gen::<f32>() - 0.5) * 0.3;
+        let t_belt  = (orbit_r - 47.0) / (65.0 - 47.0);
+        let speed   = (0.0001855 * (1.0 - t_belt) + 0.0000294 * t_belt)
+                      * (0.85 + belt_rng.gen::<f32>() * 0.30);
+        let radius  = 0.18 + belt_rng.gen::<f32>() * 0.28;
+        let g       = 0.38 + belt_rng.gen::<f32>() * 0.22;
+        let red     = belt_rng.gen::<f32>() * 0.09;
+        let mat: Arc<dyn Material> = Arc::new(Lambertian {
+            texture: Color::new(g + red, g - red * 0.3, g * 0.82).into(),
+        });
+        dynamic.push(DynamicSphere {
+            center:      Point3::new(orbit_r * angle.cos(), 0.0, orbit_r * angle.sin()),
+            velocity:    Vec3::default(),
+            radius,
+            mat,
+            restitution: 0.0,
+            is_static:   false,
+            orbit:       Some(Orbit { parent_idx: None, radius: orbit_r, speed, angle, inclination: incl }),
+            axial_angle: 0.0,
+            axial_speed: 0.0,
+            axial_tilt:  0.0,
+            ring:        None,
+        });
+    }
 
     // ── Moons ─────────────────────────────────────────────────────────────────
     // Moon speeds scaled to the same 18000-ticks-per-Earth-year base.
