@@ -25,7 +25,7 @@ use perlin::Perlin;
 use volume::ConstantMedium;
 use sphere::Sphere;
 use quad::{Quad, make_box};
-use transform::{RotateY, Translate};
+use transform::{Rotate, Translate};
 use mesh::load_obj;
 use camera::Camera;
 use bvh::BvhTree;
@@ -508,13 +508,13 @@ fn build_cornell_box() -> SceneData {
     list.add(Quad::new(Point3::new(0.0,   0.0,   555.0), Vec3::new(555.0, 0.0,  0.0), Vec3::new(0.0, 555.0, 0.0),  Arc::clone(&white)));
     // Build each box at the origin, rotate, then translate into place.
     let tall = Arc::new(make_box(Point3::new(0.0,0.0,0.0), Point3::new(165.0,330.0,165.0), Arc::clone(&white))) as Arc<dyn Hittable>;
-    let tall = Arc::new(RotateY::new(tall,  15.0)) as Arc<dyn Hittable>;
+    let tall = Arc::new(Rotate::around_y(tall,  15.0)) as Arc<dyn Hittable>;
     let tall = Arc::new(Translate::new(tall, Vec3::new(265.0, 0.0, 295.0))) as Arc<dyn Hittable>;
     let tall_bbox = tall.bounding_box().unwrap();
     list.objects.push(tall);
 
     let short = Arc::new(make_box(Point3::new(0.0,0.0,0.0), Point3::new(165.0,165.0,165.0), white)) as Arc<dyn Hittable>;
-    let short = Arc::new(RotateY::new(short, -18.0)) as Arc<dyn Hittable>;
+    let short = Arc::new(Rotate::around_y(short, -18.0)) as Arc<dyn Hittable>;
     let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
     let short_bbox = short.bounding_box().unwrap();
     list.objects.push(short);
@@ -737,7 +737,7 @@ fn build_nextweek_scene() -> SceneData {
         ));
     }
     let cluster: Arc<dyn Hittable> = Arc::new(BvhTree::from_list(cluster));
-    let cluster: Arc<dyn Hittable> = Arc::new(RotateY::new(cluster, 15.0));
+    let cluster: Arc<dyn Hittable> = Arc::new(Rotate::around_y(cluster, 15.0));
     let cluster: Arc<dyn Hittable> = Arc::new(Translate::new(cluster, Vec3::new(-100.0, 270.0, 395.0)));
     list.objects.push(cluster);
 
