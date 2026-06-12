@@ -5,6 +5,8 @@ use crate::ray::Ray;
 
 const NUM_BUCKETS: usize = 12;
 
+type ObjsBoxes = (Vec<Arc<dyn Hittable>>, Vec<Aabb>);
+
 // 4-wide BVH node. AABBs stored SoA ([axis][child]) for SIMD intersection.
 struct QbvhNode {
     min: [[f32; 4]; 3],
@@ -29,7 +31,7 @@ fn surface_area(b: &Aabb) -> f32 {
 fn sah_partition(
     objs:  &[Arc<dyn Hittable>],
     boxes: &[Aabb],
-) -> (Vec<Arc<dyn Hittable>>, Vec<Aabb>, Vec<Arc<dyn Hittable>>, Vec<Aabb>) {
+) -> (ObjsBoxes, ObjsBoxes) {
     let span = objs.len();
     debug_assert!(span >= 2);
 
@@ -107,7 +109,7 @@ fn sah_partition(
     };
 
     // Sort indices by bucket; no Arc clones until the final gather.
-    let bid: Vec<usize> = boxes.iter().map(|b| bucket_id(b)).collect();
+    let bid: Vec<usize> = boxes.iter().map(bucket_id).collect();
     let mut order: Vec<usize> = (0..span).collect();
     order.sort_by_key(|&i| bid[i]);
     let mid_off = order.partition_point(|&i| bid[i] <= best_split);
@@ -118,25 +120,25 @@ fn sah_partition(
     let lb: Vec<Aabb>               = li.iter().map(|&i| boxes[i]).collect();
     let ro: Vec<Arc<dyn Hittable>> = ri.iter().map(|&i| Arc::clone(&objs[i])).collect();
     let rb: Vec<Aabb>               = ri.iter().map(|&i| boxes[i]).collect();
-    (lo, lb, ro, rb)
+    ((lo, lb), (ro, rb))
 }
 
 fn split_four(
     objs:  &[Arc<dyn Hittable>],
     boxes: &[Aabb],
-) -> Vec<(Vec<Arc<dyn Hittable>>, Vec<Aabb>)> {
+) -> Vec<ObjsBoxes> {
     if objs.len() <= 4 {
         return objs.iter().zip(boxes.iter())
             .map(|(o, b)| (vec![Arc::clone(o)], vec![*b]))
             .collect();
     }
-    let (lo, lb, ro, rb) = sah_partition(objs, boxes);
+    let ((lo, lb), (ro, rb)) = sah_partition(objs, boxes);
     let mut groups = Vec::with_capacity(4);
     for (sub_o, sub_b) in [(&lo[..], &lb[..]), (&ro[..], &rb[..])] {
         if sub_o.len() < 2 {
             groups.push((sub_o.iter().map(Arc::clone).collect(), sub_b.to_vec()));
         } else {
-            let (ll, lb2, rl, rb2) = sah_partition(sub_o, sub_b);
+            let ((ll, lb2), (rl, rb2)) = sah_partition(sub_o, sub_b);
             groups.push((ll, lb2));
             groups.push((rl, rb2));
         }
@@ -301,7 +303,7 @@ unsafe fn test_children_neon(
 }
 
 // Scalar fallback for targets without SSE2 or NEON.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::needless_range_loop)]
 fn test_children_scalar(
     node:  &QbvhNode,
     ro:    [f32; 3],
@@ -327,6 +329,7 @@ fn test_children_scalar(
 }
 
 impl Hittable for BvhTree {
+    #[allow(clippy::needless_range_loop)]
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         if self.nodes.is_empty() { return None; }
 
@@ -380,8 +383,8 @@ impl Hittable for BvhTree {
                 b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
             });
 
-            for k in 0..n_hits {
-                stack[top] = hits[k].1;
+            for &(_, child) in &hits[..n_hits] {
+                stack[top] = child;
                 top += 1;
             }
         }

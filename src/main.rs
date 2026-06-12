@@ -116,7 +116,7 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &Hit
     }
 
     let lum = color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722;
-    if lum > MAX_LUMINANCE { color = color * (MAX_LUMINANCE / lum); }
+    if lum > MAX_LUMINANCE { color *= MAX_LUMINANCE / lum; }
     color
 }
 
@@ -247,10 +247,8 @@ fn bounce_sphere_off_aabb(center: &mut Point3, velocity: &mut Vec3, radius: f32,
     } else if min_y <= min_x && min_y <= min_z {
         if dy_lo < dy_hi { center.y = lo.y; velocity.y = -velocity.y.abs() * restitution; }
         else              { center.y = hi.y; velocity.y =  velocity.y.abs() * restitution; }
-    } else {
-        if dz_lo < dz_hi { center.z = lo.z; velocity.z = -velocity.z.abs() * restitution; }
-        else              { center.z = hi.z; velocity.z =  velocity.z.abs() * restitution; }
-    }
+    } else if dz_lo < dz_hi { center.z = lo.z; velocity.z = -velocity.z.abs() * restitution; }
+    else                    { center.z = hi.z; velocity.z =  velocity.z.abs() * restitution; }
 }
 
 /// Push the camera point out of an AABB in XZ only (walls span full height).
@@ -830,6 +828,7 @@ fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_na
 
 /// Render one sample pass into `scratch` in parallel.
 /// Pass an empty slice for `conv` to disable adaptive-sampling skipping.
+#[allow(clippy::too_many_arguments)]
 fn render_tiles(
     scratch:    &mut [Color],
     sample_idx: u32,

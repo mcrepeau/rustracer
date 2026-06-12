@@ -85,7 +85,7 @@ impl Hittable for HittableList {
         if self.objects.is_empty() { return None; }
         let mut result: Option<Aabb> = None;
         for obj in &self.objects {
-            let Some(bbox) = obj.bounding_box() else { return None; };
+            let bbox = obj.bounding_box()?;
             result = Some(match result {
                 None => bbox,
                 Some(prev) => Aabb::surrounding(&prev, &bbox),

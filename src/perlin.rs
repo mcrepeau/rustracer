@@ -71,6 +71,7 @@ impl Perlin {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn trilinear_interp(c: [[[Vec3; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {
     let mut accum = 0.0f32;
     for i in 0..2usize {
