@@ -13,6 +13,22 @@ Use `--bench` to run performance benchmarks:
 cargo run --release -- --bench
 ```
 
+### OIDN denoising (optional)
+
+Install [Intel Open Image Denoise](https://openimagedenoise.github.io) via Homebrew:
+
+```sh
+brew install open-image-denoise
+```
+
+Then build with the `denoise` feature:
+
+```sh
+cargo run --release --features denoise
+```
+
+Press **N** in-app to toggle denoising. The denoiser runs in a background thread and updates the display every 32 samples.
+
 ## Controls
 
 | Key | Action |
@@ -22,6 +38,8 @@ cargo run --release -- --bench
 | Esc | Exit (or release mouse from free cam) |
 | P | Save PNG |
 | T | Toggle adaptive sampling |
+| N | Toggle OIDN denoising (`denoise` feature) |
+| J / K | Decrease/increase denoise blend (default 80%) |
 | Enter | Pause/resume physics |
 | R | Restart random spheres scene |
 | C | Reset camera |
@@ -39,6 +57,7 @@ cargo run --release -- --bench
 - Depth of field
 - Importance sampling (cosine + area lights)
 - Adaptive sampling with perceptual variance threshold
+- Optional OIDN denoising with adjustable blend (`--features denoise`)
 - Participating media (fog, mist)
 - OBJ mesh loading
 - Physics simulation with sphere collisions
