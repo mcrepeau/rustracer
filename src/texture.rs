@@ -34,7 +34,9 @@ impl Texture {
                 let x = ((u * img.width()  as f32) as u32).min(img.width()  - 1);
                 let y = ((v * img.height() as f32) as u32).min(img.height() - 1);
                 let px = img.get_pixel(x, y);
-                Color::new(px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0)
+                // sRGB → linear
+                let lin = |c: u8| (c as f32 / 255.0).powf(2.2);
+                Color::new(lin(px[0]), lin(px[1]), lin(px[2]))
             }
             Texture::Noise { perlin, scale } => {
                 Color::new(0.5, 0.5, 0.5)

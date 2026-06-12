@@ -97,8 +97,9 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &Hit
                     };
 
                     if pdf_val <= 0.0 { break; }
-                    let scattered  = Ray::new_at_time(rec.p, scattered_dir, ray.time);
-                    let scat_pdf   = rec.mat.scattering_pdf(&ray, &rec, &scattered);
+                    let scattered = Ray::new_at_time(rec.p, scattered_dir, ray.time);
+                    let scat_pdf  = rec.mat.scattering_pdf(&ray, &rec, &scattered);
+                    if scat_pdf <= 0.0 { break; }  // direction below surface hemisphere
 
                     throughput *= sr.attenuation * (scat_pdf / pdf_val);
                     ray = scattered;

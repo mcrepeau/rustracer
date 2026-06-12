@@ -19,11 +19,10 @@ pub struct Lambertian {
 }
 
 impl Material for Lambertian {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let mut dir = rec.normal + Vec3::random_unit_vector(rng);
-        if dir.near_zero() { dir = rec.normal; }
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let albedo = self.texture.value(rec.u, rec.v, rec.p);
-        Some(ScatterRecord { attenuation: albedo, ray: Ray::new_at_time(rec.p, dir, r_in.time), skip_pdf: false })
+        // Direction is overridden by the PDF in ray_color; normal is a harmless placeholder.
+        Some(ScatterRecord { attenuation: albedo, ray: Ray::new_at_time(rec.p, rec.normal, r_in.time), skip_pdf: false })
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
