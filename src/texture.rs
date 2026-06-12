@@ -11,6 +11,8 @@ pub enum Texture {
     Image(Arc<RgbImage>),
     /// Marble-like Perlin noise: 0.5*(1 + sin(scale·p.z + 10·turb(p)))
     Noise { perlin: Arc<Perlin>, scale: f32 },
+    /// Turbulence-based two-color blend for stellar surface granulation.
+    SolarNoise { perlin: Arc<Perlin>, scale: f32, hot: Color, cool: Color },
 }
 
 impl Texture {
@@ -41,6 +43,12 @@ impl Texture {
             Texture::Noise { perlin, scale } => {
                 Color::new(0.5, 0.5, 0.5)
                     * (1.0 + (scale * p.z + 10.0 * perlin.turb(p, 7)).sin())
+            }
+            Texture::SolarNoise { perlin, scale, hot, cool } => {
+                let t = 0.5 * (1.0 + (10.0 * perlin.turb(
+                    Point3::new(p.x * scale, p.y * scale, p.z * scale), 7,
+                )).sin());
+                *hot * t + *cool * (1.0 - t)
             }
         }
     }

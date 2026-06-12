@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::f32::consts::PI;
 
+use rand::{Rng, RngCore};
 use crate::aabb::Aabb;
+use crate::onb::Onb;
 use crate::vec3::{Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Hittable, Material};
@@ -59,6 +61,32 @@ impl Hittable for Sphere {
         rec.u = u;
         rec.v = v;
         Some(rec)
+    }
+
+    fn pdf_value(&self, origin: Point3, _dir: Vec3) -> f32 {
+        let to_center = self.center - origin;
+        let dist_sq   = to_center.length_squared();
+        let r2        = self.radius * self.radius;
+        if dist_sq <= r2 { return 0.0; }
+        let cos_theta_max = (1.0 - r2 / dist_sq).sqrt();
+        1.0 / (2.0 * PI * (1.0 - cos_theta_max))
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore) -> Vec3 {
+        let to_center = self.center - origin;
+        let dist_sq   = to_center.length_squared();
+        let r2        = self.radius * self.radius;
+        if dist_sq <= r2 {
+            return to_center.unit();
+        }
+        let cos_theta_max = (1.0 - r2 / dist_sq).sqrt();
+        let r1: f32 = rng.gen();
+        let r2r: f32 = rng.gen();
+        let phi       = 2.0 * PI * r1;
+        let cos_theta = 1.0 - r2r * (1.0 - cos_theta_max);
+        let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+        let local = Vec3::new(phi.cos() * sin_theta, phi.sin() * sin_theta, cos_theta);
+        Onb::from_w(to_center.unit()).local(local)
     }
 
     fn bounding_box(&self) -> Option<Aabb> {

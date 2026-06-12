@@ -25,7 +25,7 @@ use vec3::Color;
 use camera::CameraState;
 use renderer::{Background, render_tiles};
 use scene::{SceneData, resolve_camera_aabb};
-use scenes::{build_random_scene, build_cornell_box, build_mesh_scene, build_nextweek_scene};
+use scenes::{build_random_scene, build_cornell_box, build_mesh_scene, build_nextweek_scene, build_solar_system_scene};
 use output::{to_rgb_u32, save_png};
 
 use winit::{
@@ -44,12 +44,8 @@ use std::time::{Duration, Instant};
 
 const WIDTH:  u32 = 1200;
 const HEIGHT: u32 = 800;
-const MAX_SAMPLES: u32 = 2000;
 const MOUSE_SENS:  f32 = 0.002;
 const TITLE_INTERVAL: Duration = Duration::from_millis(200);
-const PHYSICS_DT:     Duration = Duration::from_millis(16);
-const ADAPTIVE_MIN_SAMPLES: u32 = 64;
-const ADAPTIVE_THRESHOLD:   f32 = 0.05;
 const CAM_RADIUS: f32 = 0.25;
 
 // ── Bench ─────────────────────────────────────────────────────────────────────
@@ -66,7 +62,7 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     let strata = (samples as f32).sqrt() as u32;
     let t0 = Instant::now();
     for s in 0..samples {
-        render_tiles(scratch, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, &[]);
+        render_tiles(scratch, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights);
     }
     t0.elapsed()
 }
@@ -127,10 +123,12 @@ fn main() {
     let s3 = build_mesh_scene();
     println!("Scene 4: Next Week");
     let s4 = build_nextweek_scene();
-    let mut scenes = [s1, s2, s3, s4];
-    println!("Ready.  [1/2/3/4] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
+    println!("Scene 5: Solar System");
+    let s5 = build_solar_system_scene();
+    let mut scenes = [s1, s2, s3, s4, s5];
+    println!("Ready.  [1-5] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
     println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
-    println!("        [T] adaptive  [Enter] pause  [R] restart (scene 1)  [Esc] quit");
+    println!("        [Enter] pause  [R] restart (scene 1)  [Esc] quit");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -150,7 +148,6 @@ fn main() {
     cam_state.autofocus(scenes[scene_idx].world.as_ref());
     let mut camera        = cam_state.to_camera(win_w as f32 / win_h as f32);
     let mut free_cam      = false;
-    let mut adaptive      = false;
     #[cfg(feature = "denoise")]
     let mut oidn_on       = false;
     #[cfg(feature = "denoise")]
@@ -162,11 +159,8 @@ fn main() {
     let mut accumulator   = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
     let mut pixel_samples = vec![0u32;             (win_w * win_h) as usize];
-    let mut welford_mean  = vec![Color::default(); (win_w * win_h) as usize];
-    let mut welford_m2    = vec![Color::default(); (win_w * win_h) as usize];
-    let mut converged     = vec![false;            (win_w * win_h) as usize];
     let mut samples       = 0u32;
-    let strata = (MAX_SAMPLES as f32).sqrt() as u32;
+    let mut strata = (scenes[scene_idx].max_samples as f32).sqrt() as u32;
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut exposure          = 1.0f32;
     let mut cam_dirty         = false;
@@ -181,8 +175,7 @@ fn main() {
         macro_rules! reset_accum {
             () => {
                 accumulator.fill(Color::default()); pixel_samples.fill(0);
-                welford_mean.fill(Color::default()); welford_m2.fill(Color::default());
-                converged.fill(false); samples = 0;
+                samples = 0;
                 #[cfg(feature = "denoise")]
                 denoised.lock().unwrap().clear();
             }
@@ -203,9 +196,6 @@ fn main() {
                         accumulator.resize(n, Color::default());   accumulator.fill(Color::default());
                         scratch.resize(n, Color::default());        scratch.fill(Color::default());
                         pixel_samples.resize(n, 0);                pixel_samples.fill(0);
-                        welford_mean.resize(n, Color::default());   welford_mean.fill(Color::default());
-                        welford_m2.resize(n, Color::default());     welford_m2.fill(Color::default());
-                        converged.resize(n, false);                 converged.fill(false);
                         samples = 0;
                         cam_dirty = true;
                     }
@@ -240,10 +230,12 @@ fn main() {
                                         window.set_cursor_visible(true);
                                     }
                                 }
-                                VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 | VirtualKeyCode::Key4 => {
-                                    let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, VirtualKeyCode::Key4 => 3, _ => 0 };
+                                VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 | VirtualKeyCode::Key4 | VirtualKeyCode::Key5 => {
+                                    let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, VirtualKeyCode::Key4 => 3, VirtualKeyCode::Key5 => 4, _ => 0 };
                                     scene_idx = idx;
                                     cam_state = CameraState::from_params(&scenes[idx].cam_init);
+                                    strata = (scenes[idx].max_samples as f32).sqrt() as u32;
+                                    physics_accum = Duration::ZERO;
                                     reset_accum!();
                                     cam_dirty = true;
                                     pending_autofocus = true;
@@ -300,10 +292,6 @@ fn main() {
                                     cam_state = CameraState::from_params(&scenes[scene_idx].cam_init);
                                     cam_dirty = true;
                                     pending_autofocus = true;
-                                }
-                                VirtualKeyCode::T => {
-                                    adaptive = !adaptive;
-                                    reset_accum!();
                                 }
                                 #[cfg(feature = "denoise")]
                                 VirtualKeyCode::N => {
@@ -407,9 +395,10 @@ fn main() {
                 physics_accum += frame_dt.min(Duration::from_millis(100));
                 last_frame_time = now;
                 let mut physics_ticked = false;
-                while physics_accum >= PHYSICS_DT {
+                let pdt = scenes[scene_idx].physics_dt;
+                while physics_accum >= pdt {
                     physics_ticked |= scenes[scene_idx].tick();
-                    physics_accum -= PHYSICS_DT;
+                    physics_accum -= pdt;
                 }
                 if physics_ticked { reset_accum!(); }
 
@@ -423,13 +412,6 @@ fn main() {
                     } else if !scene.dynamic.is_empty() {
                         if scene.paused { "  PAUSED — [Enter] resume" } else { "" }
                     } else { "" };
-                    let adaptive_hint = if adaptive {
-                        let pct = converged.iter().filter(|&&c| c).count() * 100
-                                / converged.len().max(1);
-                        format!("  ADAPTIVE {pct}% conv [T] off")
-                    } else {
-                        "  [T] adaptive".to_string()
-                    };
                     #[cfg(feature = "denoise")]
                     let oidn_hint = if oidn_on {
                         let state = if denoise_running.load(Ordering::Relaxed) { "running…" } else { "on" };
@@ -439,53 +421,29 @@ fn main() {
                     };
                     #[cfg(not(feature = "denoise"))]
                     let oidn_hint = "";
-                    let spp_label = if adaptive && samples > 0 {
-                        let min_spp = pixel_samples.iter().copied().min().unwrap_or(0);
-                        format!("{min_spp}–{samples} spp")
-                    } else {
-                        format!("{samples} spp")
-                    };
+                    let spp_label = format!("{samples} spp");
                     let sun_hint = if let Background::Physical { sun_dir } = scene.background {
                         format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}{}",
+                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
                         scene.name, spp_label, cam_hint,
                         cam_state.aperture, cam_state.vfov, exposure,
-                        sun_hint, adaptive_hint, oidn_hint, motion_hint,
+                        sun_hint, oidn_hint, motion_hint,
                     ));
                     last_title_update = Instant::now();
                 }
 
-                if samples < MAX_SAMPLES {
+                if samples < scenes[scene_idx].max_samples {
                     let scene = &scenes[scene_idx];
                     let bg    = scene.background;
-                    let conv  = if adaptive { converged.as_slice() } else { &[] };
 
                     render_tiles(&mut scratch, samples, strata, win_w, win_h, &camera,
-                                 scene.world.as_ref(), bg, &scene.lights, conv);
+                                 scene.world.as_ref(), bg, &scene.lights);
 
                     for i in 0..(win_w * win_h) as usize {
-                        if adaptive && converged[i] { continue; }
-                        let s = scratch[i];
-                        accumulator[i] += s;
-                        pixel_samples[i] += 1;
-                        if adaptive {
-                            let n = pixel_samples[i] as f32;
-                            let delta = s - welford_mean[i];
-                            welford_mean[i] += delta / n;
-                            welford_m2[i]   += delta * (s - welford_mean[i]);
-                            if pixel_samples[i] >= ADAPTIVE_MIN_SAMPLES {
-                                let var      = welford_m2[i] / (n - 1.0);
-                                let mean_lum = welford_mean[i].x * 0.2126
-                                             + welford_mean[i].y * 0.7152
-                                             + welford_mean[i].z * 0.0722;
-                                let var_lum  = var.x * 0.2126 + var.y * 0.7152 + var.z * 0.0722;
-                                if var_lum.sqrt() < ADAPTIVE_THRESHOLD * (mean_lum + ADAPTIVE_THRESHOLD) {
-                                    converged[i] = true;
-                                }
-                            }
-                        }
+                        accumulator[i]    += scratch[i];
+                        pixel_samples[i]  += 1;
                     }
                     samples += 1;
 

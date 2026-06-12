@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
@@ -8,7 +9,7 @@ use crate::mesh::load_obj;
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
-use crate::scene::{DynamicSphere, SceneData};
+use crate::scene::{DynamicSphere, Orbit, SceneData};
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::transform::{Rotate, Translate};
@@ -20,7 +21,7 @@ use rand::SeedableRng;
 
 /// Creates a matched (world quad, light-sampler quad) pair with identical geometry.
 fn emissive_quad(q: Point3, u: Vec3, v: Vec3, emit: Color) -> (Quad, Quad) {
-    let mat: Arc<dyn Material> = Arc::new(DiffuseLight { emit });
+    let mat: Arc<dyn Material> = Arc::new(DiffuseLight { emit: emit.into() });
     let world   = Quad::new(q, u, v, Arc::clone(&mat));
     let sampler = Quad::new(q, u, v, mat);
     (world, sampler)
@@ -45,19 +46,19 @@ pub fn build_random_scene() -> SceneData {
         center: Point3::new( 0.0, 1.0, 0.0),
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Dielectric { ir: 1.5 }),
-        restitution: 0.65, is_static: true,
+        restitution: 0.65, is_static: true, orbit: None,
     });
     dynamic.push(DynamicSphere {
         center: Point3::new(-4.0, 1.0, 0.0),
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Lambertian { texture: Color::new(0.4, 0.2, 0.1).into() }),
-        restitution: 0.35, is_static: true,
+        restitution: 0.35, is_static: true, orbit: None,
     });
     dynamic.push(DynamicSphere {
         center: Point3::new( 4.0, 1.0, 0.0),
         velocity: Vec3::default(),
         radius: 1.0, mat: Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 }),
-        restitution: 0.80, is_static: true,
+        restitution: 0.80, is_static: true, orbit: None,
     });
 
     for a in -11i32..11 {
@@ -78,7 +79,7 @@ pub fn build_random_scene() -> SceneData {
                 (Arc::new(Dielectric { ir: 1.5 }), 0.65)
             };
             let center = Point3::new(cx, 0.2 + rng.gen_range(3.0..12.0), cz);
-            dynamic.push(DynamicSphere { center, velocity: Vec3::default(), radius: 0.2, mat, restitution, is_static: false });
+            dynamic.push(DynamicSphere { center, velocity: Vec3::default(), radius: 0.2, mat, restitution, is_static: false, orbit: None });
         }
     }
 
@@ -99,9 +100,11 @@ pub fn build_random_scene() -> SceneData {
         dynamic,
         bounds:    None,
         colliders: vec![],
-        gravity:   0.03,
-        settled:   false,
-        paused:    false,
+        gravity:     0.03,
+        settled:     false,
+        paused:      false,
+        max_samples: 2000,
+        physics_dt:  Duration::from_millis(16),
     }
 }
 
@@ -148,6 +151,7 @@ pub fn build_cornell_box() -> SceneData {
         mat:         Arc::new(Dielectric { ir: 1.5 }),
         restitution: 1.0,
         is_static:   false,
+        orbit:       None,
     }];
     let bounds = Aabb::new(
         Point3::new(1.0, 1.0, 1.0),
@@ -171,9 +175,11 @@ pub fn build_cornell_box() -> SceneData {
         dynamic,
         bounds:    Some(bounds),
         colliders: vec![tall_bbox, short_bbox],
-        gravity:   0.0,
-        settled:   false,
-        paused:    false,
+        gravity:     0.0,
+        settled:     false,
+        paused:      false,
+        max_samples: 2000,
+        physics_dt:  Duration::from_millis(16),
     }
 }
 
@@ -241,6 +247,8 @@ pub fn build_mesh_scene() -> SceneData {
         gravity:        0.0,
         settled:        false,
         paused:         false,
+        max_samples:    2000,
+        physics_dt:     Duration::from_millis(16),
     }
 }
 
@@ -360,5 +368,123 @@ pub fn build_nextweek_scene() -> SceneData {
         gravity:        0.0,
         settled:        true,
         paused:         false,
+        max_samples:    2000,
+        physics_dt:     Duration::from_millis(16),
+    }
+}
+
+pub fn build_solar_system_scene() -> SceneData {
+    // ── Sun ───────────────────────────────────────────────────────────────────
+    let mut rng = SmallRng::seed_from_u64(7);
+    let sun_perlin = Arc::new(Perlin::new(&mut rng));
+    let sun_mat: Arc<dyn Material> = Arc::new(DiffuseLight {
+        emit: Texture::SolarNoise {
+            perlin: sun_perlin,
+            scale:  0.8,
+            // Values scaled so both hot and cool sit on the visible slope of
+            // the ACES curve (no channel fully saturates), giving perceptible
+            // granulation contrast while still illuminating distant planets.
+            hot:    Color::new(5.0, 3.5, 1.25),
+            cool:   Color::new(1.25, 0.45, 0.05),
+        },
+    });
+    let mut lights = HittableList::new();
+    lights.add(Sphere::new(Point3::new(0.0, 0.0, 0.0), 8.0, Arc::clone(&sun_mat)));
+    let static_objects: Vec<Arc<dyn Hittable>> = vec![
+        Arc::new(Sphere::new(Point3::new(0.0, 0.0, 0.0), 8.0, sun_mat)),
+    ];
+
+    // ── Planet + moon helper ──────────────────────────────────────────────────
+    // Planets are pushed first (indices 0-7); moons reference planet indices.
+    let mut dynamic: Vec<DynamicSphere> = Vec::new();
+
+    let mut planet = |orbit_r: f32, speed: f32, angle: f32, incl: f32,
+                      body_r: f32, mat: Arc<dyn Material>| {
+        let a = angle;
+        dynamic.push(DynamicSphere {
+            center: Point3::new(orbit_r * a.cos(), 0.0, orbit_r * a.sin()),
+            velocity:    Vec3::default(),
+            radius:      body_r,
+            mat,
+            restitution: 0.0,
+            is_static:   false,
+            orbit: Some(Orbit { parent_idx: None, radius: orbit_r, speed, angle, inclination: incl }),
+        });
+    };
+
+    // ── Planets (indices 0-7) ─────────────────────────────────────────────────
+    // Speeds: Earth year = 18000 ticks (10 min @ 60 fps). Each planet speed =
+    // 2π / (orbital_period_in_years × 18000).
+    planet(18.0, 0.001448, 0.0,  0.10, 0.8,
+        Arc::new(Lambertian { texture: Color::new(0.60, 0.58, 0.55).into() })); // Mercury  (~2.4 min)
+    planet(26.0, 0.000566, 1.2,  0.05, 1.5,
+        Arc::new(Lambertian { texture: Color::new(0.90, 0.80, 0.50).into() })); // Venus    (~6.2 min)
+    planet(35.0, 0.0003491, 2.5,  0.03, 1.6,
+        Arc::new(Lambertian { texture:
+            Texture::load("assets/earthmap.jpg")
+                .unwrap_or_else(|_| Color::new(0.20, 0.45, 0.85).into())
+        }));                                                                      // Earth    (~10 min)
+    planet(47.0, 0.0001855, 0.8,  0.08, 1.0,
+        Arc::new(Lambertian { texture: Color::new(0.78, 0.32, 0.12).into() })); // Mars     (~18.8 min)
+    planet(65.0, 0.0000294, 3.5,  0.02, 4.5,
+        Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.40).into() })); // Jupiter  (~2 hr)
+    planet(87.0, 0.0000118, 1.8,  0.04, 3.5,
+        Arc::new(Metal { albedo: Color::new(0.88, 0.80, 0.55), fuzz: 0.1 }));  // Saturn   (~4.9 hr)
+    planet(108.0, 0.00000415, 4.2, 0.12, 2.2,
+        Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus   (~16.7 hr)
+    planet(130.0, 0.00000212, 2.9, 0.03, 2.1,
+        Arc::new(Lambertian { texture: Color::new(0.18, 0.28, 0.80).into() })); // Neptune  (~1.4 day)
+
+    // ── Moons ─────────────────────────────────────────────────────────────────
+    // Moon speeds scaled to the same 18000-ticks-per-Earth-year base.
+    let mut moon = |parent_idx: usize, orbit_r: f32, speed: f32, angle: f32,
+                    body_r: f32, mat: Arc<dyn Material>| {
+        let p = dynamic[parent_idx].center;
+        dynamic.push(DynamicSphere {
+            center: Point3::new(p.x + orbit_r * angle.cos(), p.y, p.z + orbit_r * angle.sin()),
+            velocity:    Vec3::default(),
+            radius:      body_r,
+            mat,
+            restitution: 0.0,
+            is_static:   false,
+            orbit: Some(Orbit { parent_idx: Some(parent_idx), radius: orbit_r, speed, angle, inclination: 0.0 }),
+        });
+    };
+
+    moon(2, 3.2, 0.00467, 0.0,  0.42, Arc::new(Lambertian { texture: Color::new(0.72, 0.72, 0.70).into() })); // Moon     (~22.5 min)
+    moon(4, 6.5, 0.0720,  0.0,  0.50, Arc::new(Lambertian { texture: Color::new(0.90, 0.82, 0.30).into() })); // Io       (~1.5 min)
+    moon(4, 9.0, 0.0359,  2.1,  0.44, Arc::new(Lambertian { texture: Color::new(0.88, 0.90, 0.92).into() })); // Europa   (~2.9 min)
+    moon(5, 6.8, 0.00799, 1.0,  0.52, Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.35).into() })); // Titan    (~13 min)
+    moon(7, 4.2, 0.0217,  3.0,  0.36, Arc::new(Lambertian { texture: Color::new(0.78, 0.72, 0.75).into() })); // Triton   (~4.8 min)
+
+    // ── Build world ───────────────────────────────────────────────────────────
+    let mut list = HittableList::new();
+    for obj in &static_objects { list.objects.push(Arc::clone(obj)); }
+    for ds in &dynamic { list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat))); }
+
+    SceneData {
+        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
+        lights,
+        background: Background::Stars,
+        name:       "Solar System",
+        cam_init:   SceneCameraParams {
+            pos:        Point3::new(0.0, 140.0, 110.0),
+            lookat:     Point3::new(0.0,   0.0,   0.0),
+            vfov:       55.0,
+            aperture:   0.0,
+            focus_dist: 10.0,
+            move_speed: 3.0,
+        },
+        static_objects,
+        dynamic,
+        bounds:    None,
+        colliders: vec![],
+        gravity:     0.0,
+        settled:     false,
+        paused:      false,
+        max_samples: 4000,
+        // Large physics_dt lets the path tracer accumulate many samples
+        // between each planet-position update (planets barely move per tick).
+        physics_dt:  Duration::from_millis(500),
     }
 }

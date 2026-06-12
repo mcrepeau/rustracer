@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
@@ -7,6 +8,14 @@ use crate::renderer::Background;
 use crate::sphere::Sphere;
 use crate::vec3::{Point3, Vec3};
 
+pub struct Orbit {
+    pub parent_idx:  Option<usize>, // None = orbit the fixed origin
+    pub radius:      f32,
+    pub speed:       f32,           // radians per tick
+    pub angle:       f32,           // current angle
+    pub inclination: f32,           // tilt of orbital plane from XZ (radians)
+}
+
 pub struct DynamicSphere {
     pub center:      Point3,
     pub velocity:    Vec3,
@@ -14,6 +23,7 @@ pub struct DynamicSphere {
     pub mat:         Arc<dyn Material>,
     pub restitution: f32,
     pub is_static:   bool,
+    pub orbit:       Option<Orbit>,
 }
 
 pub struct SceneData {
@@ -29,6 +39,11 @@ pub struct SceneData {
     pub gravity:        f32,
     pub settled:        bool,
     pub paused:         bool,
+    pub max_samples:    u32,
+    /// How much wall time must elapse between physics ticks.
+    /// Use a larger value for slow-moving scenes (solar system) so the path
+    /// tracer can accumulate more samples before each position reset.
+    pub physics_dt:     Duration,
 }
 
 /// Sphere-vs-AABB collision: push the sphere out along the axis of minimum
@@ -97,8 +112,38 @@ impl SceneData {
                 }
             }
         } else {
+            // Pass 1: bodies orbiting the fixed origin (planets around the sun)
             for ds in &mut self.dynamic {
-                if !ds.is_static { ds.center += ds.velocity; }
+                if ds.is_static { continue; }
+                match &mut ds.orbit {
+                    Some(orbit) if orbit.parent_idx.is_none() => {
+                        orbit.angle += orbit.speed;
+                        ds.center = Point3::new(
+                            orbit.radius * orbit.angle.cos(),
+                            orbit.radius * orbit.angle.sin() * orbit.inclination.sin(),
+                            orbit.radius * orbit.angle.sin() * orbit.inclination.cos(),
+                        );
+                    }
+                    None => ds.center += ds.velocity,
+                    _ => {}
+                }
+            }
+            // Pass 2: bodies orbiting a moving parent (moons) — snapshot parent
+            // positions after pass 1 so moons track their planet's new location.
+            let centers: Vec<Point3> = self.dynamic.iter().map(|ds| ds.center).collect();
+            for ds in &mut self.dynamic {
+                if ds.is_static { continue; }
+                if let Some(orbit) = &mut ds.orbit {
+                    if let Some(pidx) = orbit.parent_idx {
+                        orbit.angle += orbit.speed;
+                        let p = centers[pidx];
+                        ds.center = Point3::new(
+                            p.x + orbit.radius * orbit.angle.cos(),
+                            p.y + orbit.radius * orbit.angle.sin() * orbit.inclination.sin(),
+                            p.z + orbit.radius * orbit.angle.sin() * orbit.inclination.cos(),
+                        );
+                    }
+                }
             }
         }
 

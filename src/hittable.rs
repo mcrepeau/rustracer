@@ -14,7 +14,7 @@ pub struct ScatterRecord {
 
 pub trait Material: Send + Sync {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord>;
-    fn emitted(&self) -> Color { Color::default() }
+    fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color { Color::default() }
     /// f(ωi, ωo) · cos(θi) — used to weight the PDF-sampled contribution.
     /// Only called when skip_pdf = false.
     fn scattering_pdf(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _scattered: &Ray) -> f32 { 0.0 }

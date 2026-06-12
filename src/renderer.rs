@@ -21,6 +21,8 @@ const LIGHT_PDF_WEIGHT: f32 = 0.7;
 pub enum Background {
     Solid(Color),
     Physical { sun_dir: Vec3 },
+    /// Procedural star field: hash-based pseudo-random stars on the unit sphere.
+    Stars,
 }
 
 impl Background {
@@ -28,6 +30,7 @@ impl Background {
         match self {
             Background::Solid(c) => c,
             Background::Physical { sun_dir } => sky_color(dir, sun_dir),
+            Background::Stars => star_field(dir),
         }
     }
 }
@@ -54,6 +57,34 @@ fn sky_color(dir: Vec3, sun_dir: Vec3) -> Color {
     }
 }
 
+/// Procedural star field using a 3D integer hash on quantized ray directions.
+/// Each ~0.002-radian cell has a 0.4 % chance of containing a star.
+fn star_field(dir: Vec3) -> Color {
+    let d = dir.unit();
+    // Each unit of the direction vector → 500 cells; offset so negatives map
+    // to positive integers without underflow.
+    let ix = (d.x * 500.0 + 500.5) as u32;
+    let iy = (d.y * 500.0 + 500.5) as u32;
+    let iz = (d.z * 500.0 + 500.5) as u32;
+    let h  = ix.wrapping_mul(2654435761)
+           ^ iy.wrapping_mul(2246822519)
+           ^ iz.wrapping_mul(3266489917);
+    // Threshold for ~0.4 % star density (~12 500 stars across the full sphere).
+    const THRESH: u32 = 17_179_869; // u32::MAX * 0.004
+    if h < THRESH {
+        let t = h as f32 / THRESH as f32; // 0..1, varies brightness & color
+        let brightness = 0.4 + t * 1.4;  // faint (0.4) → bright (1.8)
+        // Colour varies from warm-white (low t) to blue-white (high t)
+        Color::new(
+            (0.65 + t * 0.35) * brightness,
+            (0.75 + t * 0.25) * brightness,
+            brightness,
+        )
+    } else {
+        Color::default()
+    }
+}
+
 // ── Path tracer ───────────────────────────────────────────────────────────────
 
 pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, rng: &mut impl Rng) -> Color {
@@ -68,7 +99,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                 break;
             }
             Some(rec) => {
-                color += throughput * rec.mat.emitted();
+                color += throughput * rec.mat.emitted(rec.u, rec.v, rec.p);
 
                 let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
 
@@ -118,7 +149,6 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
 
 /// Render one sample pass into `scratch` in parallel.
 /// `strata` = floor(sqrt(max_samples)); controls the stratified-sampling grid size.
-/// Pass an empty slice for `conv` to disable adaptive-sampling skipping.
 #[allow(clippy::too_many_arguments)]
 pub fn render_tiles(
     scratch:    &mut [Color],
@@ -130,21 +160,16 @@ pub fn render_tiles(
     world:      &dyn Hittable,
     background: Background,
     lights:     &HittableList,
-    conv:       &[bool],
 ) {
     let w        = width  as usize;
     let w_denom  = (width  - 1).max(1) as f32;
     let h_denom  = (height - 1).max(1) as f32;
-    let adaptive = !conv.is_empty();
     let strata2  = strata * strata;
     let strata_f = strata as f32;
 
     scratch.par_iter_mut().enumerate().for_each(|(i, out)| {
-        *out = if adaptive && conv[i] {
-            Color::default()
-        } else {
-            let row = i / w;
-            let col = i % w;
+        let row = i / w;
+        let col = i % w;
             let mut rng = SmallRng::seed_from_u64(
                 (i as u64).wrapping_mul(6364136223846793005)
                     ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
@@ -169,7 +194,6 @@ pub fn render_tiles(
 
             let u = (col as f32 + u_jitter) / w_denom;
             let v = (ray_y as f32 + v_jitter) / h_denom;
-            ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, &mut rng)
-        };
+        *out = ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, &mut rng);
     });
 }

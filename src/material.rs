@@ -1,17 +1,17 @@
 use std::f32::consts::PI;
 use rand::{Rng, RngCore};
-use crate::vec3::{Color, Vec3};
+use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord};
 use crate::texture::Texture;
 
 pub struct DiffuseLight {
-    pub emit: Color,
+    pub emit: Texture,
 }
 
 impl Material for DiffuseLight {
     fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
-    fn emitted(&self) -> Color { self.emit }
+    fn emitted(&self, u: f32, v: f32, p: Point3) -> Color { self.emit.value(u, v, p) }
 }
 
 pub struct Lambertian {
