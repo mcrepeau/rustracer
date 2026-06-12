@@ -63,29 +63,30 @@ impl<'a> Pdf for HittablePdf<'a> {
     }
 }
 
-// ── Mixture PDF (50/50 blend) ─────────────────────────────────────────────────
+// ── Mixture PDF ───────────────────────────────────────────────────────────────
 
 pub struct MixturePdf<'a> {
-    p0: &'a dyn Pdf,
-    p1: &'a dyn Pdf,
+    p0:     &'a dyn Pdf,
+    p1:     &'a dyn Pdf,
+    weight: f32,  // fraction of samples drawn from p1
 }
 
 impl<'a> MixturePdf<'a> {
-    pub fn new(p0: &'a dyn Pdf, p1: &'a dyn Pdf) -> Self {
-        Self { p0, p1 }
+    pub fn new(p0: &'a dyn Pdf, p1: &'a dyn Pdf, weight: f32) -> Self {
+        Self { p0, p1, weight }
     }
 }
 
 impl<'a> Pdf for MixturePdf<'a> {
     fn value(&self, direction: Vec3) -> f32 {
-        0.5 * self.p0.value(direction) + 0.5 * self.p1.value(direction)
+        (1.0 - self.weight) * self.p0.value(direction) + self.weight * self.p1.value(direction)
     }
 
     fn generate(&self, rng: &mut dyn RngCore) -> Vec3 {
-        if rng.gen::<f32>() < 0.5 {
-            self.p0.generate(rng)
-        } else {
+        if rng.gen::<f32>() < self.weight {
             self.p1.generate(rng)
+        } else {
+            self.p0.generate(rng)
         }
     }
 }

@@ -8,8 +8,12 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rayon::prelude::*;
 
-const MAX_DEPTH:    i32 = 50;
-const MAX_LUMINANCE: f32 = 10.0;
+const MAX_DEPTH:      i32 = 50;
+const MAX_LUMINANCE:  f32 = 10.0;
+// Fraction of scatter samples drawn toward explicit lights vs. cosine lobe.
+// Higher values reduce noise in scenes dominated by a single area light;
+// lower values help when indirect illumination dominates.
+const LIGHT_PDF_WEIGHT: f32 = 0.7;
 
 // ── Background ────────────────────────────────────────────────────────────────
 
@@ -82,7 +86,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     } else {
                         let cpdf  = CosinePdf::new(rec.normal);
                         let lpdf  = HittablePdf::new(lights, rec.p);
-                        let mpdf  = MixturePdf::new(&cpdf, &lpdf);
+                        let mpdf  = MixturePdf::new(&cpdf, &lpdf, LIGHT_PDF_WEIGHT);
                         scattered_dir = mpdf.generate(rng);
                         pdf_val       = mpdf.value(scattered_dir);
                     };
