@@ -439,7 +439,7 @@ pub fn build_solar_system_scene() -> SceneData {
     planet(65.0, 0.0000294, 3.5,  0.02, 4.5,  0.3083,
         Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.40).into() })); // Jupiter (fast)
     planet(87.0, 0.0000118, 1.8,  0.04, 3.5,  0.2873,
-        Arc::new(Metal { albedo: Color::new(0.88, 0.80, 0.55), fuzz: 0.1 }));  // Saturn
+        Arc::new(Lambertian { texture: Color::new(0.88, 0.80, 0.55).into() })); // Saturn
     planet(108.0, 0.00000415, 4.2, 0.12, 2.2, -0.1776,
         Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus (retrograde)
     planet(130.0, 0.00000212, 2.9, 0.03, 2.1,  0.1900,

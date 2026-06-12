@@ -411,7 +411,7 @@ fn main() {
                         else if scene.paused { "  PAUSED — [Enter] resume  [R] restart" }
                         else                 { "  [Enter] pause  [R] restart" }
                     } else if !scene.dynamic.is_empty() {
-                        if scene.paused { "  PAUSED — [Enter] resume" } else { "" }
+                        if scene.paused { "  PAUSED — [Enter] resume" } else { "  [Enter] pause" }
                     } else { "" };
                     #[cfg(feature = "denoise")]
                     let oidn_hint = if oidn_on {
