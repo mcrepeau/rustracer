@@ -55,8 +55,8 @@ const MOUSE_SENS: f32    = 0.002;
 const MAX_LUMINANCE: f32      = 10.0;
 const TITLE_INTERVAL: Duration  = Duration::from_millis(200);
 const PHYSICS_DT:     Duration  = Duration::from_millis(16);  // ~60 Hz fixed physics step
-const ADAPTIVE_MIN_SAMPLES: u32 = 16;
-const ADAPTIVE_THRESHOLD:   f32 = 0.01;
+const ADAPTIVE_MIN_SAMPLES: u32 = 32;
+const ADAPTIVE_THRESHOLD:   f32 = 0.05; // relative std-dev threshold (coefficient of variation)
 const CAM_RADIUS:  f32   = 0.25;
 
 fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, rng: &mut impl Rng) -> Color {
@@ -1244,8 +1244,14 @@ fn main() {
                             welford_mean[i] += delta / n;
                             welford_m2[i]   += delta * (s - welford_mean[i]);
                             if pixel_samples[i] >= ADAPTIVE_MIN_SAMPLES {
-                                let var = welford_m2[i] / (n - 1.0);
-                                if var.x.max(var.y).max(var.z) < ADAPTIVE_THRESHOLD {
+                                let var      = welford_m2[i] / (n - 1.0);
+                                let mean_lum = welford_mean[i].x * 0.2126
+                                             + welford_mean[i].y * 0.7152
+                                             + welford_mean[i].z * 0.0722;
+                                let var_lum  = var.x * 0.2126 + var.y * 0.7152 + var.z * 0.0722;
+                                // σ < threshold × (μ + threshold): relative criterion with floor
+                                // so genuinely-black pixels converge but dark indirect-lit ones don't lock in early
+                                if var_lum.sqrt() < ADAPTIVE_THRESHOLD * (mean_lum + ADAPTIVE_THRESHOLD) {
                                     converged[i] = true;
                                 }
                             }
