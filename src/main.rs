@@ -18,6 +18,8 @@ mod renderer;
 mod scene;
 mod scenes;
 mod output;
+#[cfg(feature = "denoise")]
+mod denoise;
 
 use vec3::Color;
 use camera::CameraState;
@@ -34,6 +36,10 @@ use winit::{
 };
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
+#[cfg(feature = "denoise")]
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "denoise")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const WIDTH:  u32 = 1200;
@@ -42,7 +48,7 @@ const MAX_SAMPLES: u32 = 2000;
 const MOUSE_SENS:  f32 = 0.002;
 const TITLE_INTERVAL: Duration = Duration::from_millis(200);
 const PHYSICS_DT:     Duration = Duration::from_millis(16);
-const ADAPTIVE_MIN_SAMPLES: u32 = 32;
+const ADAPTIVE_MIN_SAMPLES: u32 = 64;
 const ADAPTIVE_THRESHOLD:   f32 = 0.05;
 const CAM_RADIUS: f32 = 0.25;
 
@@ -145,6 +151,14 @@ fn main() {
     let mut camera        = cam_state.to_camera(win_w as f32 / win_h as f32);
     let mut free_cam      = false;
     let mut adaptive      = false;
+    #[cfg(feature = "denoise")]
+    let mut oidn_on       = false;
+    #[cfg(feature = "denoise")]
+    let mut denoise_blend = 0.8f32;  // 1.0 = full OIDN, 0.0 = raw
+    #[cfg(feature = "denoise")]
+    let denoised: Arc<Mutex<Vec<Color>>> = Arc::new(Mutex::new(Vec::new()));
+    #[cfg(feature = "denoise")]
+    let denoise_running:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut accumulator   = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
     let mut pixel_samples = vec![0u32;             (win_w * win_h) as usize];
@@ -169,6 +183,8 @@ fn main() {
                 accumulator.fill(Color::default()); pixel_samples.fill(0);
                 welford_mean.fill(Color::default()); welford_m2.fill(Color::default());
                 converged.fill(false); samples = 0;
+                #[cfg(feature = "denoise")]
+                denoised.lock().unwrap().clear();
             }
         }
 
@@ -289,6 +305,39 @@ fn main() {
                                     adaptive = !adaptive;
                                     reset_accum!();
                                 }
+                                #[cfg(feature = "denoise")]
+                                VirtualKeyCode::N => {
+                                    oidn_on = !oidn_on;
+                                    if oidn_on && samples > 0 && !denoise_running.load(Ordering::Relaxed) {
+                                        let w = win_w; let h = win_h;
+                                        let input: Vec<f32> = accumulator.iter().zip(pixel_samples.iter())
+                                            .flat_map(|(c, &s)| {
+                                                let sc = 1.0 / s.max(1) as f32;
+                                                [c.x * sc, c.y * sc, c.z * sc]
+                                            })
+                                            .collect();
+                                        let dst = Arc::clone(&denoised);
+                                        let running = Arc::clone(&denoise_running);
+                                        running.store(true, Ordering::Relaxed);
+                                        std::thread::spawn(move || {
+                                            if let Some(result) = denoise::denoise_rgb(w, h, input) {
+                                                *dst.lock().unwrap() = result;
+                                            }
+                                            running.store(false, Ordering::Relaxed);
+                                        });
+                                    }
+                                    window.request_redraw();
+                                }
+                                #[cfg(feature = "denoise")]
+                                VirtualKeyCode::J => {
+                                    denoise_blend = (denoise_blend - 0.1).max(0.0);
+                                    window.request_redraw();
+                                }
+                                #[cfg(feature = "denoise")]
+                                VirtualKeyCode::K => {
+                                    denoise_blend = (denoise_blend + 0.1).min(1.0);
+                                    window.request_redraw();
+                                }
                                 VirtualKeyCode::Return => {
                                     let pausing = !scenes[scene_idx].paused;
                                     scenes[scene_idx].paused = pausing;
@@ -381,6 +430,15 @@ fn main() {
                     } else {
                         "  [T] adaptive".to_string()
                     };
+                    #[cfg(feature = "denoise")]
+                    let oidn_hint = if oidn_on {
+                        let state = if denoise_running.load(Ordering::Relaxed) { "running…" } else { "on" };
+                        format!("  OIDN {state} blend:{:.0}% [JK] [N] off", denoise_blend * 100.0)
+                    } else {
+                        "  [N] denoise".to_string()
+                    };
+                    #[cfg(not(feature = "denoise"))]
+                    let oidn_hint = "";
                     let spp_label = if adaptive && samples > 0 {
                         let min_spp = pixel_samples.iter().copied().min().unwrap_or(0);
                         format!("{min_spp}–{samples} spp")
@@ -391,10 +449,10 @@ fn main() {
                         format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
+                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}{}",
                         scene.name, spp_label, cam_hint,
                         cam_state.aperture, cam_state.vfov, exposure,
-                        sun_hint, adaptive_hint, motion_hint,
+                        sun_hint, adaptive_hint, oidn_hint, motion_hint,
                     ));
                     last_title_update = Instant::now();
                 }
@@ -431,6 +489,26 @@ fn main() {
                     }
                     samples += 1;
 
+                    #[cfg(feature = "denoise")]
+                    if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Relaxed) {
+                        let w = win_w; let h = win_h;
+                        let input: Vec<f32> = accumulator.iter().zip(pixel_samples.iter())
+                            .flat_map(|(c, &s)| {
+                                let sc = 1.0 / s.max(1) as f32;
+                                [c.x * sc, c.y * sc, c.z * sc]
+                            })
+                            .collect();
+                        let dst = Arc::clone(&denoised);
+                        let running = Arc::clone(&denoise_running);
+                        running.store(true, Ordering::Relaxed);
+                        std::thread::spawn(move || {
+                            if let Some(result) = denoise::denoise_rgb(w, h, input) {
+                                *dst.lock().unwrap() = result;
+                            }
+                            running.store(false, Ordering::Relaxed);
+                        });
+                    }
+
                     window.request_redraw();
                 } else {
                     *control_flow = ControlFlow::Wait;
@@ -439,8 +517,26 @@ fn main() {
 
             Event::RedrawRequested(_) => {
                 let mut buffer = surface.buffer_mut().unwrap();
-                for (i, &color) in accumulator.iter().enumerate() {
-                    buffer[i] = to_rgb_u32(color, exposure / pixel_samples[i].max(1) as f32);
+                #[cfg(feature = "denoise")]
+                {
+                    let denoised_guard = denoised.lock().unwrap();
+                    let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
+                    for i in 0..(win_w * win_h) as usize {
+                        let raw = accumulator[i] * (1.0 / pixel_samples[i].max(1) as f32);
+                        let color = if use_denoised {
+                            denoised_guard[i] * denoise_blend + raw * (1.0 - denoise_blend)
+                        } else {
+                            raw
+                        };
+                        buffer[i] = to_rgb_u32(color, exposure);
+                    }
+                }
+                #[cfg(not(feature = "denoise"))]
+                for i in 0..(win_w * win_h) as usize {
+                    buffer[i] = to_rgb_u32(
+                        accumulator[i] * (1.0 / pixel_samples[i].max(1) as f32),
+                        exposure,
+                    );
                 }
                 buffer.present().unwrap();
             }

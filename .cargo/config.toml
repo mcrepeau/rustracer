@@ -1,2 +1,6 @@
 [build]
 rustflags = ["-C", "target-cpu=native"]
+
+[env]
+# Set after: brew install open-image-denoise
+OIDN_DIR = "/opt/homebrew/opt/open-image-denoise"

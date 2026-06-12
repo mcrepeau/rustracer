@@ -10,6 +10,10 @@ rayon = "1.10"
 rand = { version = "0.8", features = ["small_rng"] }
 image = "0.25"
 tobj  = "4"
+oidn  = { version = "2", optional = true }
+
+[features]
+denoise = ["dep:oidn"]
 
 [profile.release]
 opt-level       = 3
