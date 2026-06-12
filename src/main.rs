@@ -22,7 +22,7 @@ mod output;
 #[cfg(feature = "denoise")]
 mod denoise;
 
-use vec3::Color;
+use vec3::{Color, Vec3};
 use camera::CameraState;
 use renderer::{Background, render_tiles};
 use scene::{SceneData, resolve_camera_aabb};
@@ -162,6 +162,8 @@ fn main() {
     let mut pixel_samples = vec![0u32;             (win_w * win_h) as usize];
     let mut samples       = 0u32;
     let mut strata = (scenes[scene_idx].max_samples as f32).sqrt() as u32;
+    let mut follow_body:   Option<usize> = None; // index into scene.dynamic
+    let mut follow_offset: Vec3          = Vec3::default();
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut exposure          = 1.0f32;
     let mut cam_dirty         = false;
@@ -237,9 +239,41 @@ fn main() {
                                     cam_state = CameraState::from_params(&scenes[idx].cam_init);
                                     strata = (scenes[idx].max_samples as f32).sqrt() as u32;
                                     physics_accum = Duration::ZERO;
+                                    follow_body = None;
                                     reset_accum!();
                                     cam_dirty = true;
                                     pending_autofocus = true;
+                                }
+                                VirtualKeyCode::Tab => {
+                                    let scene = &scenes[scene_idx];
+                                    if !scene.named_bodies.is_empty() {
+                                        // Cycle to next named body, or back to None.
+                                        let next = match follow_body {
+                                            None => Some(0usize),
+                                            Some(cur) => {
+                                                let pos = scene.named_bodies.iter()
+                                                    .position(|&(di, _)| di == cur);
+                                                match pos {
+                                                    Some(p) if p + 1 < scene.named_bodies.len() => Some(p + 1),
+                                                    _ => None,
+                                                }
+                                            }
+                                        };
+                                        follow_body = next.map(|p| scene.named_bodies[p].0);
+                                        if let Some(di) = follow_body {
+                                            let planet = &scene.dynamic[di];
+                                            // Position camera at a sensible distance from the body.
+                                            let dist = (planet.radius * 8.0).max(4.0);
+                                            let to = cam_state.pos - planet.center;
+                                            let dir = if to.length_squared() > 1e-4 {
+                                                to * (1.0 / to.length_squared().sqrt())
+                                            } else {
+                                                Vec3::new(0.0, 0.5, 1.0) * (1.0 / (0.25f32 + 1.0f32).sqrt())
+                                            };
+                                            follow_offset = dir * dist;
+                                        }
+                                        cam_dirty = true;
+                                    }
                                 }
                                 VirtualKeyCode::P => save_png(&accumulator, &pixel_samples, samples, scenes[scene_idx].name, win_w, win_h, exposure),
                                 VirtualKeyCode::LBracket => {
@@ -376,6 +410,12 @@ fn main() {
                         for bbox in &scenes[scene_idx].colliders {
                             resolve_camera_aabb(&mut cam_state.pos, CAM_RADIUS, bbox);
                         }
+                        // Keep follow offset in sync so the new position is maintained.
+                        if let Some(di) = follow_body {
+                            if let Some(ds) = scenes[scene_idx].dynamic.get(di) {
+                                follow_offset = cam_state.pos - ds.center;
+                            }
+                        }
                         cam_dirty = true;
                         pending_autofocus = true;
                     }
@@ -401,11 +441,39 @@ fn main() {
                     physics_ticked |= scenes[scene_idx].tick();
                     physics_accum -= pdt;
                 }
-                if physics_ticked { reset_accum!(); }
+                if physics_ticked {
+                    // Camera follow: move with the tracked body and aim at it.
+                    if let Some(di) = follow_body {
+                        if let Some(ds) = scenes[scene_idx].dynamic.get(di) {
+                            let new_pos = ds.center + follow_offset;
+                            let to_body = ds.center - new_pos;
+                            if to_body.length_squared() > 1e-6 {
+                                let d = to_body * (1.0 / to_body.length_squared().sqrt());
+                                cam_state.yaw   = d.x.atan2(-d.z);
+                                cam_state.pitch = d.y.asin()
+                                    .clamp(-89f32.to_radians(), 89f32.to_radians());
+                            }
+                            cam_state.pos = new_pos;
+                            camera = cam_state.to_camera(win_w as f32 / win_h as f32);
+                        }
+                    }
+                    reset_accum!();
+                }
 
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
                     let scene    = &scenes[scene_idx];
                     let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
+                    let follow_hint = if let Some(di) = follow_body {
+                        let name = scenes[scene_idx].named_bodies.iter()
+                            .find(|&&(i, _)| i == di)
+                            .map(|&(_, n)| n)
+                            .unwrap_or("body");
+                        format!("  [Tab] follow: {name}")
+                    } else if !scenes[scene_idx].named_bodies.is_empty() {
+                        "  [Tab] follow".to_string()
+                    } else {
+                        String::new()
+                    };
                     let motion_hint = if scene.gravity > 0.0 {
                         if scene.settled     { "  settled — [R] restart" }
                         else if scene.paused { "  PAUSED — [Enter] resume  [R] restart" }
@@ -427,8 +495,8 @@ fn main() {
                         format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
-                        scene.name, spp_label, cam_hint,
+                        "Ray Tracer — {} — {}  |  {}{}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
+                        scene.name, spp_label, cam_hint, follow_hint,
                         cam_state.aperture, cam_state.vfov, exposure,
                         sun_hint, oidn_hint, motion_hint,
                     ));

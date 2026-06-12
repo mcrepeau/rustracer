@@ -14,8 +14,12 @@ pub struct Orbit {
     pub parent_idx:  Option<usize>, // None = orbit the fixed origin
     pub radius:      f32,
     pub speed:       f32,           // radians per tick
-    pub angle:       f32,           // current angle
-    pub inclination: f32,           // tilt of orbital plane from XZ (radians)
+    pub angle:       f32,           // current true-anomaly angle
+    pub inclination: f32,           // orbital-plane tilt from XZ (radians)
+    /// Longitude of ascending node (radians): direction in XZ where orbit
+    /// crosses the reference plane going "upward".  Distributes each planet's
+    /// tilt in a unique direction so the planes don't all look co-planar.
+    pub asc_node:    f32,
 }
 
 pub struct RingData {
@@ -59,6 +63,9 @@ pub struct SceneData {
     pub settled:        bool,
     pub paused:         bool,
     pub max_samples:    u32,
+    /// Bodies available for camera follow mode: (index into `dynamic`, display name).
+    /// Empty for scenes that don't use follow mode.
+    pub named_bodies:   Vec<(usize, &'static str)>,
     /// How much wall time must elapse between physics ticks.
     /// Use a larger value for slow-moving scenes (solar system) so the path
     /// tracer can accumulate more samples before each position reset.
@@ -131,35 +138,47 @@ impl SceneData {
                 }
             }
         } else {
-            // Pass 1: bodies orbiting the fixed origin (planets around the sun)
+            // Pass 1: bodies orbiting the fixed origin (planets around the sun).
+            // Full Keplerian circular-orbit formula with inclination i and
+            // longitude of ascending node Ω:
+            //   x = r (cos θ cos Ω  −  sin θ sin Ω cos i)
+            //   y = r  sin θ sin i
+            //   z = r (cos θ sin Ω  +  sin θ cos Ω cos i)
             for ds in &mut self.dynamic {
                 if ds.is_static { continue; }
                 match &mut ds.orbit {
                     Some(orbit) if orbit.parent_idx.is_none() => {
                         orbit.angle += orbit.speed;
+                        let (sa, ca) = orbit.angle.sin_cos();
+                        let (si, ci) = orbit.inclination.sin_cos();
+                        let (sn, cn) = orbit.asc_node.sin_cos();
+                        let r = orbit.radius;
                         ds.center = Point3::new(
-                            orbit.radius * orbit.angle.cos(),
-                            orbit.radius * orbit.angle.sin() * orbit.inclination.sin(),
-                            orbit.radius * orbit.angle.sin() * orbit.inclination.cos(),
+                            r * (ca * cn - sa * sn * ci),
+                            r *  sa * si,
+                            r * (ca * sn + sa * cn * ci),
                         );
                     }
                     None => ds.center += ds.velocity,
                     _ => {}
                 }
             }
-            // Pass 2: bodies orbiting a moving parent (moons) — snapshot parent
-            // positions after pass 1 so moons track their planet's new location.
+            // Pass 2: moons orbit a moving parent — snapshot after pass 1.
             let centers: Vec<Point3> = self.dynamic.iter().map(|ds| ds.center).collect();
             for ds in &mut self.dynamic {
                 if ds.is_static { continue; }
                 if let Some(orbit) = &mut ds.orbit {
                     if let Some(pidx) = orbit.parent_idx {
                         orbit.angle += orbit.speed;
+                        let (sa, ca) = orbit.angle.sin_cos();
+                        let (si, ci) = orbit.inclination.sin_cos();
+                        let (sn, cn) = orbit.asc_node.sin_cos();
                         let p = centers[pidx];
+                        let r = orbit.radius;
                         ds.center = Point3::new(
-                            p.x + orbit.radius * orbit.angle.cos(),
-                            p.y + orbit.radius * orbit.angle.sin() * orbit.inclination.sin(),
-                            p.z + orbit.radius * orbit.angle.sin() * orbit.inclination.cos(),
+                            p.x + r * (ca * cn - sa * sn * ci),
+                            p.y + r *  sa * si,
+                            p.z + r * (ca * sn + sa * cn * ci),
                         );
                     }
                 }

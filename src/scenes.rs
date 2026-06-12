@@ -103,13 +103,14 @@ pub fn build_random_scene() -> SceneData {
         },
         static_objects,
         dynamic,
-        bounds:    None,
-        colliders: vec![],
-        gravity:     0.03,
-        settled:     false,
-        paused:      false,
-        max_samples: 2000,
-        physics_dt:  Duration::from_millis(16),
+        bounds:       None,
+        colliders:    vec![],
+        gravity:      0.03,
+        settled:      false,
+        paused:       false,
+        max_samples:  2000,
+        named_bodies: vec![],
+        physics_dt:   Duration::from_millis(16),
     }
 }
 
@@ -182,13 +183,14 @@ pub fn build_cornell_box() -> SceneData {
         },
         static_objects,
         dynamic,
-        bounds:    Some(bounds),
-        colliders: vec![tall_bbox, short_bbox],
-        gravity:     0.0,
-        settled:     false,
-        paused:      false,
-        max_samples: 2000,
-        physics_dt:  Duration::from_millis(16),
+        bounds:       Some(bounds),
+        colliders:    vec![tall_bbox, short_bbox],
+        gravity:      0.0,
+        settled:      false,
+        paused:       false,
+        max_samples:  2000,
+        named_bodies: vec![],
+        physics_dt:   Duration::from_millis(16),
     }
 }
 
@@ -257,6 +259,7 @@ pub fn build_mesh_scene() -> SceneData {
         settled:        false,
         paused:         false,
         max_samples:    2000,
+        named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
     }
 }
@@ -378,6 +381,7 @@ pub fn build_nextweek_scene() -> SceneData {
         settled:        true,
         paused:         false,
         max_samples:    2000,
+        named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
     }
 }
@@ -406,25 +410,41 @@ pub fn build_solar_system_scene() -> SceneData {
     // ── Sun corona ─────────────────────────────────────────────────────────────
     // Low-density warm-orange participating medium just outside the sun's surface.
     let corona_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
-        Point3::new(0.0, 0.0, 0.0), 14.0,
+        Point3::new(0.0, 0.0, 0.0), 10.0,
         Arc::new(Dielectric { ir: 1.0 }),
     ));
     static_objects.push(
-        Arc::new(ConstantMedium::new(corona_boundary, 0.007, Color::new(1.0, 0.60, 0.18)))
+        Arc::new(ConstantMedium::new(corona_boundary, 0.06, Color::new(1.0, 0.60, 0.18)))
             as Arc<dyn Hittable>,
     );
 
     // ── Orbital trail rings ────────────────────────────────────────────────────
-    // Hairline dim-emissive rings in the orbital plane for all 8 planets.
+    // Hairline dim-emissive rings showing each planet's orbital plane.
+    // Normal of an orbit with inclination i and ascending node Ω:
+    //   (sin Ω · sin i,  cos i,  −cos Ω · sin i)
     let trail_mat: Arc<dyn Material> = Arc::new(DiffuseLight {
         emit: Color::new(0.05, 0.05, 0.10).into(),
     });
-    for &r in &[18.0_f32, 26.0, 35.0, 47.0, 65.0, 87.0, 108.0, 130.0] {
+    // (orbital_radius, inclination_deg, asc_node_deg)  — J2000 values
+    let orbit_data: &[(f32, f32, f32)] = &[
+        ( 18.0,  7.00,  48.33),  // Mercury
+        ( 26.0,  3.39,  76.68),  // Venus
+        ( 35.0,  0.00,   0.00),  // Earth
+        ( 47.0,  1.85,  49.56),  // Mars
+        ( 65.0,  1.30, 100.49),  // Jupiter
+        ( 87.0,  2.49, 113.64),  // Saturn
+        (108.0,  0.77,  74.00),  // Uranus
+        (130.0,  1.77, 131.78),  // Neptune
+    ];
+    for &(r, incl_deg, omega_deg) in orbit_data {
+        let i = incl_deg.to_radians();
+        let n = omega_deg.to_radians();
+        let normal = Vec3::new(n.sin() * i.sin(), i.cos(), -n.cos() * i.sin());
         static_objects.push(Arc::new(Ring::new(
             Point3::new(0.0, 0.0, 0.0),
             r - 0.2,
             r + 0.2,
-            Vec3::new(0.0, 1.0, 0.0),
+            normal,
             Arc::clone(&trail_mat),
         )) as Arc<dyn Hittable>);
     }
@@ -433,18 +453,31 @@ pub fn build_solar_system_scene() -> SceneData {
     // Planets are pushed first (indices 0-7); moons reference planet indices.
     let mut dynamic: Vec<DynamicSphere> = Vec::new();
 
-    let mut planet = |orbit_r: f32, speed: f32, angle: f32, incl: f32,
+    // Perlin for Jupiter's banded cloud texture (seeded separately from the sun).
+    let mut jup_rng = SmallRng::seed_from_u64(12);
+    let jup_perlin  = Arc::new(Perlin::new(&mut jup_rng));
+
+    let mut planet = |orbit_r: f32, speed: f32, angle: f32, incl_deg: f32,
                       body_r: f32, axial_speed: f32, axial_tilt_deg: f32,
+                      asc_node_deg: f32,
                       mat: Arc<dyn Material>| {
-        let a = angle;
+        let incl  = incl_deg.to_radians();
+        let omega = asc_node_deg.to_radians();
+        let (sa, ca) = angle.sin_cos();
+        let (si, ci) = incl.sin_cos();
+        let (sn, cn) = omega.sin_cos();
         dynamic.push(DynamicSphere {
-            center: Point3::new(orbit_r * a.cos(), 0.0, orbit_r * a.sin()),
+            center: Point3::new(
+                orbit_r * (ca * cn - sa * sn * ci),
+                orbit_r *  sa * si,
+                orbit_r * (ca * sn + sa * cn * ci),
+            ),
             velocity:    Vec3::default(),
             radius:      body_r,
             mat,
             restitution: 0.0,
             is_static:   false,
-            orbit: Some(Orbit { parent_idx: None, radius: orbit_r, speed, angle, inclination: incl }),
+            orbit: Some(Orbit { parent_idx: None, radius: orbit_r, speed, angle, inclination: incl, asc_node: omega }),
             axial_angle: 0.0,
             axial_speed,
             axial_tilt: axial_tilt_deg.to_radians(),
@@ -453,48 +486,59 @@ pub fn build_solar_system_scene() -> SceneData {
     };
 
     // ── Planets (indices 0-7) ─────────────────────────────────────────────────
-    // Orbital speeds: Earth year = 18000 ticks (10 min @ 60 fps).
-    // Axial speeds:   Earth day ≈ 49.3 ticks → 2π/49.3 ≈ 0.1274 rad/tick.
-    // Axial tilts:    real obliquities in degrees (Rotate::around_x so the pole
-    //                 appears at (0, cos(tilt), sin(tilt)) in world space).
-    planet(18.0,  0.001448,  0.0,  0.10, 0.8,  0.00218,   0.0,
-        Arc::new(Lambertian { texture: Color::new(0.60, 0.58, 0.55).into() })); // Mercury  ~0°
-    planet(26.0,  0.000566,  1.2,  0.05, 1.5, -0.000524,  0.0,
-        Arc::new(Lambertian { texture: Color::new(0.90, 0.80, 0.50).into() })); // Venus    retrograde
-    planet(35.0,  0.0003491, 2.5,  0.03, 1.6,  0.1274,   23.4,
+    // Orbital speeds: Kepler-consistent with scene radii: ω = 0.0003491·(35/r)^1.5.
+    // Earth (r=35) is the anchor: 18000 ticks/orbit, 0.0003491 rad/tick.
+    // Axial speeds: real sidereal day lengths. Earth day ≈ 49.3 ticks.
+    // Axial tilts:  real obliquities. Venus is nearly inverted (177.4°, retrograde axial spin).
+    //         orbit_r  speed(Kepler)   angle  incl°  body_r  axial_spd   tilt°   Ω°
+    planet( 18.0,  0.0009467,  0.0,   7.00,  0.61, 0.00218,    0.0,  48.33,
+        Arc::new(Lambertian { texture: Color::new(0.60, 0.58, 0.55).into() })); // Mercury
+    planet( 26.0,  0.0005453,  1.2,   3.39,  1.5, -0.000524,  177.4, 76.68,
+        Arc::new(Lambertian { texture: Color::new(0.90, 0.80, 0.50).into() })); // Venus
+    planet( 35.0,  0.0003491,  2.5,   0.00,  1.6,  0.1274,    23.4,  0.00,
         Arc::new(Lambertian { texture:
             Texture::load("assets/earthmap.jpg")
                 .unwrap_or_else(|_| Color::new(0.20, 0.45, 0.85).into())
-        }));                                                                      // Earth   23.4°
-    planet(47.0,  0.0001855, 0.8,  0.08, 1.0,  0.1241,   25.2,
-        Arc::new(Lambertian { texture: Color::new(0.78, 0.32, 0.12).into() })); // Mars    25.2°
-    planet(65.0,  0.0000294, 3.5,  0.02, 4.5,  0.3083,    3.1,
-        Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.40).into() })); // Jupiter  3.1°
-    planet(87.0,  0.0000118, 1.8,  0.04, 3.5,  0.2873,   26.7,
-        Arc::new(Lambertian { texture: Color::new(0.88, 0.80, 0.55).into() })); // Saturn  26.7°
-    planet(108.0, 0.00000415, 4.2, 0.12, 2.2, -0.1776,   97.8,
-        Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus  97.8° (on side)
-    planet(130.0, 0.00000212, 2.9, 0.03, 2.1,  0.1900,   28.3,
-        Arc::new(Lambertian { texture: Color::new(0.18, 0.28, 0.80).into() })); // Neptune 28.3°
+        }));                                                                       // Earth
+    planet( 47.0,  0.0002244,  0.8,   1.85,  0.85, 0.1241,    25.2, 49.56,
+        Arc::new(Lambertian { texture: Color::new(0.78, 0.32, 0.12).into() })); // Mars
+    planet( 65.0,  0.0001380,  3.5,   1.30,  4.5,  0.3083,     3.1, 100.49,
+        Arc::new(Lambertian { texture: Texture::PlanetBands {
+            perlin:    Arc::clone(&jup_perlin),
+            scale:     1.0,
+            band_freq: 12.0,
+            hot:  Color::new(0.72, 0.44, 0.18),
+            cool: Color::new(0.88, 0.80, 0.62),
+        }})); // Jupiter
+    planet( 87.0,  0.0000891,  1.8,   2.49,  3.5,  0.2873,    26.7, 113.64,
+        Arc::new(Lambertian { texture: Color::new(0.88, 0.80, 0.55).into() })); // Saturn
+    planet(108.0,  0.0000644,  4.2,   0.77,  2.2, -0.1776,    97.8, 74.00,
+        Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus
+    planet(130.0,  0.0000488,  2.9,   1.77,  2.1,  0.1900,    28.3, 131.78,
+        Arc::new(Lambertian { texture: Color::new(0.18, 0.28, 0.80).into() })); // Neptune
 
     // Saturn's rings (index 5).
     // Ring normal matches Saturn's axial tilt: Rotate::around_x(26.7°) maps the
     // pole to (0, cos(26.7°), sin(26.7°)), so the equatorial ring has that normal.
+    // Saturn's ring geometry scaled to Saturn's scene radius (3.5):
+    //   inner_r = 1.24 × 3.5 = 4.34  (C ring inner edge, real 1.24 Saturn radii)
+    //   outer_r = 2.27 × 3.5 = 7.95  (A ring outer edge, real 2.27 Saturn radii)
+    // Band thresholds are proportional fractions of the real ring widths (km):
+    //   C(17,485) B(25,610) Cassini(4,470) A-inner(11,910) Encke(325) A-outer(2,495)
     let saturn_tilt = 26.7_f32.to_radians();
     let ring_mat: Arc<dyn Material> = Arc::new(Lambertian {
         texture: Texture::RingBands(Arc::new(vec![
-            (0.20, Color::new(0.62, 0.55, 0.40)), // C ring:           faint, dusty brown
-            (0.55, Color::new(0.92, 0.88, 0.75)), // B ring:           brightest, creamy white
-            (0.63, Color::new(0.06, 0.05, 0.04)), // Cassini division: dark gap
-            (0.82, Color::new(0.82, 0.76, 0.62)), // A ring:           medium brightness
-            (0.85, Color::new(0.10, 0.09, 0.07)), // Encke gap:        narrow dark band
-            (0.97, Color::new(0.75, 0.70, 0.57)), // outer A ring:     slightly fainter
-            (1.00, Color::new(0.48, 0.44, 0.36)), // outer fringe:     very faint
+            (0.28, Color::new(0.62, 0.55, 0.40)), // C ring:           28% — dusty brown
+            (0.69, Color::new(0.92, 0.88, 0.75)), // B ring:           69% — brightest, creamy
+            (0.76, Color::new(0.06, 0.05, 0.04)), // Cassini division: 76% — dark gap
+            (0.95, Color::new(0.82, 0.76, 0.62)), // A ring:           95% — medium brightness
+            (0.96, Color::new(0.10, 0.09, 0.07)), // Encke gap:        96% — narrow dark band
+            (1.00, Color::new(0.76, 0.71, 0.58)), // outer A ring:     100% — slightly fainter
         ])),
     });
     dynamic[5].ring = Some(RingData {
-        inner_r: 5.0,
-        outer_r: 9.0,
+        inner_r: 4.34,
+        outer_r: 7.95,
         normal:  Vec3::new(0.0, saturn_tilt.cos(), saturn_tilt.sin()),
         mat:     ring_mat,
     });
@@ -504,26 +548,34 @@ pub fn build_solar_system_scene() -> SceneData {
     // Speeds interpolated between the two planets' orbital speeds.
     let mut belt_rng = SmallRng::seed_from_u64(999);
     for _ in 0..45 {
-        let orbit_r = 48.0_f32 + belt_rng.gen::<f32>() * 14.0;
-        let angle   = belt_rng.gen::<f32>() * 2.0 * PI;
-        let incl    = (belt_rng.gen::<f32>() - 0.5) * 0.3;
-        let t_belt  = (orbit_r - 47.0) / (65.0 - 47.0);
-        let speed   = (0.0001855 * (1.0 - t_belt) + 0.0000294 * t_belt)
-                      * (0.85 + belt_rng.gen::<f32>() * 0.30);
-        let radius  = 0.18 + belt_rng.gen::<f32>() * 0.28;
-        let g       = 0.38 + belt_rng.gen::<f32>() * 0.22;
-        let red     = belt_rng.gen::<f32>() * 0.09;
+        let orbit_r  = 48.0_f32 + belt_rng.gen::<f32>() * 14.0;
+        let angle    = belt_rng.gen::<f32>() * 2.0 * PI;
+        let incl     = (belt_rng.gen::<f32>() - 0.5) * 0.3;
+        let asc_node = belt_rng.gen::<f32>() * 2.0 * PI;
+        // Kepler speed: same formula as planets, with ±15% random scatter.
+        let speed    = 0.0003491 * (35.0_f32 / orbit_r).powf(1.5)
+                       * (0.85 + belt_rng.gen::<f32>() * 0.30);
+        let radius   = 0.18 + belt_rng.gen::<f32>() * 0.28;
+        let g        = 0.38 + belt_rng.gen::<f32>() * 0.22;
+        let red      = belt_rng.gen::<f32>() * 0.09;
         let mat: Arc<dyn Material> = Arc::new(Lambertian {
             texture: Color::new(g + red, g - red * 0.3, g * 0.82).into(),
         });
+        let (sa, ca) = angle.sin_cos();
+        let (si, ci) = incl.sin_cos();
+        let (sn, cn) = asc_node.sin_cos();
         dynamic.push(DynamicSphere {
-            center:      Point3::new(orbit_r * angle.cos(), 0.0, orbit_r * angle.sin()),
+            center:      Point3::new(
+                orbit_r * (ca * cn - sa * sn * ci),
+                orbit_r *  sa * si,
+                orbit_r * (ca * sn + sa * cn * ci),
+            ),
             velocity:    Vec3::default(),
             radius,
             mat,
             restitution: 0.0,
             is_static:   false,
-            orbit:       Some(Orbit { parent_idx: None, radius: orbit_r, speed, angle, inclination: incl }),
+            orbit:       Some(Orbit { parent_idx: None, radius: orbit_r, speed, angle, inclination: incl, asc_node }),
             axial_angle: 0.0,
             axial_speed: 0.0,
             axial_tilt:  0.0,
@@ -543,7 +595,7 @@ pub fn build_solar_system_scene() -> SceneData {
             mat,
             restitution: 0.0,
             is_static:   false,
-            orbit: Some(Orbit { parent_idx: Some(parent_idx), radius: orbit_r, speed, angle, inclination: 0.0 }),
+            orbit: Some(Orbit { parent_idx: Some(parent_idx), radius: orbit_r, speed, angle, inclination: 0.0, asc_node: 0.0 }),
             axial_angle: 0.0,
             axial_speed: 0.0,
             axial_tilt:  0.0,
@@ -551,11 +603,29 @@ pub fn build_solar_system_scene() -> SceneData {
         });
     };
 
-    moon(2, 3.2, 0.00467, 0.0,  0.42, Arc::new(Lambertian { texture: Color::new(0.72, 0.72, 0.70).into() })); // Moon     (~22.5 min)
-    moon(4, 6.5, 0.0720,  0.0,  0.50, Arc::new(Lambertian { texture: Color::new(0.90, 0.82, 0.30).into() })); // Io       (~1.5 min)
-    moon(4, 9.0, 0.0359,  2.1,  0.44, Arc::new(Lambertian { texture: Color::new(0.88, 0.90, 0.92).into() })); // Europa   (~2.9 min)
-    moon(5, 6.8, 0.00799, 1.0,  0.52, Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.35).into() })); // Titan    (~13 min)
-    moon(7, 4.2, 0.0217,  3.0,  0.36, Arc::new(Lambertian { texture: Color::new(0.78, 0.72, 0.75).into() })); // Triton   (~4.8 min)
+    // Orbital periods are real sidereal values (moon radii are exaggerated for
+    // visibility; real-period speeds are more intuitive than Kepler from scene radii).
+    // Jovian moons: Io/Europa/Ganymede/Callisto in order (Galilean system).
+    // Ganymede (r=0.66) is the largest moon in the solar system, bigger than Mercury.
+    moon(2,  3.2, 0.00467,  0.0,  0.42, Arc::new(Lambertian { texture: Color::new(0.72, 0.72, 0.70).into() })); // Moon
+    moon(4,  6.5, 0.07200,  0.0,  0.50, Arc::new(Lambertian { texture: Color::new(0.90, 0.82, 0.30).into() })); // Io
+    moon(4,  9.0, 0.03590,  2.1,  0.44, Arc::new(Lambertian { texture: Color::new(0.88, 0.90, 0.92).into() })); // Europa
+    moon(4, 12.0, 0.01783,  0.5,  0.66, Arc::new(Lambertian { texture: Color::new(0.58, 0.55, 0.48).into() })); // Ganymede
+    moon(4, 15.5, 0.00764,  1.8,  0.60, Arc::new(Lambertian { texture: Color::new(0.38, 0.35, 0.30).into() })); // Callisto
+    moon(5,  6.8, 0.00799,  1.0,  0.52, Arc::new(Lambertian { texture: Color::new(0.80, 0.62, 0.35).into() })); // Titan
+    moon(7,  4.2, -0.02170, 3.0,  0.36, Arc::new(Lambertian { texture: Color::new(0.78, 0.72, 0.75).into() })); // Triton (retrograde)
+    moon(6,  5.0, 0.01464,  0.0,  0.20, Arc::new(Lambertian { texture: Color::new(0.72, 0.70, 0.68).into() })); // Titania
+    moon(6,  6.5, 0.00947,  2.8,  0.19, Arc::new(Lambertian { texture: Color::new(0.52, 0.49, 0.45).into() })); // Oberon
+
+    // Named bodies for camera follow mode (indices stable after all pushes).
+    let n = dynamic.len(); // = 8 planets + 45 asteroids + 9 moons = 62
+    let named_bodies = vec![
+        (0, "Mercury"), (1, "Venus"),    (2, "Earth"),    (3, "Mars"),
+        (4, "Jupiter"), (5, "Saturn"),   (6, "Uranus"),   (7, "Neptune"),
+        (n-9, "Moon"),  (n-8, "Io"),     (n-7, "Europa"), (n-6, "Ganymede"),
+        (n-5, "Callisto"), (n-4, "Titan"), (n-3, "Triton"),
+        (n-2, "Titania"), (n-1, "Oberon"),
+    ];
 
     // ── Build world ───────────────────────────────────────────────────────────
     let mut list = HittableList::new();
@@ -568,8 +638,9 @@ pub fn build_solar_system_scene() -> SceneData {
         background: Background::Stars,
         name:       "Solar System",
         cam_init:   SceneCameraParams {
-            pos:        Point3::new(0.0, 140.0, 110.0),
-            lookat:     Point3::new(0.0,   0.0,   0.0),
+            // ~25° elevation: shows orbital-plane depth and makes the star field dramatic.
+            pos:        Point3::new(0.0, 75.0, 175.0),
+            lookat:     Point3::new(0.0,  0.0,   0.0),
             vfov:       55.0,
             aperture:   0.0,
             focus_dist: 10.0,
@@ -577,12 +648,13 @@ pub fn build_solar_system_scene() -> SceneData {
         },
         static_objects,
         dynamic,
-        bounds:    None,
-        colliders: vec![],
+        bounds:      None,
+        colliders:   vec![],
         gravity:     0.0,
         settled:     false,
         paused:      false,
         max_samples: 4000,
+        named_bodies,
         // Large physics_dt lets the path tracer accumulate many samples
         // between each planet-position update (planets barely move per tick).
         physics_dt:  Duration::from_millis(500),
