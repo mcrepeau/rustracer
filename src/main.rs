@@ -5,6 +5,8 @@ mod ray;
 mod hittable;
 mod texture;
 mod material;
+mod perlin;
+mod volume;
 mod sphere;
 mod quad;
 mod transform;
@@ -18,6 +20,8 @@ use ray::Ray;
 use hittable::{Hittable, HittableList};
 use texture::Texture;
 use material::{Dielectric, DiffuseLight, Lambertian, Metal};
+use perlin::Perlin;
+use volume::ConstantMedium;
 use sphere::Sphere;
 use quad::{Quad, make_box};
 use transform::{RotateY, Translate};
@@ -67,9 +71,9 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &[Li
                 break;
             }
             Some(rec) => {
-                // Count emitted light only from specular/primary paths; diffuse paths get direct
-                // light via the explicit NEE shadow ray below to avoid double-counting.
-                if specular_prev {
+                // Count emitted on specular/primary paths. Also count on diffuse paths when
+                // there are no NEE lights — nothing to double-count in that case.
+                if specular_prev || lights.is_empty() {
                     color += throughput * rec.mat.emitted();
                 }
 
@@ -178,6 +182,7 @@ impl Background {
         }
     }
 }
+
 
 // ── Scenes ───────────────────────────────────────────────────────────────────
 
@@ -462,10 +467,10 @@ fn build_random_scene() -> SceneData {
         static_objects,
         dynamic,
         bounds:   None,
-        colliders: vec![],
-        gravity:  0.03,
-        settled:  false,
-        paused:   false,
+        colliders:      vec![],
+        gravity:        0.03,
+        settled:        false,
+        paused:         false,
     }
 }
 
@@ -541,10 +546,10 @@ fn build_cornell_box() -> SceneData {
         static_objects,
         dynamic,
         bounds:    Some(bounds),
-        colliders: vec![tall_bbox, short_bbox],
-        gravity:   0.0,
-        settled:   false,
-        paused:    false,
+        colliders:     vec![tall_bbox, short_bbox],
+        gravity:       0.0,
+        settled:       false,
+        paused:        false,
     }
 }
 
@@ -619,179 +624,136 @@ fn build_mesh_scene() -> SceneData {
     }
 }
 
-// ── Labyrinth ────────────────────────────────────────────────────────────────
+// ── Next Week final scene ─────────────────────────────────────────────────────
 
-fn generate_maze(width: usize, height: usize, rng: &mut impl Rng) -> (Vec<bool>, Vec<bool>) {
-    // h_walls[r*width+c] = wall between row r and r+1 at col c
-    // v_walls[r*(width-1)+c] = wall between col c and c+1 at row r
-    let mut h_walls = vec![true; (height - 1) * width];
-    let mut v_walls = vec![true; height * (width - 1)];
-    let mut visited = vec![false; width * height];
-    let mut stack   = vec![(0usize, 0usize)];
-    visited[0] = true;
+fn build_nextweek_scene() -> SceneData {
+    let mut rng = SmallRng::seed_from_u64(42);
+    let mut list = HittableList::new();
 
-    while let Some(&(r, c)) = stack.last() {
-        let mut nbrs: Vec<(usize, usize, u8)> = Vec::new();
-        if r > 0          && !visited[(r-1)*width + c]  { nbrs.push((r-1, c,   0)); }
-        if c + 1 < width  && !visited[r*width + c+1]    { nbrs.push((r,   c+1, 1)); }
-        if r + 1 < height && !visited[(r+1)*width + c]  { nbrs.push((r+1, c,   2)); }
-        if c > 0          && !visited[r*width + c-1]    { nbrs.push((r,   c-1, 3)); }
-        if nbrs.is_empty() {
-            stack.pop();
-        } else {
-            let (nr, nc, dir) = nbrs[rng.gen_range(0..nbrs.len())];
-            visited[nr * width + nc] = true;
-            match dir {
-                0 => h_walls[(r-1) * width + c]     = false,
-                1 => v_walls[r * (width-1) + c]     = false,
-                2 => h_walls[r * width + c]          = false,
-                _ => v_walls[r * (width-1) + c - 1] = false,
-            }
-            stack.push((nr, nc));
+    // 20×20 ground boxes with a greenish Lambertian material
+    let ground_mat: Arc<dyn hittable::Material> =
+        Arc::new(Lambertian { texture: Color::new(0.48, 0.83, 0.53).into() });
+    let mut ground_boxes = HittableList::new();
+    for i in 0..20 {
+        for j in 0..20 {
+            let w  = 100.0f32;
+            let x0 = -1000.0 + i as f32 * w;
+            let z0 = -1000.0 + j as f32 * w;
+            let y1: f32 = rng.gen_range(1.0..101.0);
+            ground_boxes.add(make_box(
+                Point3::new(x0, 0.0, z0),
+                Point3::new(x0 + w, y1, z0 + w),
+                Arc::clone(&ground_mat),
+            ));
         }
     }
-    (h_walls, v_walls)
-}
+    list.add(BvhTree::from_list(ground_boxes));
 
-fn build_labyrinth_scene() -> SceneData {
-    const W: usize = 12;
-    const H: usize = 12;
-    const CELL:   f32 = 3.5;            // corridor width
-    const WALL_T: f32 = 0.5;            // wall thickness
-    const WALL_H: f32 = 3.5;            // wall height
-    const STEP:   f32 = CELL + WALL_T;  // 4.0 – pitch between cell origins
+    // Quad light
+    let (light_quad, nee_light) = emissive_quad(
+        Point3::new(123.0, 554.0, 147.0),
+        Vec3::new(300.0,   0.0,   0.0),
+        Vec3::new(  0.0,   0.0, 265.0),
+        Color::new(7.0, 7.0, 7.0),
+    );
+    list.add(light_quad);
 
-    let mut rng = rand::thread_rng();
-    let (h_walls, v_walls) = generate_maze(W, H, &mut rng);
-
-    let stone: Arc<dyn hittable::Material> = Arc::new(Lambertian {
-        texture: Color::new(0.55, 0.52, 0.47).into(),
-    });
-    let floor_mat: Arc<dyn hittable::Material> = Arc::new(Lambertian {
-        texture: Texture::Checker {
-            scale: 0.25,
-            even:  Color::new(0.35, 0.33, 0.30),
-            odd:   Color::new(0.55, 0.53, 0.49),
-        },
-    });
-    // Entry marker (green) in cell (0,0), exit marker (red) in cell (H-1, W-1)
-    let entry_mat: Arc<dyn hittable::Material> = Arc::new(Lambertian {
-        texture: Color::new(0.15, 0.75, 0.15).into(),
-    });
-    let exit_mat: Arc<dyn hittable::Material> = Arc::new(Lambertian {
-        texture: Color::new(0.85, 0.15, 0.15).into(),
-    });
-
-    let total_w = W as f32 * STEP + WALL_T;
-    let total_d = H as f32 * STEP + WALL_T;
-
-    // Entry gap: North wall (z=0) has opening at x∈[WALL_T, STEP]
-    // Exit  gap: South wall (z=total_d-WALL_T) has opening at x∈[exit_x0, total_w-WALL_T]
-    let exit_x0 = (W - 1) as f32 * STEP + WALL_T;
-
-    let mut list      = HittableList::new();
-    let mut colliders = Vec::<Aabb>::new();
-
-    // Floor
-    list.add(Quad::new(
-        Point3::new(0.0, 0.0, total_d),
-        Vec3::new(total_w, 0.0, 0.0),
-        Vec3::new(0.0, 0.0, -total_d),
-        Arc::clone(&floor_mat),
+    // Moving sphere with motion blur (t=0→1, center drifts +30 on X)
+    let c0 = Point3::new(400.0, 400.0, 200.0);
+    list.add(Sphere::new_moving(
+        c0, c0 + Vec3::new(30.0, 0.0, 0.0), 50.0,
+        Arc::new(Lambertian { texture: Color::new(0.7, 0.3, 0.1).into() }),
     ));
 
-    // Entry/exit floor markers (slightly above floor to avoid z-fighting)
-    list.add(Quad::new(
-        Point3::new(WALL_T, 0.01, WALL_T + CELL),
-        Vec3::new(CELL, 0.0, 0.0),
-        Vec3::new(0.0, 0.0, -CELL),
-        Arc::clone(&entry_mat),
-    ));
-    let exit_cz0 = (H - 1) as f32 * STEP + WALL_T;
-    list.add(Quad::new(
-        Point3::new(exit_x0, 0.01, exit_cz0 + CELL),
-        Vec3::new(CELL, 0.0, 0.0),
-        Vec3::new(0.0, 0.0, -CELL),
-        Arc::clone(&exit_mat),
+    // Glass sphere
+    list.add(Sphere::new(
+        Point3::new(260.0, 150.0, 45.0), 50.0,
+        Arc::new(Dielectric { ir: 1.5 }),
     ));
 
-    let add_wall = |list: &mut HittableList, cols: &mut Vec<Aabb>, x0: f32, z0: f32, x1: f32, z1: f32| {
-        list.add(make_box(
-            Point3::new(x0, 0.0, z0),
-            Point3::new(x1, WALL_H, z1),
-            Arc::clone(&stone),
+    // Metal sphere
+    list.add(Sphere::new(
+        Point3::new(0.0, 150.0, 145.0), 50.0,
+        Arc::new(Metal { albedo: Color::new(0.8, 0.8, 0.9), fuzz: 1.0 }),
+    ));
+
+    // Blue fog sphere: dielectric shell + constant-medium interior
+    let fog_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
+        Point3::new(360.0, 150.0, 145.0), 70.0,
+        Arc::new(Dielectric { ir: 1.5 }),
+    ));
+    list.objects.push(Arc::clone(&fog_boundary));
+    list.add(ConstantMedium::new(fog_boundary, 0.2, Color::new(0.2, 0.4, 0.9)));
+
+    // Thin global mist
+    let mist_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
+        Point3::new(0.0, 0.0, 0.0), 5000.0,
+        Arc::new(Dielectric { ir: 1.5 }),
+    ));
+    list.add(ConstantMedium::new(mist_boundary, 0.0001, Color::new(1.0, 1.0, 1.0)));
+
+    // Earth sphere — tries assets/earthmap.jpg, falls back to blue/green checker
+    let earth_tex = Texture::load("assets/earthmap.jpg")
+        .unwrap_or_else(|_| Texture::Checker {
+            scale: 2.0,
+            even:  Color::new(0.1, 0.3, 0.7),
+            odd:   Color::new(0.2, 0.7, 0.2),
+        });
+    list.add(Sphere::new(
+        Point3::new(400.0, 200.0, 400.0), 100.0,
+        Arc::new(Lambertian { texture: earth_tex }),
+    ));
+
+    // Marble/noise sphere (Perlin turbulence)
+    let perlin = Arc::new(Perlin::new(&mut rng));
+    list.add(Sphere::new(
+        Point3::new(220.0, 280.0, 300.0), 80.0,
+        Arc::new(Lambertian { texture: Texture::Noise { perlin, scale: 0.2 } }),
+    ));
+
+    // Cluster of 1000 small white spheres, rotated 15° and translated into place
+    let white: Arc<dyn hittable::Material> =
+        Arc::new(Lambertian { texture: Color::new(0.73, 0.73, 0.73).into() });
+    let mut cluster = HittableList::new();
+    for _ in 0..1000 {
+        cluster.add(Sphere::new(
+            Point3::new(
+                rng.gen_range(0.0..165.0),
+                rng.gen_range(0.0..165.0),
+                rng.gen_range(0.0..165.0),
+            ),
+            10.0,
+            Arc::clone(&white),
         ));
-        cols.push(Aabb::new(Point3::new(x0, 0.0, z0), Point3::new(x1, WALL_H, z1)));
-    };
-
-    // Outer boundary — North wall split for entry gap, South wall split for exit gap
-    // North (z=0): West segment [0, WALL_T] then East segment [STEP, total_w]
-    add_wall(&mut list, &mut colliders, 0.0,   0.0, WALL_T, WALL_T);
-    add_wall(&mut list, &mut colliders, STEP,  0.0, total_w, WALL_T);
-    // South (z=total_d-WALL_T): West segment [0, exit_x0] then East segment [total_w-WALL_T, total_w]
-    add_wall(&mut list, &mut colliders, 0.0,            total_d-WALL_T, exit_x0,         total_d);
-    add_wall(&mut list, &mut colliders, total_w-WALL_T, total_d-WALL_T, total_w,          total_d);
-    // West and East walls span full depth
-    add_wall(&mut list, &mut colliders, 0.0,            0.0,            WALL_T,           total_d);
-    add_wall(&mut list, &mut colliders, total_w-WALL_T, 0.0,            total_w,          total_d);
-
-    // Interior vertical walls (between col c and c+1 at row r)
-    for r in 0..H {
-        for c in 0..W-1 {
-            if v_walls[r * (W-1) + c] {
-                let x0 = (c + 1) as f32 * STEP;
-                let z0 = r as f32 * STEP + WALL_T;
-                add_wall(&mut list, &mut colliders, x0, z0, x0 + WALL_T, z0 + CELL);
-            }
-        }
     }
-
-    // Interior horizontal walls (between row r and r+1 at col c)
-    for r in 0..H-1 {
-        for c in 0..W {
-            if h_walls[r * W + c] {
-                let x0 = c as f32 * STEP + WALL_T;
-                let z0 = (r + 1) as f32 * STEP;
-                add_wall(&mut list, &mut colliders, x0, z0, x0 + CELL, z0 + WALL_T);
-            }
-        }
-    }
-
-    // Corner posts at every interior intersection (always solid)
-    for r in 0..H-1 {
-        for c in 0..W-1 {
-            let x0 = (c + 1) as f32 * STEP;
-            let z0 = (r + 1) as f32 * STEP;
-            add_wall(&mut list, &mut colliders, x0, z0, x0 + WALL_T, z0 + WALL_T);
-        }
-    }
-
-    // Start inside cell (0,0) at eye height, looking south into the maze
-    let cx = WALL_T + CELL * 0.5;
-    let cz = WALL_T + CELL * 0.5;
+    let cluster: Arc<dyn Hittable> = Arc::new(BvhTree::from_list(cluster));
+    let cluster: Arc<dyn Hittable> = Arc::new(RotateY::new(cluster, 15.0));
+    let cluster: Arc<dyn Hittable> = Arc::new(Translate::new(cluster, Vec3::new(-100.0, 270.0, 395.0)));
+    list.objects.push(cluster);
 
     SceneData {
-        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:     vec![],
-        background: Background::Physical { sun_dir: Vec3::new(0.4, 0.9, 0.2).unit() },
-        name:       "Labyrinth",
-        cam_init:   SceneCameraParams {
-            pos:        Point3::new(cx, 1.7, cz),
-            lookat:     Point3::new(cx, 1.7, cz + 2.0),
-            vfov:       80.0,
+        world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
+        lights:         vec![nee_light],
+        background:     Background::Solid(Color::default()),
+        name:           "Next Week",
+        cam_init:       SceneCameraParams {
+            pos:        Point3::new(478.0, 278.0, -600.0),
+            lookat:     Point3::new(278.0, 278.0,    0.0),
+            vfov:       40.0,
             aperture:   0.0,
             focus_dist: 10.0,
-            move_speed: 0.12,
+            move_speed: 8.0,
         },
         static_objects: vec![],
         dynamic:        vec![],
         bounds:         None,
-        colliders,
+        colliders:      vec![],
         gravity:        0.0,
         settled:        true,
         paused:         false,
     }
 }
+
 
 /// Physically-inspired sky model: blue zenith shading to warm horizon, soft Mie glow.
 /// No explicit sun disc — the sun contributes through the bright Mie halo instead,
@@ -926,7 +888,7 @@ fn run_bench() {
         build_random_scene,
         build_cornell_box,
         build_mesh_scene,
-        build_labyrinth_scene,
+        build_nextweek_scene,
     ];
 
     let mut scratch: Vec<Color> = Vec::new();
@@ -966,8 +928,8 @@ fn main() {
     let s2 = build_cornell_box();
     println!("Scene 3: Mesh");
     let s3 = build_mesh_scene();
-    println!("Scene 4: Labyrinth");
-    let s4 = build_labyrinth_scene();
+    println!("Scene 4: Next Week");
+    let s4 = build_nextweek_scene();
     let mut scenes = [s1, s2, s3, s4];
     println!("Ready.  [1/2/3/4] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
     println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
@@ -1009,6 +971,14 @@ fn main() {
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
+
+        macro_rules! reset_accum {
+            () => {
+                accumulator.fill(Color::default()); pixel_samples.fill(0);
+                welford_mean.fill(Color::default()); welford_m2.fill(Color::default());
+                converged.fill(false); samples = 0;
+            }
+        }
 
         match event {
             Event::WindowEvent { event, .. } => match event {
@@ -1066,9 +1036,7 @@ fn main() {
                                     let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, VirtualKeyCode::Key4 => 3, _ => 0 };
                                     scene_idx = idx;
                                     cam_state = CameraState::from_params(&scenes[idx].cam_init);
-                                    accumulator.fill(Color::default()); pixel_samples.fill(0);
-                                    welford_mean.fill(Color::default()); welford_m2.fill(Color::default()); converged.fill(false);
-                                    samples = 0;
+                                    reset_accum!();
                                     cam_dirty = true;
                                     pending_autofocus = true;
                                 }
@@ -1136,7 +1104,17 @@ fn main() {
                                     converged.fill(false); samples = 0;
                                 }
                                 VirtualKeyCode::Return => {
-                                    scenes[scene_idx].paused = !scenes[scene_idx].paused;
+                                    let pausing = !scenes[scene_idx].paused;
+                                    scenes[scene_idx].paused = pausing;
+                                    if pausing {
+                                        // Snap prev_center to center so the rebuild
+                                        // uses Sphere::new (no motion blur while frozen)
+                                        for ds in &mut scenes[scene_idx].dynamic {
+                                            ds.prev_center = ds.center;
+                                        }
+                                        scenes[scene_idx].rebuild();
+                                        reset_accum!();
+                                    }
                                 }
                                 VirtualKeyCode::R => {
                                     if scene_idx == 0 {
@@ -1165,30 +1143,22 @@ fn main() {
 
             Event::MainEventsCleared => {
                 if free_cam {
-                    let spd = cam_state.move_speed;
-                    let fwd = cam_state.forward_horiz();
-                    let rgt = cam_state.right_horiz();
+                    let spd   = cam_state.move_speed;
+                    let fwd_h = cam_state.forward_horiz();
+                    let rgt   = cam_state.right_horiz();
                     let mut moved = false;
-                    if pressed.contains(&VirtualKeyCode::W)      { cam_state.pos += fwd * spd; moved = true; }
-                    if pressed.contains(&VirtualKeyCode::S)      { cam_state.pos -= fwd * spd; moved = true; }
-                    if pressed.contains(&VirtualKeyCode::A)      { cam_state.pos -= rgt * spd; moved = true; }
-                    if pressed.contains(&VirtualKeyCode::D)      { cam_state.pos += rgt * spd; moved = true; }
-                    if pressed.contains(&VirtualKeyCode::Space)  { cam_state.pos.y += spd;     moved = true; }
-                    if pressed.contains(&VirtualKeyCode::LShift) { cam_state.pos.y -= spd;     moved = true; }
+                    if pressed.contains(&VirtualKeyCode::W)      { cam_state.pos += fwd_h * spd; moved = true; }
+                    if pressed.contains(&VirtualKeyCode::S)      { cam_state.pos -= fwd_h * spd; moved = true; }
+                    if pressed.contains(&VirtualKeyCode::A)      { cam_state.pos -= rgt   * spd; moved = true; }
+                    if pressed.contains(&VirtualKeyCode::D)      { cam_state.pos += rgt   * spd; moved = true; }
+                    if pressed.contains(&VirtualKeyCode::Space)  { cam_state.pos.y += spd;       moved = true; }
+                    if pressed.contains(&VirtualKeyCode::LShift) { cam_state.pos.y -= spd;       moved = true; }
                     if moved {
                         for bbox in &scenes[scene_idx].colliders {
                             resolve_camera_aabb(&mut cam_state.pos, CAM_RADIUS, bbox);
                         }
                         cam_dirty = true;
                         pending_autofocus = true;
-                    }
-                }
-
-                macro_rules! reset_accum {
-                    () => {
-                        accumulator.fill(Color::default()); pixel_samples.fill(0);
-                        welford_mean.fill(Color::default()); welford_m2.fill(Color::default()); converged.fill(false);
-                        samples = 0;
                     }
                 }
 
@@ -1203,9 +1173,10 @@ fn main() {
                 }
 
                 let now = Instant::now();
+                let frame_dt = now.duration_since(last_frame_time);
                 // Cap catch-up to 100 ms so a paused/minimised window doesn't
                 // run dozens of physics ticks on resume.
-                physics_accum += now.duration_since(last_frame_time).min(Duration::from_millis(100));
+                physics_accum += frame_dt.min(Duration::from_millis(100));
                 last_frame_time = now;
                 let mut physics_ticked = false;
                 while physics_accum >= PHYSICS_DT {
@@ -1215,8 +1186,8 @@ fn main() {
                 if physics_ticked { reset_accum!(); }
 
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
-                    let scene       = &scenes[scene_idx];
-                    let cam_hint    = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
+                    let scene    = &scenes[scene_idx];
+                    let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
                     let motion_hint = if scene.gravity > 0.0 {
                         if scene.settled     { "  settled — [R] restart" }
                         else if scene.paused { "  PAUSED — [Enter] resume  [R] restart" }

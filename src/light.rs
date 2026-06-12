@@ -8,7 +8,7 @@ pub struct Light {
     q:      Point3,
     u:      Vec3,
     v:      Vec3,
-    pub emit: Color,
+    emit:   Color,
     area:   f32,
     normal: Vec3,
 }
@@ -21,15 +21,9 @@ impl Light {
         Self { q, u, v, emit, area, normal }
     }
 
-    /// Lambertian direct-light contribution from one uniform area sample on this light.
-    /// Returns black if the light faces away, the surface faces away, or the path is occluded.
     pub fn sample_contribution(
-        &self,
-        from:   Point3,
-        normal: Vec3,
-        albedo: Color,
-        world:  &dyn Hittable,
-        rng:    &mut impl Rng,
+        &self, from: Point3, normal: Vec3, albedo: Color,
+        world: &dyn Hittable, rng: &mut impl Rng,
     ) -> Color {
         let p     = self.q + rng.gen::<f32>() * self.u + rng.gen::<f32>() * self.v;
         let delta = p - from;
@@ -45,7 +39,6 @@ impl Light {
             return Color::default();
         }
 
-        // BRDF = albedo/π; area PDF = 1/area; solid-angle conversion: × cos_light × area / dist²
         self.emit * albedo * (cos_surf * cos_light * self.area / (PI * dist2))
     }
 }

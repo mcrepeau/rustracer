@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use image::RgbImage;
+use crate::perlin::Perlin;
 use crate::vec3::{Color, Point3};
 
 #[derive(Clone)]
@@ -8,6 +9,8 @@ pub enum Texture {
     Checker { scale: f32, even: Color, odd: Color },
     #[allow(dead_code)]
     Image(Arc<RgbImage>),
+    /// Marble-like Perlin noise: 0.5*(1 + sin(scale·p.z + 10·turb(p)))
+    Noise { perlin: Arc<Perlin>, scale: f32 },
 }
 
 impl Texture {
@@ -32,6 +35,10 @@ impl Texture {
                 let y = ((v * img.height() as f32) as u32).min(img.height() - 1);
                 let px = img.get_pixel(x, y);
                 Color::new(px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0)
+            }
+            Texture::Noise { perlin, scale } => {
+                Color::new(0.5, 0.5, 0.5)
+                    * (1.0 + (scale * p.z + 10.0 * perlin.turb(p, 7)).sin())
             }
         }
     }
