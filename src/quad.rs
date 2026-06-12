@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use rand::{Rng, RngCore};
 use crate::aabb::Aabb;
 use crate::vec3::{Point3, Vec3};
 use crate::ray::Ray;
@@ -11,17 +12,19 @@ pub struct Quad {
     v:      Vec3,
     normal: Vec3,
     d:      f32,
-    w:      Vec3,  // n / (n·n), used to compute UV coordinates
+    w:      Vec3,   // n / (n·n), used to compute UV coordinates
     mat:    Arc<dyn Material>,
+    area:   f32,
 }
 
 impl Quad {
     pub fn new(q: Point3, u: Vec3, v: Vec3, mat: Arc<dyn Material>) -> Self {
         let n      = u.cross(v);
-        let normal = n.unit();
+        let area   = n.length();
+        let normal = n / area;      // unit normal
         let d      = normal.dot(q);
         let w      = n / n.dot(n);
-        Self { q, u, v, normal, d, w, mat }
+        Self { q, u, v, normal, d, w, mat, area }
     }
 }
 
@@ -57,6 +60,22 @@ impl Hittable for Quad {
             max = Point3::new(max.x.max(c.x), max.y.max(c.y), max.z.max(c.z));
         }
         Some(Aabb::new(min, max).pad())
+    }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
+        let r = Ray::new(origin, dir);
+        let Some(rec) = self.hit(&r, 0.001, f32::INFINITY) else { return 0.0; };
+        let dist2 = (rec.p - origin).length_squared();
+        let cos_theta = dir.unit().dot(rec.normal).abs();
+        if cos_theta < 1e-8 { return 0.0; }
+        dist2 / (cos_theta * self.area)
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore) -> Vec3 {
+        let r1: f32 = rng.gen();
+        let r2: f32 = rng.gen();
+        let point = self.q + r1 * self.u + r2 * self.v;
+        (point - origin).unit()
     }
 }
 

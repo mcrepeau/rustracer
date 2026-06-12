@@ -7,12 +7,13 @@ mod texture;
 mod material;
 mod perlin;
 mod volume;
+mod onb;
+mod pdf;
 mod sphere;
 mod quad;
 mod transform;
 mod mesh;
 mod camera;
-mod light;
 
 use aabb::Aabb;
 use vec3::{Color, Point3, Vec3};
@@ -28,7 +29,7 @@ use transform::{RotateY, Translate};
 use mesh::load_obj;
 use camera::Camera;
 use bvh::BvhTree;
-use light::Light;
+use pdf::{CosinePdf, HittablePdf, MixturePdf, Pdf};
 
 use winit::{
     dpi::PhysicalSize,
@@ -58,11 +59,10 @@ const ADAPTIVE_MIN_SAMPLES: u32 = 16;
 const ADAPTIVE_THRESHOLD:   f32 = 0.01;
 const CAM_RADIUS:  f32   = 0.25;
 
-fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &[Light], rng: &mut impl Rng) -> Color {
-    let mut throughput    = Color::new(1.0, 1.0, 1.0);
-    let mut color         = Color::default();
-    let mut ray           = *r;
-    let mut specular_prev = true; // treat camera as specular so first-hit emitters are visible
+fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, rng: &mut impl Rng) -> Color {
+    let mut throughput = Color::new(1.0, 1.0, 1.0);
+    let mut color      = Color::default();
+    let mut ray        = *r;
 
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
@@ -71,33 +71,45 @@ fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &[Li
                 break;
             }
             Some(rec) => {
-                // Count emitted on specular/primary paths. Also count on diffuse paths when
-                // there are no NEE lights — nothing to double-count in that case.
-                if specular_prev || lights.is_empty() {
-                    color += throughput * rec.mat.emitted();
-                }
+                color += throughput * rec.mat.emitted();
 
                 let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
-                let mut attenuation = sr.attenuation;
 
-                if let Some(albedo) = sr.albedo {
-                    // Diffuse surface: sample each light explicitly.
-                    for light in lights {
-                        color += throughput
-                            * light.sample_contribution(rec.p, rec.normal, albedo, world, rng);
-                    }
-                    specular_prev = false;
+                if sr.skip_pdf {
+                    // Specular (metal / dielectric / isotropic): exact sampled direction.
+                    throughput *= sr.attenuation;
+                    ray = sr.ray;
                 } else {
-                    specular_prev = true;
+                    // Diffuse: importance-sample with mixture PDF (cosine + area light).
+                    let scattered_dir;
+                    let pdf_val;
+
+                    if lights.objects.is_empty() {
+                        let cpdf = CosinePdf::new(rec.normal);
+                        scattered_dir = cpdf.generate(rng);
+                        pdf_val = cpdf.value(scattered_dir);
+                    } else {
+                        let cpdf  = CosinePdf::new(rec.normal);
+                        let lpdf  = HittablePdf::new(lights, rec.p);
+                        let mpdf  = MixturePdf::new(&cpdf, &lpdf);
+                        scattered_dir = mpdf.generate(rng);
+                        pdf_val       = mpdf.value(scattered_dir);
+                    };
+
+                    if pdf_val <= 0.0 { break; }
+                    let scattered  = Ray::new_at_time(rec.p, scattered_dir, ray.time);
+                    let scat_pdf   = rec.mat.scattering_pdf(&ray, &rec, &scattered);
+
+                    throughput *= sr.attenuation * (scat_pdf / pdf_val);
+                    ray = scattered;
                 }
 
+                // Russian roulette.
                 if depth >= 2 {
-                    let survive = attenuation.x.max(attenuation.y).max(attenuation.z);
+                    let survive = throughput.x.max(throughput.y).max(throughput.z);
                     if survive <= 0.0 || rng.gen::<f32>() >= survive { break; }
-                    attenuation /= survive;
+                    throughput /= survive;
                 }
-                throughput *= attenuation;
-                ray = sr.ray;
             }
         }
     }
@@ -198,7 +210,7 @@ struct DynamicSphere {
 
 struct SceneData {
     world:          Arc<dyn Hittable>,
-    lights:         Vec<Light>,
+    lights:         HittableList,
     background:     Background,
     name:           &'static str,
     cam_init:       SceneCameraParams,
@@ -457,7 +469,7 @@ fn build_random_scene() -> SceneData {
 
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:         vec![],
+        lights:         HittableList::new(),
         background:     Background::Physical { sun_dir: Vec3::new(-0.4, 0.9, -0.3).unit() },
         name:           "Random Spheres",
         cam_init:       SceneCameraParams {
@@ -474,11 +486,13 @@ fn build_random_scene() -> SceneData {
     }
 }
 
-/// Creates a matched (Quad geometry, Light for NEE) pair from one set of parameters,
-/// ensuring geometry and shadow-ray target never drift out of sync.
-fn emissive_quad(q: Point3, u: Vec3, v: Vec3, emit: Color) -> (Quad, Light) {
+/// Creates a matched (world quad, light-sampler quad) pair.  Both share the
+/// same geometry so PDF sampling stays in sync with the rendered geometry.
+fn emissive_quad(q: Point3, u: Vec3, v: Vec3, emit: Color) -> (Quad, Quad) {
     let mat: Arc<dyn hittable::Material> = Arc::new(DiffuseLight { emit });
-    (Quad::new(q, u, v, mat), Light::new(q, u, v, emit))
+    let world   = Quad::new(q, u, v, Arc::clone(&mat));
+    let sampler = Quad::new(q, u, v, mat);
+    (world, sampler)
 }
 
 fn build_cornell_box() -> SceneData {
@@ -486,16 +500,18 @@ fn build_cornell_box() -> SceneData {
     let red:   Arc<dyn hittable::Material> = Arc::new(Lambertian { texture: Color::new(0.65, 0.05, 0.05).into() });
     let white: Arc<dyn hittable::Material> = Arc::new(Lambertian { texture: Color::new(0.73, 0.73, 0.73).into() });
     let green: Arc<dyn hittable::Material> = Arc::new(Lambertian { texture: Color::new(0.12, 0.45, 0.15).into() });
-    let (light_quad, nee_light) = emissive_quad(
+    let (world_light, sampler_light) = emissive_quad(
         Point3::new(343.0, 554.0, 332.0),
         Vec3::new(-130.0, 0.0, 0.0),
         Vec3::new(0.0, 0.0, -105.0),
         Color::new(15.0, 15.0, 15.0),
     );
+    let mut lights = HittableList::new();
+    lights.add(sampler_light);
 
     list.add(Quad::new(Point3::new(555.0, 0.0,   0.0),   Vec3::new(0.0, 555.0,  0.0), Vec3::new(0.0, 0.0,  555.0), green));
     list.add(Quad::new(Point3::new(0.0,   0.0,   0.0),   Vec3::new(0.0, 555.0,  0.0), Vec3::new(0.0, 0.0,  555.0), red));
-    list.add(light_quad);
+    list.add(world_light);
     list.add(Quad::new(Point3::new(0.0,   0.0,   0.0),   Vec3::new(555.0, 0.0,  0.0), Vec3::new(0.0, 0.0,  555.0), Arc::clone(&white)));
     list.add(Quad::new(Point3::new(555.0, 555.0, 555.0), Vec3::new(-555.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -555.0), Arc::clone(&white)));
     list.add(Quad::new(Point3::new(0.0,   0.0,   555.0), Vec3::new(555.0, 0.0,  0.0), Vec3::new(0.0, 555.0, 0.0),  Arc::clone(&white)));
@@ -536,7 +552,7 @@ fn build_cornell_box() -> SceneData {
 
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:         vec![nee_light],
+        lights,
         background:     Background::Solid(Color::default()),
         name:           "Cornell Box",
         cam_init:       SceneCameraParams {
@@ -599,18 +615,20 @@ fn build_mesh_scene() -> SceneData {
             scale: 1.0, even: Color::new(0.15, 0.15, 0.15), odd: Color::new(0.85, 0.85, 0.85),
         }}),
     ));
-    let (overhead_quad, nee_light) = emissive_quad(
+    let (overhead_world, overhead_sampler) = emissive_quad(
         Point3::new(-200.0, 500.0, -200.0),
         Vec3::new(400.0, 0.0, 0.0),
         Vec3::new(0.0, 0.0, 400.0),
         Color::new(6.0, 6.0, 6.0),
     );
-    list.add(overhead_quad);
+    let mut lights = HittableList::new();
+    lights.add(overhead_sampler);
+    list.add(overhead_world);
     list.add(mesh_bvh);
 
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:         vec![nee_light],
+        lights,
         background:     Background::Solid(Color::new(0.05, 0.07, 0.12)),
         name:           "Mesh",
         cam_init,
@@ -650,13 +668,15 @@ fn build_nextweek_scene() -> SceneData {
     list.add(BvhTree::from_list(ground_boxes));
 
     // Quad light
-    let (light_quad, nee_light) = emissive_quad(
+    let (light_world, light_sampler) = emissive_quad(
         Point3::new(123.0, 554.0, 147.0),
         Vec3::new(300.0,   0.0,   0.0),
         Vec3::new(  0.0,   0.0, 265.0),
         Color::new(7.0, 7.0, 7.0),
     );
-    list.add(light_quad);
+    let mut lights = HittableList::new();
+    lights.add(light_sampler);
+    list.add(light_world);
 
     // Moving sphere with motion blur (t=0→1, center drifts +30 on X)
     let c0 = Point3::new(400.0, 400.0, 200.0);
@@ -733,7 +753,7 @@ fn build_nextweek_scene() -> SceneData {
 
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:         vec![nee_light],
+        lights,
         background:     Background::Solid(Color::default()),
         name:           "Next Week",
         cam_init:       SceneCameraParams {
@@ -826,7 +846,7 @@ fn render_tiles(
     camera:     &Camera,
     world:      &dyn Hittable,
     background: Background,
-    lights:     &[Light],
+    lights:     &HittableList,
     conv:       &[bool],
 ) {
     let w        = width  as usize;
@@ -861,12 +881,11 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     let camera  = cam.to_camera(aspect);
     let world   = scene.world.as_ref();
     let bg      = scene.background;
-    let lights  = scene.lights.as_slice();
     scratch.resize((WIDTH * HEIGHT) as usize, Color::default());
 
     let t0 = Instant::now();
     for s in 0..samples {
-        render_tiles(scratch, s, WIDTH, HEIGHT, &camera, world, bg, lights, &[]);
+        render_tiles(scratch, s, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, &[]);
     }
     t0.elapsed()
 }
@@ -1223,11 +1242,10 @@ fn main() {
                 if samples < MAX_SAMPLES {
                     let scene  = &scenes[scene_idx];
                     let bg     = scene.background;
-                    let lights = scene.lights.as_slice();
                     let conv   = if adaptive { converged.as_slice() } else { &[] };
 
                     render_tiles(&mut scratch, samples, win_w, win_h, &camera,
-                                 scene.world.as_ref(), bg, lights, conv);
+                                 scene.world.as_ref(), bg, &scene.lights, conv);
 
                     for i in 0..(win_w * win_h) as usize {
                         if adaptive && converged[i] { continue; }

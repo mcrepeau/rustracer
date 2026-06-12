@@ -16,8 +16,7 @@ impl Material for Isotropic {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn rand::RngCore) -> Option<ScatterRecord> {
         let dir    = Vec3::random_unit_vector(rng);
         let albedo = self.albedo.value(rec.u, rec.v, rec.p);
-        // albedo: None → skip NEE; isotropic scattering uses indirect illumination only
-        Some(ScatterRecord { attenuation: albedo, ray: Ray::new_at_time(rec.p, dir, r_in.time), albedo: None })
+        Some(ScatterRecord { attenuation: albedo, ray: Ray::new_at_time(rec.p, dir, r_in.time), skip_pdf: true })
     }
 }
 
