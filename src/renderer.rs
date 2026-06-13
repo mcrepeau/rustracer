@@ -57,32 +57,88 @@ fn sky_color(dir: Vec3, sun_dir: Vec3) -> Color {
     }
 }
 
-/// Procedural star field using a 3D integer hash on quantized ray directions.
-/// Each ~0.002-radian cell has a 0.4 % chance of containing a star.
+/// Procedural star field with spectral colour variation, power-law magnitude
+/// distribution, and a Milky Way band.
+///
+/// Stars: hash-based ~0.002-radian cells, ~0.4 % base density boosted up to
+/// 5× near the galactic equator and centre.  Each star draws independent
+/// hashes for magnitude (t² power law → many dim, few bright) and spectral
+/// class (O/B through M, weighted toward a realistic visible-sky colour mix).
+///
+/// Milky Way: a cool blue-grey diffuse glow along the galactic band, with a
+/// warm orange concentration toward the galactic centre (old stellar
+/// populations, interstellar reddening).
+///
+/// Galactic frame: pole and centre directions are derived from J2000
+/// equatorial coordinates via the standard ecliptic rotation (ε = 23.44°),
+/// then expressed in scene space (Y-up, XZ = ecliptic plane).
 fn star_field(dir: Vec3) -> Color {
     let d = dir.unit();
-    // Each unit of the direction vector → 500 cells; offset so negatives map
-    // to positive integers without underflow.
+
+    // ── Galactic frame ────────────────────────────────────────────────────────
+    // Galactic north pole: equatorial RA 12h51.4m, Dec +27.1°  → scene space.
+    // Galactic centre:     equatorial RA 17h45.7m, Dec −29.0°  → scene space.
+    // The two vectors are perpendicular by construction (b = 90° vs b = 0°).
+    let gal_pole   = Vec3::new(-0.8679,  0.4977, -0.0009);
+    let gal_center = Vec3::new(-0.0561, -0.0977, -0.9935);
+
+    let sin_lat       = d.dot(gal_pole);           // signed galactic latitude sine
+    let toward_center = d.dot(gal_center).max(0.0); // 0 → 1 toward galactic centre
+
+    // band_t: 1.0 on the galactic equator, 0.0 at the poles.
+    let band_t = 1.0 - sin_lat * sin_lat;
+
+    // ── Milky Way diffuse glow ────────────────────────────────────────────────
+    let band_glow   = band_t.powf(4.5);
+    let center_glow = (toward_center * toward_center * band_t).powf(1.5);
+    let milky = Color::new(0.016, 0.014, 0.028) * band_glow       // cool blue-grey haze
+              + Color::new(0.060, 0.030, 0.020) * center_glow;    // warm centre glow
+
+    // ── Star cells ────────────────────────────────────────────────────────────
+    // Quantise direction to ~0.002-radian cells; offset keeps negatives positive.
     let ix = (d.x * 500.0 + 500.5) as u32;
     let iy = (d.y * 500.0 + 500.5) as u32;
     let iz = (d.z * 500.0 + 500.5) as u32;
     let h  = ix.wrapping_mul(2654435761)
            ^ iy.wrapping_mul(2246822519)
            ^ iz.wrapping_mul(3266489917);
-    // Threshold for ~0.4 % star density (~12 500 stars across the full sphere).
-    const THRESH: u32 = 17_179_869; // u32::MAX * 0.004
-    if h < THRESH {
-        let t = h as f32 / THRESH as f32; // 0..1, varies brightness & color
-        let brightness = 0.4 + t * 1.4;  // faint (0.4) → bright (1.8)
-        // Colour varies from warm-white (low t) to blue-white (high t)
-        Color::new(
-            (0.65 + t * 0.35) * brightness,
-            (0.75 + t * 0.25) * brightness,
-            brightness,
-        )
+    // Two independent LCG steps for magnitude and spectral class.
+    let h2 = h .wrapping_mul(1664525).wrapping_add(1013904223);
+    let h3 = h2.wrapping_mul(1664525).wrapping_add(1013904223);
+
+    // Density: ~0.4 % base, up to 5× higher near galactic equator / centre.
+    let density_boost = 1.0
+        + 2.5 * band_t.powf(2.0)
+        + 1.5 * (toward_center * band_t).powf(2.0);
+    let thresh = (17_179_869_u32 as f32 * density_boost) as u32;
+
+    let star = if h < thresh {
+        // t² power law: most stars are dim, a few are very bright.
+        let mag_t      = h2 as f32 / u32::MAX as f32;
+        let brightness = 0.10 + mag_t * mag_t * 2.5; // 0.10 … 2.60
+
+        // Spectral class — weights approximate real visible-sky colour mix.
+        let col_t = h3 as f32 / u32::MAX as f32;
+        let hue = if col_t < 0.04 {
+            Color::new(0.70, 0.83, 1.00) // O/B  blue-white     4 %
+        } else if col_t < 0.13 {
+            Color::new(0.93, 0.96, 1.00) // A    white           9 %
+        } else if col_t < 0.30 {
+            Color::new(1.00, 0.97, 0.87) // F    yellow-white   17 %
+        } else if col_t < 0.55 {
+            Color::new(1.00, 0.92, 0.68) // G    yellow         25 %
+        } else if col_t < 0.80 {
+            Color::new(1.00, 0.76, 0.48) // K    orange         25 %
+        } else {
+            Color::new(1.00, 0.55, 0.32) // M    orange-red     20 %
+        };
+
+        hue * brightness
     } else {
         Color::default()
-    }
+    };
+
+    star + milky
 }
 
 // ── Path tracer ───────────────────────────────────────────────────────────────
