@@ -12,6 +12,7 @@ use crate::ring::Ring;
 use crate::scene::{DynamicSphere, Orbit, RingData, SceneData};
 use crate::sphere::Sphere;
 use crate::texture::Texture;
+use crate::diamond::Diamond;
 use crate::transform::{Rotate, Translate};
 use crate::vec3::{Color, Point3, Vec3};
 use crate::volume::ConstantMedium;
@@ -150,6 +151,16 @@ pub fn build_cornell_box() -> SceneData {
     let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
     let short_bbox = short.bounding_box().unwrap();
     list.objects.push(short);
+
+    // Round brilliant diamond sitting on the floor near the right wall.
+    // Culet at y = 0; table faces up.  IOR 2.417 gives true diamond dispersion geometry.
+    let diamond_r   = 65.0_f32;
+    let diamond_pav = diamond_r * 40.75_f32.to_radians().tan();
+    list.add(Diamond::new(
+        Point3::new(430.0, diamond_pav, 140.0),
+        diamond_r,
+        Arc::new(Dielectric { ir: 2.417 }),
+    ));
 
     let static_objects = list.objects.clone();
 

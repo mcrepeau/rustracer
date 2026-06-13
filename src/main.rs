@@ -18,6 +18,7 @@ mod ring;
 mod scene;
 mod scenes;
 mod output;
+mod diamond;
 #[cfg(feature = "denoise")]
 mod denoise;
 
