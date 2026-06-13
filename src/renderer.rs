@@ -175,7 +175,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                         pdf_val = cpdf.value(scattered_dir);
                     } else {
                         let cpdf  = CosinePdf::new(rec.normal);
-                        let lpdf  = HittablePdf::new(lights, rec.p);
+                        let lpdf  = HittablePdf::new(lights, rec.p, ray.time);
                         let mpdf  = MixturePdf::new(&cpdf, &lpdf, LIGHT_PDF_WEIGHT);
                         scattered_dir = mpdf.generate(rng);
                         pdf_val       = mpdf.value(scattered_dir);

@@ -63,8 +63,8 @@ impl Hittable for Sphere {
         Some(rec)
     }
 
-    fn pdf_value(&self, origin: Point3, _dir: Vec3) -> f32 {
-        let to_center = self.center - origin;
+    fn pdf_value(&self, origin: Point3, _dir: Vec3, time: f32) -> f32 {
+        let to_center = self.center_at(time) - origin;
         let dist_sq   = to_center.length_squared();
         let r2        = self.radius * self.radius;
         if dist_sq <= r2 { return 0.0; }
@@ -72,13 +72,11 @@ impl Hittable for Sphere {
         1.0 / (2.0 * PI * (1.0 - cos_theta_max))
     }
 
-    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore) -> Vec3 {
-        let to_center = self.center - origin;
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, time: f32) -> Vec3 {
+        let to_center = self.center_at(time) - origin;
         let dist_sq   = to_center.length_squared();
         let r2        = self.radius * self.radius;
-        if dist_sq <= r2 {
-            return to_center.unit();
-        }
+        if dist_sq <= r2 { return to_center.unit(); }
         let cos_theta_max = (1.0 - r2 / dist_sq).sqrt();
         let r1: f32 = rng.gen();
         let r2r: f32 = rng.gen();

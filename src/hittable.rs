@@ -42,11 +42,11 @@ pub trait Hittable: Send + Sync {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>>;
     fn bounding_box(&self) -> Option<Aabb>;
 
-    /// Solid-angle PDF for sampling this hittable from `origin` in direction `dir`.
-    fn pdf_value(&self, _origin: Point3, _dir: Vec3) -> f32 { 0.0 }
+    /// Solid-angle PDF for sampling this hittable from `origin` in direction `dir` at `time`.
+    fn pdf_value(&self, _origin: Point3, _dir: Vec3, _time: f32) -> f32 { 0.0 }
 
-    /// Generate a direction toward this hittable from `origin`.
-    fn pdf_generate(&self, _origin: Point3, _rng: &mut dyn RngCore) -> Vec3 {
+    /// Generate a direction toward this hittable from `origin` at `time`.
+    fn pdf_generate(&self, _origin: Point3, _rng: &mut dyn RngCore, _time: f32) -> Vec3 {
         Vec3::new(1.0, 0.0, 0.0)
     }
 }
@@ -90,15 +90,15 @@ impl Hittable for HittableList {
         result
     }
 
-    fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
+    fn pdf_value(&self, origin: Point3, dir: Vec3, time: f32) -> f32 {
         if self.objects.is_empty() { return 0.0; }
         let weight = 1.0 / self.objects.len() as f32;
-        self.objects.iter().map(|o| weight * o.pdf_value(origin, dir)).sum()
+        self.objects.iter().map(|o| weight * o.pdf_value(origin, dir, time)).sum()
     }
 
-    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore) -> Vec3 {
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, time: f32) -> Vec3 {
         if self.objects.is_empty() { return Vec3::new(1.0, 0.0, 0.0); }
         let idx = (rng.next_u32() as usize) % self.objects.len();
-        self.objects[idx].pdf_generate(origin, rng)
+        self.objects[idx].pdf_generate(origin, rng, time)
     }
 }

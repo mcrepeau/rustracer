@@ -45,21 +45,22 @@ impl Pdf for CosinePdf {
 pub struct HittablePdf<'a> {
     objects: &'a dyn Hittable,
     origin:  Point3,
+    time:    f32,
 }
 
 impl<'a> HittablePdf<'a> {
-    pub fn new(objects: &'a dyn Hittable, origin: Point3) -> Self {
-        Self { objects, origin }
+    pub fn new(objects: &'a dyn Hittable, origin: Point3, time: f32) -> Self {
+        Self { objects, origin, time }
     }
 }
 
 impl<'a> Pdf for HittablePdf<'a> {
     fn value(&self, direction: Vec3) -> f32 {
-        self.objects.pdf_value(self.origin, direction)
+        self.objects.pdf_value(self.origin, direction, self.time)
     }
 
     fn generate(&self, rng: &mut dyn RngCore) -> Vec3 {
-        self.objects.pdf_generate(self.origin, rng)
+        self.objects.pdf_generate(self.origin, rng, self.time)
     }
 }
 
