@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, Metal};
+use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, Metal, SpectralDielectric};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -42,11 +42,13 @@ pub fn build_random_scene() -> SceneData {
     ));
     let diamond_r   = 0.7_f32;
     let diamond_pav = diamond_r * 40.75_f32.to_radians().tan();
-    let diamond: Arc<dyn Hittable> = Arc::new(Diamond::new(
+    let diamond_obj = Diamond::new(
         Point3::new(2.0, diamond_pav, -1.5),
         diamond_r,
-        Arc::new(Dielectric { ir: 2.417 }),
-    ));
+        Arc::new(SpectralDielectric { ir_red: 2.407, ir_green: 2.417, ir_blue: 2.426 }),
+    );
+    let diamond_bbox = diamond_obj.bounding_box().unwrap();
+    let diamond: Arc<dyn Hittable> = Arc::new(diamond_obj);
     let static_objects: Vec<Arc<dyn Hittable>> = vec![ground, diamond];
 
     let mut dynamic: Vec<DynamicSphere> = Vec::new();
@@ -114,7 +116,7 @@ pub fn build_random_scene() -> SceneData {
         static_objects,
         dynamic,
         bounds:         None,
-        colliders:      vec![],
+        colliders:      vec![diamond_bbox],
         gravity:        0.03,
         settled:        false,
         paused:         false,

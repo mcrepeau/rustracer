@@ -50,15 +50,13 @@ impl Material for Metal {
     }
 }
 
-pub struct Dielectric {
-    pub ir: f32,
+fn schlick(cosine: f32, ref_idx: f32) -> f32 {
+    let r0 = ((1.0 - ref_idx) / (1.0 + ref_idx)).powi(2);
+    r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
 }
 
-impl Dielectric {
-    fn reflectance(cosine: f32, ref_idx: f32) -> f32 {
-        let r0 = ((1.0 - ref_idx) / (1.0 + ref_idx)).powi(2);
-        r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
-    }
+pub struct Dielectric {
+    pub ir: f32,
 }
 
 impl Material for Dielectric {
@@ -67,12 +65,66 @@ impl Material for Dielectric {
         let unit = r_in.direction.unit();
         let cos_theta = (-unit).dot(rec.normal).min(1.0);
         let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-        let direction = if ratio * sin_theta > 1.0 || Self::reflectance(cos_theta, ratio) > rng.gen::<f32>() {
+        let direction = if ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>() {
             unit.reflect(rec.normal)
         } else {
             unit.refract(rec.normal, ratio)
         };
         Some(ScatterRecord { attenuation: Color::new(1.0, 1.0, 1.0), ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
+    }
+}
+
+/// Dispersive dielectric that refracts each wavelength (R/G/B) at its own IOR.
+///
+/// At each scatter event a hero wavelength is chosen uniformly at random.
+/// Refractions use the wavelength-specific IOR and carry 3× weight on a single
+/// channel so the Monte Carlo estimator remains unbiased.  Reflections (TIR or
+/// Fresnel) are wavelength-independent and carry full (1,1,1) weight, keeping
+/// those paths uncoloured.
+///
+/// For a round brilliant diamond use  ir_red = 2.407, ir_green = 2.417,
+/// ir_blue = 2.426  (Cauchy model fit to measured dispersion data).
+pub struct SpectralDielectric {
+    pub ir_red:   f32,
+    pub ir_green: f32,
+    pub ir_blue:  f32,
+}
+
+impl Material for SpectralDielectric {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
+        let (ir, channel): (f32, u8) = match rng.gen_range(0u8..3) {
+            0 => (self.ir_red,   0),
+            1 => (self.ir_green, 1),
+            _ => (self.ir_blue,  2),
+        };
+
+        let ratio     = if rec.front_face { 1.0 / ir } else { ir };
+        let unit      = r_in.direction.unit();
+        let cos_theta = (-unit).dot(rec.normal).min(1.0);
+        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+
+        let reflects = ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>();
+
+        if reflects {
+            // TIR or Fresnel reflection: direction and attenuation are wavelength-independent.
+            Some(ScatterRecord {
+                attenuation: Color::new(1.0, 1.0, 1.0),
+                ray:         Ray::new_at_time(rec.p, unit.reflect(rec.normal), r_in.time),
+                skip_pdf:    true,
+            })
+        } else {
+            // Refraction: direction depends on the hero wavelength; isolate that channel.
+            let attenuation = match channel {
+                0 => Color::new(3.0, 0.0, 0.0),
+                1 => Color::new(0.0, 3.0, 0.0),
+                _ => Color::new(0.0, 0.0, 3.0),
+            };
+            Some(ScatterRecord {
+                attenuation,
+                ray:      Ray::new_at_time(rec.p, unit.refract(rec.normal, ratio), r_in.time),
+                skip_pdf: true,
+            })
+        }
     }
 }
 
