@@ -5,7 +5,6 @@ use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
 use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, Metal};
-use crate::mesh::load_obj;
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -198,75 +197,6 @@ pub fn build_cornell_box() -> SceneData {
     }
 }
 
-pub fn build_mesh_scene() -> SceneData {
-    const MODEL_PATH: &str = "assets/model.obj";
-
-    let mat: Arc<dyn Material> =
-        Arc::new(Lambertian { texture: Color::new(0.8, 0.8, 0.75).into() });
-
-    let (mesh_bvh, cam_init) = match load_obj(MODEL_PATH, 1.0, mat) {
-        Err(e) => {
-            println!("  Could not load '{MODEL_PATH}': {e}");
-            println!("  Drop any OBJ file there and press 3 to view it.");
-            let mut list = HittableList::new();
-            list.add(Sphere::new(Point3::new(0.0, 1.0, 0.0), 1.0,
-                Arc::new(Metal { albedo: Color::new(0.8, 0.85, 0.9), fuzz: 0.02 })));
-            (BvhTree::from_list(list), SceneCameraParams {
-                pos: Point3::new(0.0, 2.0, 6.0), lookat: Point3::new(0.0, 1.0, 0.0),
-                vfov: 40.0, aperture: 0.0, focus_dist: 6.0, move_speed: 0.3,
-            })
-        }
-        Ok(mesh_list) => {
-            let bb = mesh_list.bounding_box().unwrap();
-            let cx = (bb.min.x + bb.max.x) * 0.5;
-            let cy = (bb.min.y + bb.max.y) * 0.5;
-            let cz = (bb.min.z + bb.max.z) * 0.5;
-            let size = (bb.max.x - bb.min.x).max(bb.max.y - bb.min.y).max(bb.max.z - bb.min.z);
-            println!("  center ({cx:.2}, {cy:.2}, {cz:.2}), extent {size:.2}");
-            let cam_pos = Point3::new(cx, cy + size * 0.3, cz + size * 1.8);
-            (BvhTree::from_list(mesh_list), SceneCameraParams {
-                pos: cam_pos, lookat: Point3::new(cx, cy, cz),
-                vfov: 40.0, aperture: 0.0, focus_dist: size * 2.0, move_speed: size * 0.02,
-            })
-        }
-    };
-
-    let mut list = HittableList::new();
-    list.add(Quad::new(
-        Point3::new(-500.0, 0.0, 500.0), Vec3::new(1000.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1000.0),
-        Arc::new(Lambertian { texture: Texture::Checker {
-            scale: 1.0, even: Color::new(0.15, 0.15, 0.15), odd: Color::new(0.85, 0.85, 0.85),
-        }}),
-    ));
-    let (overhead_world, overhead_sampler) = emissive_quad(
-        Point3::new(-200.0, 500.0, -200.0),
-        Vec3::new(400.0, 0.0, 0.0),
-        Vec3::new(0.0, 0.0, 400.0),
-        Color::new(6.0, 6.0, 6.0),
-    );
-    let mut lights = HittableList::new();
-    lights.add(overhead_sampler);
-    list.add(overhead_world);
-    list.add(mesh_bvh);
-
-    SceneData {
-        world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights,
-        background: Background::Solid(Color::new(0.05, 0.07, 0.12)),
-        name:       "Mesh",
-        cam_init,
-        static_objects: vec![],
-        dynamic:        vec![],
-        bounds:         None,
-        colliders:      vec![],
-        gravity:        0.0,
-        settled:        false,
-        paused:         false,
-        max_samples:    2000,
-        named_bodies:   vec![],
-        physics_dt:     Duration::from_millis(16),
-    }
-}
 
 pub fn build_nextweek_scene() -> SceneData {
     let mut rng = SmallRng::seed_from_u64(42);

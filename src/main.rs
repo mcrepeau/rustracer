@@ -12,7 +12,6 @@ mod pdf;
 mod sphere;
 mod quad;
 mod transform;
-mod mesh;
 mod camera;
 mod renderer;
 mod ring;
@@ -26,7 +25,7 @@ use vec3::{Color, Vec3};
 use camera::CameraState;
 use renderer::{Background, render_tiles};
 use scene::{SceneData, resolve_camera_aabb};
-use scenes::{build_random_scene, build_cornell_box, build_mesh_scene, build_nextweek_scene, build_solar_system_scene};
+use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene, build_solar_system_scene};
 use output::{to_rgb_u32, save_png};
 
 use winit::{
@@ -84,7 +83,6 @@ fn run_bench() {
     let builders: &[fn() -> SceneData] = &[
         build_random_scene,
         build_cornell_box,
-        build_mesh_scene,
         build_nextweek_scene,
     ];
 
@@ -120,14 +118,12 @@ fn main() {
     let s1 = build_random_scene();
     println!("Scene 2: Cornell Box");
     let s2 = build_cornell_box();
-    println!("Scene 3: Mesh");
-    let s3 = build_mesh_scene();
-    println!("Scene 4: Next Week");
-    let s4 = build_nextweek_scene();
-    println!("Scene 5: Solar System");
-    let s5 = build_solar_system_scene();
-    let mut scenes = [s1, s2, s3, s4, s5];
-    println!("Ready.  [1-5] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
+    println!("Scene 3: Next Week");
+    let s3 = build_nextweek_scene();
+    println!("Scene 4: Solar System");
+    let s4 = build_solar_system_scene();
+    let mut scenes = [s1, s2, s3, s4];
+    println!("Ready.  [1-4] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
     println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
     println!("        [Enter] pause  [R] restart (scene 1)  [Esc] quit");
 
@@ -233,8 +229,8 @@ fn main() {
                                         window.set_cursor_visible(true);
                                     }
                                 }
-                                VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 | VirtualKeyCode::Key4 | VirtualKeyCode::Key5 => {
-                                    let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, VirtualKeyCode::Key4 => 3, VirtualKeyCode::Key5 => 4, _ => 0 };
+                                VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 | VirtualKeyCode::Key4 => {
+                                    let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, VirtualKeyCode::Key4 => 3, _ => 0 };
                                     scene_idx = idx;
                                     cam_state = CameraState::from_params(&scenes[idx].cam_init);
                                     strata = (scenes[idx].max_samples as f32).sqrt() as u32;
