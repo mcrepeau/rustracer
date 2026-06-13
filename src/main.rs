@@ -279,7 +279,11 @@ fn main() {
                                     {
                                         let denoised_guard = denoised.lock().unwrap();
                                         if oidn_on && denoised_guard.len() == (win_w * win_h) as usize {
-                                            save_png(&denoised_guard, 1, scenes[scene_idx].name, win_w, win_h, exposure);
+                                            let sc = 1.0 / samples.max(1) as f32;
+                                            let blended: Vec<Color> = accumulator.iter().zip(denoised_guard.iter())
+                                                .map(|(acc, den)| *den * denoise_blend + *acc * sc * (1.0 - denoise_blend))
+                                                .collect();
+                                            save_png(&blended, 1, scenes[scene_idx].name, win_w, win_h, exposure);
                                         } else {
                                             save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h, exposure);
                                         }
