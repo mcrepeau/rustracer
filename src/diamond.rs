@@ -78,6 +78,9 @@ impl Diamond {
 
         Self { planes, bbox, mat, center, crown_h, pavilion_h }
     }
+
+    /// Half-planes that define the interior: interior iff `n · x ≤ d` for all entries.
+    pub fn planes(&self) -> &[(Vec3, f32)] { &self.planes }
 }
 
 impl Hittable for Diamond {

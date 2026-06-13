@@ -61,7 +61,10 @@ pub struct SceneData {
     pub static_objects: Vec<Arc<dyn Hittable>>,
     pub dynamic:        Vec<DynamicSphere>,
     pub bounds:         Option<Aabb>,
-    pub colliders:      Vec<Aabb>,
+    pub colliders:         Vec<Aabb>,
+    /// Convex polyhedra as lists of half-planes (outward normal, offset).
+    /// Spheres are kept outside via `bounce_sphere_off_convex`.
+    pub convex_colliders:  Vec<Vec<(Vec3, f32)>>,
     pub gravity:        f32,
     pub settled:        bool,
     pub paused:         bool,
@@ -103,6 +106,47 @@ fn bounce_sphere_off_aabb(center: &mut Point3, velocity: &mut Vec3, radius: f32,
         else              { center.y = hi.y; velocity.y =  velocity.y.abs() * restitution; }
     } else if dz_lo < dz_hi { center.z = lo.z; velocity.z = -velocity.z.abs() * restitution; }
     else                    { center.z = hi.z; velocity.z =  velocity.z.abs() * restitution; }
+}
+
+/// Sphere-vs-convex-polyhedron collision for the physics tick.
+///
+/// The polyhedron interior is defined by the half-spaces `n · x ≤ d` (outward
+/// normal `n`, scalar offset `d`).  For each face we compute the signed
+/// separation  sep = n · center − d  (positive = sphere center is on the
+/// outside of that face's half-space).  The sphere overlaps when the maximum
+/// separation over all faces is less than the sphere radius, meaning the center
+/// is inside the Minkowski-expanded polyhedron.  Resolution pushes the center
+/// along the face with the largest (least-negative / most-positive) separation,
+/// which is the minimum-penetration-depth direction.
+fn bounce_sphere_off_convex(
+    center: &mut Point3,
+    velocity: &mut Vec3,
+    radius: f32,
+    restitution: f32,
+    planes: &[(Vec3, f32)],
+) {
+    let mut max_sep = f32::NEG_INFINITY;
+    let mut best_n  = Vec3::new(0.0, 1.0, 0.0);
+
+    for &(n, d) in planes {
+        let sep = n.dot(*center) - d;
+        if sep > max_sep {
+            max_sep = sep;
+            best_n  = n;
+        }
+    }
+
+    // No overlap when the sphere centre is at least `radius` outside the closest face.
+    if max_sep >= radius { return; }
+
+    // Push the centre out along the minimum-penetration face normal.
+    *center += best_n * (radius - max_sep);
+
+    // Cancel the velocity component moving into the surface.
+    let v_dot_n = velocity.dot(best_n);
+    if v_dot_n < 0.0 {
+        *velocity -= (1.0 + restitution) * v_dot_n * best_n;
+    }
 }
 
 /// Push the camera point out of an AABB in XZ only (walls span full height).
@@ -215,6 +259,9 @@ impl SceneData {
             if spd > max_step { ds.velocity *= max_step / spd; }
             for bbox in &self.colliders {
                 bounce_sphere_off_aabb(&mut ds.center, &mut ds.velocity, ds.radius, ds.restitution, bbox);
+            }
+            for planes in &self.convex_colliders {
+                bounce_sphere_off_convex(&mut ds.center, &mut ds.velocity, ds.radius, ds.restitution, planes);
             }
         }
 
