@@ -143,7 +143,10 @@ fn star_field(dir: Vec3) -> Color {
 
 // ── Path tracer ───────────────────────────────────────────────────────────────
 
-pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, rng: &mut impl Rng) -> Color {
+/// `bg_scale` is multiplied into the background sample only (not scene hits).
+/// Pass `1.0 / exposure` to keep the star field at constant apparent brightness
+/// regardless of the scene exposure setting.
+pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, rng: &mut impl Rng) -> Color {
     let mut throughput = Color::new(1.0, 1.0, 1.0);
     let mut color      = Color::default();
     let mut ray        = *r;
@@ -151,7 +154,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
             None => {
-                color += throughput * background.eval(ray.direction);
+                color += throughput * background.eval(ray.direction) * bg_scale;
                 break;
             }
             Some(rec) => {
@@ -216,6 +219,7 @@ pub fn render_tiles(
     world:      &dyn Hittable,
     background: Background,
     lights:     &HittableList,
+    bg_scale:   f32,
 ) {
     let w        = width  as usize;
     let w_denom  = (width  - 1).max(1) as f32;
@@ -250,6 +254,6 @@ pub fn render_tiles(
 
             let u = (col as f32 + u_jitter) / w_denom;
             let v = (ray_y as f32 + v_jitter) / h_denom;
-        *out = ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, &mut rng);
+        *out = ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, bg_scale, &mut rng);
     });
 }

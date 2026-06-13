@@ -411,17 +411,6 @@ pub fn build_solar_system_scene() -> SceneData {
         Arc::new(Sphere::new(Point3::new(0.0, 0.0, 0.0), 12.0, sun_mat)),
     ];
 
-    // ── Sun corona ─────────────────────────────────────────────────────────────
-    // Low-density warm-orange participating medium just outside the sun's surface.
-    let corona_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
-        Point3::new(0.0, 0.0, 0.0), 14.0,
-        Arc::new(Dielectric { ir: 1.0 }),
-    ));
-    static_objects.push(
-        Arc::new(ConstantMedium::new(corona_boundary, 0.06, Color::new(1.0, 0.60, 0.18)))
-            as Arc<dyn Hittable>,
-    );
-
     // ── Orbital trail rings ────────────────────────────────────────────────────
     // Hairline dim-emissive rings showing each planet's orbital plane.
     // Normal of an orbit with inclination i and ascending node Ω:
