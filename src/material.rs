@@ -58,6 +58,29 @@ fn schlick(cosine: f32, ref_idx: f32) -> f32 {
     r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
 }
 
+// ── GGX / PBR helpers ─────────────────────────────────────────────────────────
+
+/// Schlick Fresnel with a colored F0 (supports metal tints).
+fn schlick_color(cos_theta: f32, f0: Color) -> Color {
+    let t = (1.0 - cos_theta).max(0.0).powi(5);
+    f0 + (Color::new(1.0, 1.0, 1.0) - f0) * t
+}
+
+/// Smith G1 term for GGX (height-correlated uncorrelated form).
+fn smith_g1(cos_theta: f32, alpha: f32) -> f32 {
+    let a2 = alpha * alpha;
+    let c2 = cos_theta * cos_theta;
+    2.0 * cos_theta / (cos_theta + (a2 + (1.0 - a2) * c2).sqrt())
+}
+
+/// Build a tangent + bitangent pair perpendicular to `n`.
+fn make_onb(n: Vec3) -> (Vec3, Vec3) {
+    let up = if n.x.abs() < 0.999 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+    let t = n.cross(up).unit();
+    let b = n.cross(t);
+    (t, b)
+}
+
 pub struct Dielectric {
     pub ir: f32,
 }
@@ -173,6 +196,94 @@ impl Material for MarbleMaterial {
 
         Some(ScatterRecord { attenuation, ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
     }
+}
+
+/// Physically-based material using GGX microfacet specular + Lambertian diffuse.
+///
+/// The specular lobe uses the GGX NDF (Trowbridge-Reitz) with Smith G2 shadowing
+/// and Schlick Fresnel.  Specular vs. diffuse is chosen each scatter event via
+/// Russian roulette with probability proportional to the Fresnel reflectance,
+/// keeping the estimator unbiased.
+///
+/// Parameters:
+/// - `albedo`: base colour — diffuse tint for dielectrics, F0 for metals.
+/// - `roughness`: 0 = perfect mirror, 1 = fully diffuse specular.  The actual
+///   α used internally is `roughness²` (perceptual remapping).
+/// - `metallic`: 0 = dielectric (F0 ≈ 0.04 gray, tinted diffuse), 1 = conductor
+///   (F0 = albedo, no diffuse).
+pub struct PbrMaterial {
+    pub albedo:    Color,
+    pub roughness: f32,
+    pub metallic:  f32,
+}
+
+impl Material for PbrMaterial {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
+        let n  = rec.normal;
+        let wo = (-r_in.direction).unit();
+        let cos_o = wo.dot(n);
+        if cos_o <= 0.0 { return None; }
+
+        let alpha = (self.roughness * self.roughness).max(1e-4_f32);
+        // F0: interpolate between dielectric (0.04) and conductor (albedo)
+        let f0 = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
+               + self.albedo * self.metallic;
+
+        // Fresnel at viewing angle: drives specular/diffuse split probability.
+        let f_approx = schlick_color(cos_o, f0);
+        let p_spec = if self.metallic > 0.999 {
+            1.0_f32
+        } else {
+            (0.2126 * f_approx.x + 0.7152 * f_approx.y + 0.0722 * f_approx.z)
+                .clamp(0.04, 0.9)
+        };
+
+        if rng.gen::<f32>() < p_spec {
+            // ── GGX specular ──────────────────────────────────────────────────
+            let (t, b) = make_onb(n);
+            let xi1: f32 = rng.gen();
+            let xi2: f32 = rng.gen();
+
+            // Sample half-vector from GGX NDF (Walter et al. 2007 inverse CDF)
+            let cos_th = ((1.0 - xi2) / (xi2 * (alpha * alpha - 1.0) + 1.0)).max(0.0).sqrt();
+            let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
+            let phi    = 2.0 * PI * xi1;
+            let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
+
+            let vo_h = wo.dot(h).max(0.0);
+            let wi   = (2.0 * vo_h * h - wo).unit();   // reflect wo about h
+            let cos_i = wi.dot(n);
+            if cos_i <= 0.0 { return None; }
+
+            let cos_h = h.dot(n).max(1e-6);
+            let g2    = smith_g1(cos_o, alpha) * smith_g1(cos_i, alpha);
+            let f     = schlick_color(vo_h, f0);
+
+            // Weight from PDF cancellation: F·G·(vo·h) / (cos_o · cos_h)
+            // Divide by p_spec to correct for Russian-roulette sampling.
+            let weight = f * (g2 * vo_h / (cos_o.max(1e-6) * cos_h));
+            Some(ScatterRecord {
+                attenuation: weight / p_spec,
+                ray: Ray::new_at_time(rec.p, wi, r_in.time),
+                skip_pdf: true,
+            })
+        } else {
+            // ── Diffuse Lambertian (dielectrics only) ─────────────────────────
+            // Divide by (1-p_spec) to correct for Russian-roulette sampling.
+            Some(ScatterRecord {
+                attenuation: self.albedo * ((1.0 - self.metallic) / (1.0 - p_spec)),
+                ray: Ray::new_at_time(rec.p, rec.normal, r_in.time), // direction overridden by PDF
+                skip_pdf: false,
+            })
+        }
+    }
+
+    fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
+        let cosine = rec.normal.dot(scattered.direction.unit());
+        (cosine / PI).max(0.0)
+    }
+
+    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
 }
 
 /// Wraps any material and perturbs the surface normal with Perlin turbulence

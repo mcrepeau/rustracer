@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Metal, SpectralDielectric};
+use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Metal, PbrMaterial, SpectralDielectric};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -64,7 +64,8 @@ pub fn build_random_scene() -> SceneData {
     dynamic.push(DynamicSphere {
         center: Point3::new(-4.0, 1.0, 0.0),
         velocity: Vec3::default(),
-        radius: 1.0, mat: Arc::new(Lambertian { texture: Color::new(0.4, 0.2, 0.1).into() }),
+        radius: 1.0,
+        mat: Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, metallic: 0.0 }),
         restitution: 0.35, is_static: true, orbit: None,
         axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
         stretch: Vec3::new(1.0, 1.0, 1.0),
@@ -72,7 +73,8 @@ pub fn build_random_scene() -> SceneData {
     dynamic.push(DynamicSphere {
         center: Point3::new( 4.0, 1.0, 0.0),
         velocity: Vec3::default(),
-        radius: 1.0, mat: Arc::new(Metal { albedo: Color::new(0.7, 0.6, 0.5), fuzz: 0.0 }),
+        radius: 1.0,
+        mat: Arc::new(PbrMaterial { albedo: Color::new(0.7, 0.6, 0.5), roughness: 0.0, metallic: 1.0 }),
         restitution: 0.80, is_static: true, orbit: None,
         axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
         stretch: Vec3::new(1.0, 1.0, 1.0),
@@ -132,10 +134,13 @@ pub fn build_random_scene() -> SceneData {
                 let (color1, color2) = marble_palette[rng.gen_range(0..marble_palette.len())];
                 (Arc::new(MarbleMaterial { ir: 1.5, color1, color2, scale: 8.0, perlin: Arc::clone(&marble_perlin) }), 0.60)
             } else if choose < 0.75 {
-                (Arc::new(Lambertian { texture: (Color::random(&mut rng) * Color::random(&mut rng)).into() }), 0.35)
+                let albedo = Color::random(&mut rng) * Color::random(&mut rng);
+                let roughness: f32 = rng.gen_range(0.5..1.0);
+                (Arc::new(PbrMaterial { albedo, roughness, metallic: 0.0 }), 0.35)
             } else if choose < 0.92 {
-                let fuzz: f32 = rng.gen_range(0.0..0.5);
-                (Arc::new(Metal { albedo: Color::random_range(0.5, 1.0, &mut rng), fuzz }), 0.5 + (1.0 - fuzz) * 0.35)
+                let albedo   = Color::random_range(0.5, 1.0, &mut rng);
+                let roughness: f32 = rng.gen_range(0.0..0.5);
+                (Arc::new(PbrMaterial { albedo, roughness, metallic: 1.0 }), 0.5 + (1.0 - roughness) * 0.35)
             } else {
                 (Arc::new(Dielectric { ir: 1.5 }), 0.65)
             };
