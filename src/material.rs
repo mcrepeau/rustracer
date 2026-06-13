@@ -155,12 +155,14 @@ impl Material for MarbleMaterial {
         let direction = if reflects { unit.reflect(rec.normal) } else { unit.refract(rec.normal, ratio) };
 
         // Apply the swirl colour only when the ray is inside the marble (front_face = false).
-        // This simulates the coloured glass ribbon being encountered as light travels
-        // through the interior; the glass shell itself stays clear on entry.
+        // rec.u is the sphere-local azimuthal angle (0..1 = full wrap), so the band
+        // pattern always spans the sphere regardless of its world-space position.
+        // Perlin turbulence distorts the bands to give organic, marble-like swirls.
         let attenuation = if !rec.front_face {
-            let p     = rec.p * self.scale;
-            let noise = self.perlin.turb(p, 7);
-            let t     = (0.5 * (1.0 + (p.x + p.y * 0.5 + 10.0 * noise).sin())).clamp(0.0, 1.0);
+            let noise = self.perlin.turb(rec.p * self.scale, 7);
+            let phi   = rec.u * 2.0 * PI;                 // 0..2π around the sphere
+            let arg   = phi * 2.0 + noise * 8.0;          // 2 ribbon wraps, turbulence distorted
+            let t     = (0.5 * (1.0 + arg.sin())).clamp(0.0, 1.0);
             self.color1 * t + self.color2 * (1.0 - t)
         } else {
             Color::new(1.0, 1.0, 1.0)

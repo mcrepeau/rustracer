@@ -79,21 +79,35 @@ pub fn build_random_scene() -> SceneData {
     });
 
     // Glass marbles — small glass spheres with internal Perlin swirl, falling near the diamond.
+    // color2 is pure white so the clear areas of the marble are fully transparent,
+    // making the coloured ribbons (color1) stand out sharply.
     let marble_perlin = Arc::new(Perlin::new(&mut rng));
-    let marbles: &[(Color, Color, Point3)] = &[
-        (Color::new(0.10, 0.70, 0.20), Color::new(0.85, 0.95, 0.85), Point3::new(1.5,  8.0, -1.0)), // cat's-eye green
-        (Color::new(0.10, 0.20, 0.85), Color::new(0.70, 0.80, 1.00), Point3::new(2.5,  6.0, -2.0)), // cobalt blue
-        (Color::new(0.85, 0.35, 0.05), Color::new(1.00, 0.88, 0.65), Point3::new(1.0, 10.0, -2.5)), // amber
-        (Color::new(0.80, 0.05, 0.05), Color::new(1.00, 0.55, 0.55), Point3::new(3.0,  7.0, -1.5)), // ruby red
-        (Color::new(0.50, 0.08, 0.80), Color::new(0.80, 0.62, 1.00), Point3::new(2.0,  9.0, -0.8)), // violet
+    // Palette used for both the dedicated marbles and the random dropping spheres.
+    let marble_palette: &[(Color, Color)] = &[
+        (Color::new(0.05, 0.70, 0.15), Color::new(1.0, 1.0, 1.0)), // cat's-eye green
+        (Color::new(0.05, 0.15, 0.85), Color::new(1.0, 1.0, 1.0)), // cobalt blue
+        (Color::new(0.90, 0.35, 0.03), Color::new(1.0, 1.0, 1.0)), // amber
+        (Color::new(0.85, 0.03, 0.03), Color::new(1.0, 1.0, 1.0)), // ruby red
+        (Color::new(0.50, 0.05, 0.85), Color::new(1.0, 1.0, 1.0)), // violet
+        (Color::new(0.80, 0.65, 0.00), Color::new(1.0, 1.0, 1.0)), // gold
+        (Color::new(0.00, 0.70, 0.70), Color::new(1.0, 1.0, 1.0)), // teal
+        (Color::new(0.80, 0.10, 0.50), Color::new(1.0, 1.0, 1.0)), // magenta
     ];
-    for &(color1, color2, center) in marbles {
+    let dedicated_marbles: &[(usize, Point3)] = &[
+        (0, Point3::new(1.5,  8.0, -1.0)),
+        (1, Point3::new(2.5,  6.0, -2.0)),
+        (2, Point3::new(1.0, 10.0, -2.5)),
+        (3, Point3::new(3.0,  7.0, -1.5)),
+        (4, Point3::new(2.0,  9.0, -0.8)),
+    ];
+    for &(palette_idx, center) in dedicated_marbles {
+        let (color1, color2) = marble_palette[palette_idx];
         dynamic.push(DynamicSphere {
             center,
             velocity:    Vec3::default(),
             radius:      0.15,
             mat:         Arc::new(MarbleMaterial {
-                ir: 1.5, color1, color2, scale: 4.0,
+                ir: 1.5, color1, color2, scale: 8.0,
                 perlin: Arc::clone(&marble_perlin),
             }),
             restitution: 0.60,
@@ -114,9 +128,12 @@ pub fn build_random_scene() -> SceneData {
             if (ground_pos - Point3::new( 0.0, 0.2, 0.0)).length() < 1.2 { continue; }
             if (ground_pos - Point3::new(-4.0, 0.2, 0.0)).length() < 1.2 { continue; }
             let choose: f32 = rng.gen();
-            let (mat, restitution): (Arc<dyn Material>, f32) = if choose < 0.80 {
+            let (mat, restitution): (Arc<dyn Material>, f32) = if choose < 0.60 {
+                let (color1, color2) = marble_palette[rng.gen_range(0..marble_palette.len())];
+                (Arc::new(MarbleMaterial { ir: 1.5, color1, color2, scale: 8.0, perlin: Arc::clone(&marble_perlin) }), 0.60)
+            } else if choose < 0.75 {
                 (Arc::new(Lambertian { texture: (Color::random(&mut rng) * Color::random(&mut rng)).into() }), 0.35)
-            } else if choose < 0.95 {
+            } else if choose < 0.92 {
                 let fuzz: f32 = rng.gen_range(0.0..0.5);
                 (Arc::new(Metal { albedo: Color::random_range(0.5, 1.0, &mut rng), fuzz }), 0.5 + (1.0 - fuzz) * 0.35)
             } else {
