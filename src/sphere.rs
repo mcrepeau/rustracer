@@ -9,7 +9,7 @@ use crate::ray::Ray;
 use crate::hittable::{HitRecord, Hittable, Material};
 
 fn sphere_uv(p: Vec3) -> (f32, f32) {
-    let theta = (-p.y).acos();
+    let theta = (-p.y).clamp(-1.0, 1.0).acos();
     let phi   = (-p.z).atan2(p.x) + PI;
     (phi / (2.0 * PI), theta / PI)
 }

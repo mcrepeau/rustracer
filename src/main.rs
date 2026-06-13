@@ -39,7 +39,7 @@ use std::num::NonZeroU32;
 #[cfg(feature = "denoise")]
 use std::sync::{Arc, Mutex};
 #[cfg(feature = "denoise")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const WIDTH:  u32 = 1200;
@@ -152,7 +152,9 @@ fn main() {
     #[cfg(feature = "denoise")]
     let denoised: Arc<Mutex<Vec<Color>>> = Arc::new(Mutex::new(Vec::new()));
     #[cfg(feature = "denoise")]
-    let denoise_running:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let denoise_running: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    #[cfg(feature = "denoise")]
+    let denoise_epoch:   Arc<AtomicU64>  = Arc::new(AtomicU64::new(0));
     let mut accumulator   = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
     let mut samples       = 0u32;
@@ -175,7 +177,10 @@ fn main() {
                 accumulator.fill(Color::default());
                 samples = 0;
                 #[cfg(feature = "denoise")]
-                denoised.lock().unwrap().clear();
+                {
+                    denoised.lock().unwrap().clear();
+                    denoise_epoch.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
 
@@ -269,7 +274,19 @@ fn main() {
                                         cam_dirty = true;
                                     }
                                 }
-                                VirtualKeyCode::P => save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h, exposure),
+                                VirtualKeyCode::P => {
+                                    #[cfg(feature = "denoise")]
+                                    {
+                                        let denoised_guard = denoised.lock().unwrap();
+                                        if oidn_on && denoised_guard.len() == (win_w * win_h) as usize {
+                                            save_png(&denoised_guard, 1, scenes[scene_idx].name, win_w, win_h, exposure);
+                                        } else {
+                                            save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h, exposure);
+                                        }
+                                    }
+                                    #[cfg(not(feature = "denoise"))]
+                                    save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h, exposure);
+                                }
                                 VirtualKeyCode::LBracket => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
                                     cam_dirty = true;
@@ -331,12 +348,16 @@ fn main() {
                                         let input: Vec<f32> = accumulator.iter()
                                             .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
                                             .collect();
-                                        let dst = Arc::clone(&denoised);
+                                        let dst     = Arc::clone(&denoised);
                                         let running = Arc::clone(&denoise_running);
+                                        let epoch   = denoise_epoch.load(Ordering::Relaxed);
+                                        let ep_ref  = Arc::clone(&denoise_epoch);
                                         running.store(true, Ordering::Relaxed);
                                         std::thread::spawn(move || {
                                             if let Some(result) = denoise::denoise_rgb(w, h, input) {
-                                                *dst.lock().unwrap() = result;
+                                                if ep_ref.load(Ordering::Relaxed) == epoch {
+                                                    *dst.lock().unwrap() = result;
+                                                }
                                             }
                                             running.store(false, Ordering::Relaxed);
                                         });
@@ -515,12 +536,16 @@ fn main() {
                         let input: Vec<f32> = accumulator.iter()
                             .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
                             .collect();
-                        let dst = Arc::clone(&denoised);
+                        let dst     = Arc::clone(&denoised);
                         let running = Arc::clone(&denoise_running);
+                        let epoch   = denoise_epoch.load(Ordering::Relaxed);
+                        let ep_ref  = Arc::clone(&denoise_epoch);
                         running.store(true, Ordering::Relaxed);
                         std::thread::spawn(move || {
                             if let Some(result) = denoise::denoise_rgb(w, h, input) {
-                                *dst.lock().unwrap() = result;
+                                if ep_ref.load(Ordering::Relaxed) == epoch {
+                                    *dst.lock().unwrap() = result;
+                                }
                             }
                             running.store(false, Ordering::Relaxed);
                         });
