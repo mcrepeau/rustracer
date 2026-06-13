@@ -62,10 +62,6 @@ impl HittableList {
         self.objects.push(Arc::new(obj));
     }
 
-    #[allow(dead_code)]
-    pub fn push_arc(&mut self, obj: Arc<dyn Hittable>) {
-        self.objects.push(obj);
-    }
 }
 
 impl Hittable for HittableList {
