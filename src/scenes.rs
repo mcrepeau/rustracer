@@ -40,7 +40,14 @@ pub fn build_random_scene() -> SceneData {
             odd:   Color::new(0.9, 0.9, 0.9),
         }}),
     ));
-    let static_objects = vec![ground];
+    let diamond_r   = 0.7_f32;
+    let diamond_pav = diamond_r * 40.75_f32.to_radians().tan();
+    let diamond: Arc<dyn Hittable> = Arc::new(Diamond::new(
+        Point3::new(2.0, diamond_pav, -1.5),
+        diamond_r,
+        Arc::new(Dielectric { ir: 2.417 }),
+    ));
+    let static_objects: Vec<Arc<dyn Hittable>> = vec![ground, diamond];
 
     let mut dynamic: Vec<DynamicSphere> = Vec::new();
 
@@ -151,16 +158,6 @@ pub fn build_cornell_box() -> SceneData {
     let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
     let short_bbox = short.bounding_box().unwrap();
     list.objects.push(short);
-
-    // Round brilliant diamond sitting on the floor near the right wall.
-    // Culet at y = 0; table faces up.  IOR 2.417 gives true diamond dispersion geometry.
-    let diamond_r   = 65.0_f32;
-    let diamond_pav = diamond_r * 40.75_f32.to_radians().tan();
-    list.add(Diamond::new(
-        Point3::new(430.0, diamond_pav, 140.0),
-        diamond_r,
-        Arc::new(Dielectric { ir: 2.417 }),
-    ));
 
     let static_objects = list.objects.clone();
 
