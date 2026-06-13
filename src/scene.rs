@@ -7,7 +7,7 @@ use crate::hittable::{Hittable, HittableList, Material};
 use crate::renderer::Background;
 use crate::ring::Ring;
 use crate::sphere::Sphere;
-use crate::transform::{Rotate, Translate};
+use crate::transform::{Rotate, Scale, Translate};
 use crate::vec3::{Point3, Vec3};
 
 pub struct Orbit {
@@ -47,6 +47,9 @@ pub struct DynamicSphere {
     pub axial_tilt:  f32,
     /// Optional flat ring (e.g. Saturn's rings) centred on this body.
     pub ring:        Option<RingData>,
+    /// Non-uniform scale applied before rotation and translation.
+    /// (1,1,1) = sphere; other values produce an ellipsoid.
+    pub stretch:     Vec3,
 }
 
 pub struct SceneData {
@@ -265,15 +268,22 @@ impl SceneData {
             list.objects.push(Arc::clone(obj));
         }
         for ds in &self.dynamic {
-            if ds.axial_speed != 0.0 || ds.axial_tilt != 0.0 {
-                // Build sphere at origin, spin around Y, tilt around X, translate.
+            let has_stretch = ds.stretch.x != 1.0 || ds.stretch.y != 1.0 || ds.stretch.z != 1.0;
+            if ds.axial_speed != 0.0 || ds.axial_tilt != 0.0 || has_stretch {
+                // Build sphere at origin, scale into ellipsoid, spin around Y,
+                // tilt around X, then translate to world position.
                 let sphere: Arc<dyn Hittable> = Arc::new(
                     Sphere::new(Point3::new(0.0, 0.0, 0.0), ds.radius, Arc::clone(&ds.mat))
                 );
-                let obj: Arc<dyn Hittable> = if ds.axial_speed != 0.0 {
-                    Arc::new(Rotate::around_y(sphere, ds.axial_angle.to_degrees()))
+                let obj: Arc<dyn Hittable> = if has_stretch {
+                    Arc::new(Scale::new(sphere, ds.stretch))
                 } else {
                     sphere
+                };
+                let obj: Arc<dyn Hittable> = if ds.axial_speed != 0.0 {
+                    Arc::new(Rotate::around_y(obj, ds.axial_angle.to_degrees()))
+                } else {
+                    obj
                 };
                 let obj: Arc<dyn Hittable> = if ds.axial_tilt != 0.0 {
                     Arc::new(Rotate::around_x(obj, ds.axial_tilt.to_degrees()))
