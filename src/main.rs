@@ -365,11 +365,9 @@ fn main() {
                                         reset_accum!();
                                     }
                                 }
-                                VirtualKeyCode::R => {
-                                    if scene_idx == 0 {
-                                        scenes[0] = build_random_scene();
-                                        cam_dirty = true;
-                                    }
+                                VirtualKeyCode::R if scene_idx == 0 => {
+                                    scenes[0] = build_random_scene();
+                                    cam_dirty = true;
                                 }
                                 _ => {}
                             }
@@ -380,14 +378,14 @@ fn main() {
                 _ => {}
             }
 
-            Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta: (dx, dy) }, .. } => {
-                if free_cam {
-                    cam_state.yaw   += dx as f32 * MOUSE_SENS;
-                    cam_state.pitch  = (cam_state.pitch - dy as f32 * MOUSE_SENS)
-                        .clamp(-89f32.to_radians(), 89f32.to_radians());
-                    cam_dirty = true;
-                    pending_autofocus = true;
-                }
+            Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta: (dx, dy) }, .. }
+                if free_cam =>
+            {
+                cam_state.yaw   += dx as f32 * MOUSE_SENS;
+                cam_state.pitch  = (cam_state.pitch - dy as f32 * MOUSE_SENS)
+                    .clamp(-89f32.to_radians(), 89f32.to_radians());
+                cam_dirty = true;
+                pending_autofocus = true;
             }
 
             Event::MainEventsCleared => {
