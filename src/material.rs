@@ -128,6 +128,48 @@ impl Material for SpectralDielectric {
     }
 }
 
+/// Glass marble: IOR 1.5 glass exterior with a Perlin-based swirl visible from inside.
+///
+/// The glass surface behaves like a standard dielectric (Fresnel + TIR).  When a
+/// ray travels through the interior and exits (`front_face = false`), the
+/// attenuation is sampled from a sine-wave marble pattern modulated by Perlin
+/// turbulence, producing the characteristic coloured swirl of a cat's-eye marble.
+/// Entry events (`front_face = true`) are unattenuated so the glass shell looks
+/// clear from outside.
+pub struct MarbleMaterial {
+    pub ir:     f32,
+    pub color1: Color,   // swirl / ribbon colour
+    pub color2: Color,   // clear / base colour (typically near white)
+    pub scale:  f32,     // spatial frequency — higher = tighter swirls
+    pub perlin: Arc<Perlin>,
+}
+
+impl Material for MarbleMaterial {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
+        let ratio     = if rec.front_face { 1.0 / self.ir } else { self.ir };
+        let unit      = r_in.direction.unit();
+        let cos_theta = (-unit).dot(rec.normal).min(1.0);
+        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+
+        let reflects  = ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>();
+        let direction = if reflects { unit.reflect(rec.normal) } else { unit.refract(rec.normal, ratio) };
+
+        // Apply the swirl colour only when the ray is inside the marble (front_face = false).
+        // This simulates the coloured glass ribbon being encountered as light travels
+        // through the interior; the glass shell itself stays clear on entry.
+        let attenuation = if !rec.front_face {
+            let p     = rec.p * self.scale;
+            let noise = self.perlin.turb(p, 7);
+            let t     = (0.5 * (1.0 + (p.x + p.y * 0.5 + 10.0 * noise).sin())).clamp(0.0, 1.0);
+            self.color1 * t + self.color2 * (1.0 - t)
+        } else {
+            Color::new(1.0, 1.0, 1.0)
+        };
+
+        Some(ScatterRecord { attenuation, ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
+    }
+}
+
 /// Wraps any material and perturbs the surface normal with Perlin turbulence
 /// before delegating scatter/PDF, creating a rough/lumpy appearance without
 /// changing the underlying geometry.

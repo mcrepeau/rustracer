@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, Metal, SpectralDielectric};
+use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Metal, SpectralDielectric};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -77,6 +77,33 @@ pub fn build_random_scene() -> SceneData {
         axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
         stretch: Vec3::new(1.0, 1.0, 1.0),
     });
+
+    // Glass marbles — small glass spheres with internal Perlin swirl, falling near the diamond.
+    let marble_perlin = Arc::new(Perlin::new(&mut rng));
+    let marbles: &[(Color, Color, Point3)] = &[
+        (Color::new(0.10, 0.70, 0.20), Color::new(0.85, 0.95, 0.85), Point3::new(1.5,  8.0, -1.0)), // cat's-eye green
+        (Color::new(0.10, 0.20, 0.85), Color::new(0.70, 0.80, 1.00), Point3::new(2.5,  6.0, -2.0)), // cobalt blue
+        (Color::new(0.85, 0.35, 0.05), Color::new(1.00, 0.88, 0.65), Point3::new(1.0, 10.0, -2.5)), // amber
+        (Color::new(0.80, 0.05, 0.05), Color::new(1.00, 0.55, 0.55), Point3::new(3.0,  7.0, -1.5)), // ruby red
+        (Color::new(0.50, 0.08, 0.80), Color::new(0.80, 0.62, 1.00), Point3::new(2.0,  9.0, -0.8)), // violet
+    ];
+    for &(color1, color2, center) in marbles {
+        dynamic.push(DynamicSphere {
+            center,
+            velocity:    Vec3::default(),
+            radius:      0.15,
+            mat:         Arc::new(MarbleMaterial {
+                ir: 1.5, color1, color2, scale: 4.0,
+                perlin: Arc::clone(&marble_perlin),
+            }),
+            restitution: 0.60,
+            is_static:   false,
+            orbit:       None,
+            axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0,
+            ring:        None,
+            stretch:     Vec3::new(1.0, 1.0, 1.0),
+        });
+    }
 
     for a in -11i32..11 {
         for b in -11i32..11 {
