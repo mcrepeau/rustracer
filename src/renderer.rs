@@ -192,8 +192,9 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
 
                 if depth >= 2 {
                     let survive = throughput.x.max(throughput.y).max(throughput.z);
-                    if survive <= 0.0 || rng.gen::<f32>() >= survive { break; }
-                    throughput /= survive;
+                    let p = survive.min(1.0);
+                    if survive <= 0.0 || rng.gen::<f32>() >= p { break; }
+                    throughput /= p;
                 }
             }
         }

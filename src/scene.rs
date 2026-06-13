@@ -232,7 +232,7 @@ impl SceneData {
                 let mb = b.radius * b.radius * b.radius;
                 let e  = (a.restitution + b.restitution) * 0.5;
                 if a.is_static {
-                    b.velocity -= (1.0 + e) * rel_v * normal;
+                    b.velocity += (1.0 + e) * rel_v * normal;
                     b.center    = a.center - normal * min_dist;
                 } else if b.is_static {
                     a.velocity -= (1.0 + e) * rel_v * normal;
