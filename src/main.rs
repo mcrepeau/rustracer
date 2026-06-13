@@ -155,7 +155,6 @@ fn main() {
     let denoise_running:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut accumulator   = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
-    let mut pixel_samples = vec![0u32;             (win_w * win_h) as usize];
     let mut samples       = 0u32;
     let mut strata = (scenes[scene_idx].max_samples as f32).sqrt() as u32;
     let mut follow_body:   Option<usize> = None; // index into scene.dynamic
@@ -173,7 +172,7 @@ fn main() {
 
         macro_rules! reset_accum {
             () => {
-                accumulator.fill(Color::default()); pixel_samples.fill(0);
+                accumulator.fill(Color::default());
                 samples = 0;
                 #[cfg(feature = "denoise")]
                 denoised.lock().unwrap().clear();
@@ -192,9 +191,8 @@ fn main() {
                         win_h = new_h;
                         surface.resize(NonZeroU32::new(win_w).unwrap(), NonZeroU32::new(win_h).unwrap()).unwrap();
                         let n = (win_w * win_h) as usize;
-                        accumulator.resize(n, Color::default());   accumulator.fill(Color::default());
-                        scratch.resize(n, Color::default());        scratch.fill(Color::default());
-                        pixel_samples.resize(n, 0);                pixel_samples.fill(0);
+                        accumulator.clear(); accumulator.resize(n, Color::default());
+                        scratch.clear();     scratch.resize(n, Color::default());
                         samples = 0;
                         cam_dirty = true;
                     }
@@ -271,7 +269,7 @@ fn main() {
                                         cam_dirty = true;
                                     }
                                 }
-                                VirtualKeyCode::P => save_png(&accumulator, &pixel_samples, samples, scenes[scene_idx].name, win_w, win_h, exposure),
+                                VirtualKeyCode::P => save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h, exposure),
                                 VirtualKeyCode::LBracket => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
                                     cam_dirty = true;
@@ -329,11 +327,9 @@ fn main() {
                                     oidn_on = !oidn_on;
                                     if oidn_on && samples > 0 && !denoise_running.load(Ordering::Relaxed) {
                                         let w = win_w; let h = win_h;
-                                        let input: Vec<f32> = accumulator.iter().zip(pixel_samples.iter())
-                                            .flat_map(|(c, &s)| {
-                                                let sc = 1.0 / s.max(1) as f32;
-                                                [c.x * sc, c.y * sc, c.z * sc]
-                                            })
+                                        let sc = 1.0 / samples.max(1) as f32;
+                                        let input: Vec<f32> = accumulator.iter()
+                                            .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
                                             .collect();
                                         let dst = Arc::clone(&denoised);
                                         let running = Arc::clone(&denoise_running);
@@ -508,19 +504,16 @@ fn main() {
                                  scene.world.as_ref(), bg, &scene.lights, bg_scale);
 
                     for i in 0..(win_w * win_h) as usize {
-                        accumulator[i]    += scratch[i];
-                        pixel_samples[i]  += 1;
+                        accumulator[i] += scratch[i];
                     }
                     samples += 1;
 
                     #[cfg(feature = "denoise")]
                     if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Relaxed) {
                         let w = win_w; let h = win_h;
-                        let input: Vec<f32> = accumulator.iter().zip(pixel_samples.iter())
-                            .flat_map(|(c, &s)| {
-                                let sc = 1.0 / s.max(1) as f32;
-                                [c.x * sc, c.y * sc, c.z * sc]
-                            })
+                        let sc = 1.0 / samples.max(1) as f32;
+                        let input: Vec<f32> = accumulator.iter()
+                            .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
                             .collect();
                         let dst = Arc::clone(&denoised);
                         let running = Arc::clone(&denoise_running);
@@ -545,8 +538,9 @@ fn main() {
                 {
                     let denoised_guard = denoised.lock().unwrap();
                     let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
+                    let sc = 1.0 / samples.max(1) as f32;
                     for i in 0..(win_w * win_h) as usize {
-                        let raw = accumulator[i] * (1.0 / pixel_samples[i].max(1) as f32);
+                        let raw = accumulator[i] * sc;
                         let color = if use_denoised {
                             denoised_guard[i] * denoise_blend + raw * (1.0 - denoise_blend)
                         } else {
@@ -556,11 +550,11 @@ fn main() {
                     }
                 }
                 #[cfg(not(feature = "denoise"))]
-                for i in 0..(win_w * win_h) as usize {
-                    buffer[i] = to_rgb_u32(
-                        accumulator[i] * (1.0 / pixel_samples[i].max(1) as f32),
-                        exposure,
-                    );
+                {
+                    let sc = 1.0 / samples.max(1) as f32;
+                    for i in 0..(win_w * win_h) as usize {
+                        buffer[i] = to_rgb_u32(accumulator[i] * sc, exposure);
+                    }
                 }
                 buffer.present().unwrap();
             }

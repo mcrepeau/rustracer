@@ -17,13 +17,14 @@ pub fn to_rgb_u32(c: Color, scale: f32) -> u32 {
     (r as u32) << 16 | (g as u32) << 8 | (b as u32)
 }
 
-pub fn save_png(accumulator: &[Color], pixel_samples: &[u32], samples: u32, scene_name: &str, width: u32, height: u32, exposure: f32) {
+pub fn save_png(accumulator: &[Color], samples: u32, scene_name: &str, width: u32, height: u32, exposure: f32) {
     if samples == 0 { return; }
     let slug = scene_name.to_lowercase().replace(' ', "_");
     let path = format!("render_{}_{:04}spp.png", slug, samples);
+    let scale = exposure / samples as f32;
     let img = ImageBuffer::from_fn(width, height, |x, y| {
         let i = (y * width + x) as usize;
-        let [r, g, b] = tone_map(accumulator[i], exposure / pixel_samples[i].max(1) as f32);
+        let [r, g, b] = tone_map(accumulator[i], scale);
         Rgb([r, g, b])
     });
     match img.save(&path) {

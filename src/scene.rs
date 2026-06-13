@@ -73,6 +73,9 @@ pub struct SceneData {
     /// Use a larger value for slow-moving scenes (solar system) so the path
     /// tracer can accumulate more samples before each position reset.
     pub physics_dt:     Duration,
+    /// BVH over `static_objects`, built once on the first `rebuild()` call and
+    /// reused every subsequent tick so static geometry is never re-partitioned.
+    pub(crate) cached_static: Option<Arc<dyn Hittable>>,
 }
 
 /// Sphere-vs-AABB collision: push the sphere out along the axis of minimum
@@ -263,10 +266,16 @@ impl SceneData {
 
     pub fn rebuild(&mut self) {
         if self.static_objects.is_empty() && self.dynamic.is_empty() { return; }
-        let mut list = HittableList::new();
-        for obj in &self.static_objects {
-            list.objects.push(Arc::clone(obj));
+
+        // Build the static BVH once and reuse it on every subsequent tick.
+        if self.cached_static.is_none() && !self.static_objects.is_empty() {
+            let mut sl = HittableList::new();
+            for obj in &self.static_objects { sl.objects.push(Arc::clone(obj)); }
+            self.cached_static = Some(Arc::new(BvhTree::from_list(sl)));
         }
+
+        let mut list = HittableList::new();
+        if let Some(s) = &self.cached_static { list.objects.push(Arc::clone(s)); }
         for ds in &self.dynamic {
             let has_stretch = ds.stretch.x != 1.0 || ds.stretch.y != 1.0 || ds.stretch.z != 1.0;
             if ds.axial_speed != 0.0 || ds.axial_tilt != 0.0 || has_stretch {

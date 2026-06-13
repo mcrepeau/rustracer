@@ -105,14 +105,15 @@ pub fn build_random_scene() -> SceneData {
         },
         static_objects,
         dynamic,
-        bounds:       None,
-        colliders:    vec![],
-        gravity:      0.03,
-        settled:      false,
-        paused:       false,
-        max_samples:  2000,
-        named_bodies: vec![],
-        physics_dt:   Duration::from_millis(16),
+        bounds:         None,
+        colliders:      vec![],
+        gravity:        0.03,
+        settled:        false,
+        paused:         false,
+        max_samples:    2000,
+        named_bodies:   vec![],
+        physics_dt:     Duration::from_millis(16),
+        cached_static:  None,
     }
 }
 
@@ -186,14 +187,15 @@ pub fn build_cornell_box() -> SceneData {
         },
         static_objects,
         dynamic,
-        bounds:       Some(bounds),
-        colliders:    vec![tall_bbox, short_bbox],
-        gravity:      0.0,
-        settled:      false,
-        paused:       false,
-        max_samples:  2000,
-        named_bodies: vec![],
-        physics_dt:   Duration::from_millis(16),
+        bounds:         Some(bounds),
+        colliders:      vec![tall_bbox, short_bbox],
+        gravity:        0.0,
+        settled:        false,
+        paused:         false,
+        max_samples:    2000,
+        named_bodies:   vec![],
+        physics_dt:     Duration::from_millis(16),
+        cached_static:  None,
     }
 }
 
@@ -317,6 +319,7 @@ pub fn build_nextweek_scene() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
+        cached_static:  None,
     }
 }
 
@@ -615,15 +618,16 @@ pub fn build_solar_system_scene() -> SceneData {
         },
         static_objects,
         dynamic,
-        bounds:      None,
-        colliders:   vec![],
-        gravity:     0.0,
-        settled:     false,
-        paused:      false,
-        max_samples: 4000,
+        bounds:        None,
+        colliders:     vec![],
+        gravity:       0.0,
+        settled:       false,
+        paused:        false,
+        max_samples:   4000,
         named_bodies,
         // Large physics_dt lets the path tracer accumulate many samples
         // between each planet-position update (planets barely move per tick).
-        physics_dt:  Duration::from_millis(500),
+        physics_dt:    Duration::from_millis(500),
+        cached_static: None,
     }
 }
