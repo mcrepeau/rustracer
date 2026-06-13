@@ -76,6 +76,11 @@ pub struct SceneData {
     /// Use a larger value for slow-moving scenes (solar system) so the path
     /// tracer can accumulate more samples before each position reset.
     pub physics_dt:     Duration,
+    /// Whether to fill OIDN albedo/normal aux buffers for this scene.
+    /// Disable for scenes dominated by indirect lighting or volumes where
+    /// first-hit geometry doesn't correlate with final pixel colour.
+    #[cfg_attr(not(feature = "denoise"), allow(dead_code))]
+    pub use_oidn_aux:   bool,
     /// BVH over `static_objects`, built once on the first `rebuild()` call and
     /// reused every subsequent tick so static geometry is never re-partitioned.
     pub(crate) cached_static: Option<Arc<dyn Hittable>>,

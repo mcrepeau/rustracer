@@ -168,6 +168,7 @@ pub fn build_random_scene() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
+        use_oidn_aux:   true,
         cached_static:  None,
     }
 }
@@ -251,6 +252,7 @@ pub fn build_cornell_box() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
+        use_oidn_aux:   false,
         cached_static:  None,
     }
 }
@@ -376,6 +378,7 @@ pub fn build_nextweek_scene() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
+        use_oidn_aux:   false,
         cached_static:  None,
     }
 }
@@ -686,6 +689,7 @@ pub fn build_solar_system_scene() -> SceneData {
         // Large physics_dt lets the path tracer accumulate many samples
         // between each planet-position update (planets barely move per tick).
         physics_dt:    Duration::from_millis(500),
+        use_oidn_aux:  false,
         cached_static: None,
     }
 }
