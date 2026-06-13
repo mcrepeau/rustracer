@@ -430,15 +430,16 @@ pub fn build_solar_system_scene() -> SceneData {
         emit: Color::new(0.05, 0.05, 0.10).into(),
     });
     // (orbital_radius, inclination_deg, asc_node_deg)  — J2000 values
+    // Radii use sqrt-compression: r_scene = 35 × sqrt(r_AU)  (see planet calls below).
     let orbit_data: &[(f32, f32, f32)] = &[
-        ( 18.0,  7.00,  48.33),  // Mercury
-        ( 26.0,  3.39,  76.68),  // Venus
-        ( 35.0,  0.00,   0.00),  // Earth
-        ( 47.0,  1.85,  49.56),  // Mars
-        ( 65.0,  1.30, 100.49),  // Jupiter
-        ( 87.0,  2.49, 113.64),  // Saturn
-        (108.0,  0.77,  74.00),  // Uranus
-        (130.0,  1.77, 131.78),  // Neptune
+        ( 22.0,  7.00,  48.33),  // Mercury  (0.387 AU)
+        ( 30.0,  3.39,  76.68),  // Venus    (0.723 AU)
+        ( 35.0,  0.00,   0.00),  // Earth    (1.000 AU) — anchor
+        ( 43.0,  1.85,  49.56),  // Mars     (1.524 AU)
+        ( 80.0,  1.30, 100.49),  // Jupiter  (5.203 AU)
+        (108.0,  2.49, 113.64),  // Saturn   (9.539 AU)
+        (153.0,  0.77,  74.00),  // Uranus  (19.18  AU)
+        (192.0,  1.77, 131.78),  // Neptune (30.07  AU)
     ];
     for &(r, incl_deg, omega_deg) in orbit_data {
         let i = incl_deg.to_radians();
@@ -491,23 +492,32 @@ pub fn build_solar_system_scene() -> SceneData {
     };
 
     // ── Planets (indices 0-7) ─────────────────────────────────────────────────
-    // Orbital speeds: Kepler-consistent with scene radii: ω = 0.0003491·(35/r)^1.5.
+    // Orbital distances use sqrt-compression: r_scene = 35 × sqrt(r_AU).
+    // Earth (1 AU) anchors the scale at r_scene = 35.  This is NOT physically
+    // accurate — true distances would place Neptune at ~1053 scene units (30×
+    // Earth's orbit), making outer planets sub-pixel from any useful camera
+    // position.  The sqrt curve gives outer planets proportionally more room
+    // than linear compression while keeping all 8 planets on screen together.
+    // True-scale scene radii for reference:  Mercury 13.5 | Venus 25.3 | Mars
+    // 53.3 | Jupiter 182 | Saturn 334 | Uranus 671 | Neptune 1053.
+    //
+    // Orbital speeds: Kepler-consistent with SCENE radii: ω = 0.0003491·(35/r)^1.5.
     // Earth (r=35) is the anchor: 18000 ticks/orbit, 0.0003491 rad/tick.
     // Axial speeds: real sidereal day lengths. Earth day ≈ 49.3 ticks.
     // Axial tilts:  real obliquities. Venus is nearly inverted (177.4°, retrograde axial spin).
     //         orbit_r  speed(Kepler)   angle  incl°  body_r  axial_spd   tilt°   Ω°
-    planet( 18.0,  0.0009467,  0.0,   7.00,  0.61, 0.00218,    0.0,  48.33,
+    planet( 22.0,  0.0007005,  0.0,   7.00,  0.61, 0.00218,    0.0,  48.33,
         Arc::new(Lambertian { texture: Color::new(0.60, 0.58, 0.55).into() })); // Mercury
-    planet( 26.0,  0.0005453,  1.2,   3.39,  1.5, -0.000524,  177.4, 76.68,
+    planet( 30.0,  0.0004399,  1.2,   3.39,  1.5, -0.000524,  177.4, 76.68,
         Arc::new(Lambertian { texture: Color::new(0.90, 0.80, 0.50).into() })); // Venus
     planet( 35.0,  0.0003491,  2.5,   0.00,  1.6,  0.1274,    23.4,  0.00,
         Arc::new(Lambertian { texture:
             Texture::load("assets/earthmap.jpg")
                 .unwrap_or_else(|_| Color::new(0.20, 0.45, 0.85).into())
         }));                                                                       // Earth
-    planet( 47.0,  0.0002244,  0.8,   1.85,  0.85, 0.1241,    25.2, 49.56,
+    planet( 43.0,  0.0002562,  0.8,   1.85,  0.85, 0.1241,    25.2, 49.56,
         Arc::new(Lambertian { texture: Color::new(0.78, 0.32, 0.12).into() })); // Mars
-    planet( 65.0,  0.0001380,  3.5,   1.30,  5.5,  0.3083,     3.1, 100.49,
+    planet( 80.0,  0.0001011,  3.5,   1.30,  5.5,  0.3083,     3.1, 100.49,
         Arc::new(Lambertian { texture: Texture::PlanetBands {
             perlin:    Arc::clone(&jup_perlin),
             scale:     1.0,
@@ -515,11 +525,11 @@ pub fn build_solar_system_scene() -> SceneData {
             hot:  Color::new(0.72, 0.44, 0.18),
             cool: Color::new(0.88, 0.80, 0.62),
         }})); // Jupiter
-    planet( 87.0,  0.0000891,  1.8,   2.49,  4.5,  0.2873,    26.7, 113.64,
+    planet(108.0,  0.0000644,  1.8,   2.49,  4.5,  0.2873,    26.7, 113.64,
         Arc::new(Lambertian { texture: Color::new(0.88, 0.80, 0.55).into() })); // Saturn
-    planet(108.0,  0.0000644,  4.2,   0.77,  3.0, -0.1776,    97.8, 74.00,
+    planet(153.0,  0.0000382,  4.2,   0.77,  3.0, -0.1776,    97.8, 74.00,
         Arc::new(Lambertian { texture: Color::new(0.50, 0.88, 0.88).into() })); // Uranus
-    planet(130.0,  0.0000488,  2.9,   1.77,  2.9,  0.1900,    28.3, 131.78,
+    planet(192.0,  0.0000272,  2.9,   1.77,  2.9,  0.1900,    28.3, 131.78,
         Arc::new(Lambertian { texture: Color::new(0.18, 0.28, 0.80).into() })); // Neptune
 
     // Saturn's rings (index 5).
@@ -549,15 +559,16 @@ pub fn build_solar_system_scene() -> SceneData {
     });
 
     // ── Asteroid belt ─────────────────────────────────────────────────────────
-    // ~45 small rocky bodies between Mars (r=47) and Jupiter (r=65).
-    // Speeds interpolated between the two planets' orbital speeds.
+    // ~45 small rocky bodies between Mars (r=43) and Jupiter (r=80).
+    // Real belt: 2.2–3.2 AU → sqrt-compressed to ~52–63 scene units.
+    // Speeds follow the same Kepler formula as planets, with ±15% scatter.
     let mut belt_rng = SmallRng::seed_from_u64(999);
     // Shared Perlin instance: each asteroid sits at a different location in the
     // noise field, so they all look distinct even with a single noise table.
     let mut bump_rng = SmallRng::seed_from_u64(7331);
     let asteroid_perlin = Arc::new(Perlin::new(&mut bump_rng));
     for _ in 0..45 {
-        let orbit_r  = 48.0_f32 + belt_rng.gen::<f32>() * 14.0;
+        let orbit_r  = 52.0_f32 + belt_rng.gen::<f32>() * 12.0;
         let angle    = belt_rng.gen::<f32>() * 2.0 * PI;
         let incl     = (belt_rng.gen::<f32>() - 0.5) * 0.3;
         let asc_node = belt_rng.gen::<f32>() * 2.0 * PI;
@@ -674,13 +685,14 @@ pub fn build_solar_system_scene() -> SceneData {
         background: Background::Stars,
         name:       "Solar System",
         cam_init:   SceneCameraParams {
-            // ~25° elevation: shows orbital-plane depth and makes the star field dramatic.
-            pos:        Point3::new(0.0, 75.0, 175.0),
-            lookat:     Point3::new(0.0,  0.0,   0.0),
+            // ~22° elevation: shows orbital-plane depth and makes the star field dramatic.
+            // Pulled back to fit Neptune's wider orbit (r=192 vs old r=130).
+            pos:        Point3::new(0.0, 110.0, 260.0),
+            lookat:     Point3::new(0.0,   0.0,   0.0),
             vfov:       55.0,
             aperture:   0.0,
             focus_dist: 10.0,
-            move_speed: 3.0,
+            move_speed: 4.0,
         },
         static_objects,
         dynamic,
