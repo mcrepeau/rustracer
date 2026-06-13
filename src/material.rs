@@ -14,6 +14,7 @@ pub struct DiffuseLight {
 impl Material for DiffuseLight {
     fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
     fn emitted(&self, u: f32, v: f32, p: Point3) -> Color { self.emit.value(u, v, p) }
+    fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color { self.emit.value(u, v, p) }
 }
 
 pub struct Lambertian {
@@ -31,6 +32,7 @@ impl Material for Lambertian {
         let cosine = rec.normal.dot(scattered.direction.unit());
         (cosine / PI).max(0.0)
     }
+    fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color { self.texture.value(u, v, p) }
 }
 
 pub struct Metal {
@@ -48,6 +50,7 @@ impl Material for Metal {
             None
         }
     }
+    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
 }
 
 fn schlick(cosine: f32, ref_idx: f32) -> f32 {
@@ -211,5 +214,8 @@ impl Material for BumpMaterial {
 
     fn emitted(&self, u: f32, v: f32, p: Point3) -> Color {
         self.inner.emitted(u, v, p)
+    }
+    fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color {
+        self.inner.albedo_hint(u, v, p)
     }
 }

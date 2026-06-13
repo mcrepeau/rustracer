@@ -24,7 +24,10 @@ mod denoise;
 
 use vec3::{Color, Vec3};
 use camera::CameraState;
+#[cfg(not(feature = "denoise"))]
 use renderer::{Background, render_tiles};
+#[cfg(feature = "denoise")]
+use renderer::{Background, render_tiles, render_aux_pass};
 use scene::{SceneData, resolve_camera_aabb};
 use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene, build_solar_system_scene};
 use output::{to_rgb_u32, save_png};
@@ -153,6 +156,10 @@ fn main() {
     #[cfg(feature = "denoise")]
     let denoised: Arc<Mutex<Vec<Color>>> = Arc::new(Mutex::new(Vec::new()));
     #[cfg(feature = "denoise")]
+    let mut aux_albedo: Vec<f32> = Vec::new();
+    #[cfg(feature = "denoise")]
+    let mut aux_normal: Vec<f32> = Vec::new();
+    #[cfg(feature = "denoise")]
     let denoise_running: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     #[cfg(feature = "denoise")]
     let denoise_epoch:   Arc<AtomicU64>  = Arc::new(AtomicU64::new(0));
@@ -181,6 +188,8 @@ fn main() {
                 {
                     denoised.lock().unwrap().clear();
                     denoise_epoch.fetch_add(1, Ordering::Relaxed);
+                    aux_albedo.clear();
+                    aux_normal.clear();
                 }
             }
         }
@@ -353,13 +362,15 @@ fn main() {
                                         let input: Vec<f32> = accumulator.iter()
                                             .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
                                             .collect();
+                                        let alb     = aux_albedo.clone();
+                                        let nrm     = aux_normal.clone();
                                         let dst     = Arc::clone(&denoised);
                                         let running = Arc::clone(&denoise_running);
                                         let epoch   = denoise_epoch.load(Ordering::Relaxed);
                                         let ep_ref  = Arc::clone(&denoise_epoch);
                                         running.store(true, Ordering::Relaxed);
                                         std::thread::spawn(move || {
-                                            if let Some(result) = denoise::denoise_rgb(w, h, input) {
+                                            if let Some(result) = denoise::denoise_rgb(w, h, input, alb, nrm) {
                                                 if ep_ref.load(Ordering::Relaxed) == epoch {
                                                     *dst.lock().unwrap() = result;
                                                 }
@@ -534,6 +545,16 @@ fn main() {
                     }
                     samples += 1;
 
+                    // Build the aux buffers once per render sequence (first sample),
+                    // so they are ready before the first OIDN invocation at sample 32.
+                    #[cfg(feature = "denoise")]
+                    if samples == 1 {
+                        let (alb, nrm) = render_aux_pass(win_w, win_h, &camera,
+                                                         scene.world.as_ref(), bg);
+                        aux_albedo = alb;
+                        aux_normal = nrm;
+                    }
+
                     #[cfg(feature = "denoise")]
                     if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Relaxed) {
                         let w = win_w; let h = win_h;
@@ -541,13 +562,15 @@ fn main() {
                         let input: Vec<f32> = accumulator.iter()
                             .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
                             .collect();
+                        let alb     = aux_albedo.clone();
+                        let nrm     = aux_normal.clone();
                         let dst     = Arc::clone(&denoised);
                         let running = Arc::clone(&denoise_running);
                         let epoch   = denoise_epoch.load(Ordering::Relaxed);
                         let ep_ref  = Arc::clone(&denoise_epoch);
                         running.store(true, Ordering::Relaxed);
                         std::thread::spawn(move || {
-                            if let Some(result) = denoise::denoise_rgb(w, h, input) {
+                            if let Some(result) = denoise::denoise_rgb(w, h, input, alb, nrm) {
                                 if ep_ref.load(Ordering::Relaxed) == epoch {
                                     *dst.lock().unwrap() = result;
                                 }

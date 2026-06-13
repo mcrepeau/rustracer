@@ -205,6 +205,66 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
     color
 }
 
+// ── Auxiliary pass (albedo + normal) for OIDN ────────────────────────────────
+
+/// Render a single first-hit pass and return flat `f32` buffers suitable for
+/// passing to OIDN as the albedo and normal auxiliary inputs.
+///
+/// Each buffer has `width * height * 3` elements.  The albedo is the material's
+/// unlit base colour (clamped to [0, 1]); the normal is the world-space shading
+/// normal.  Background pixels carry the sky colour as albedo and a zero normal.
+/// Using pixel centres (no jitter) keeps the buffers essentially noise-free so
+/// OIDN can apply `clean_aux` quality internally.
+#[cfg(feature = "denoise")]
+pub fn render_aux_pass(
+    width:      u32,
+    height:     u32,
+    camera:     &Camera,
+    world:      &dyn Hittable,
+    background: Background,
+) -> (Vec<f32>, Vec<f32>) {
+    let w       = width  as usize;
+    let n       = w * height as usize;
+    let w_denom = (width  - 1).max(1) as f32;
+    let h_denom = (height - 1).max(1) as f32;
+
+    let pairs: Vec<([f32; 3], [f32; 3])> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let row   = i / w;
+            let col   = i % w;
+            let mut rng = SmallRng::seed_from_u64(i as u64 ^ 0x9E3779B97F4A7C15);
+            // Pixel centre — no jitter — keeps albedo/normal clean.
+            let u = (col as f32 + 0.5) / w_denom;
+            let v = ((height - 1 - row as u32) as f32 + 0.5) / h_denom;
+            let ray = camera.get_ray(u, v, &mut rng);
+
+            match world.hit(&ray, 0.001, f32::INFINITY) {
+                None => {
+                    let bg = background.eval(ray.direction);
+                    ([bg.x, bg.y, bg.z], [0.0f32; 3])
+                }
+                Some(rec) => {
+                    let alb = rec.mat.albedo_hint(rec.u, rec.v, rec.p);
+                    let n   = rec.normal;
+                    (
+                        [alb.x.clamp(0.0, 1.0), alb.y.clamp(0.0, 1.0), alb.z.clamp(0.0, 1.0)],
+                        [n.x, n.y, n.z],
+                    )
+                }
+            }
+        })
+        .collect();
+
+    let mut albedo = Vec::with_capacity(n * 3);
+    let mut normal = Vec::with_capacity(n * 3);
+    for (a, n) in pairs {
+        albedo.extend_from_slice(&a);
+        normal.extend_from_slice(&n);
+    }
+    (albedo, normal)
+}
+
 // ── Tile renderer ─────────────────────────────────────────────────────────────
 
 /// Render one sample pass into `scratch` in parallel.

@@ -18,6 +18,11 @@ pub trait Material: Send + Sync {
     /// f(ωi, ωo) · cos(θi) — used to weight the PDF-sampled contribution.
     /// Only called when skip_pdf = false.
     fn scattering_pdf(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _scattered: &Ray) -> f32 { 0.0 }
+    /// Unlit base colour of the surface in [0, 1], used as the OIDN albedo
+    /// auxiliary buffer.  Specular and transparent materials return white
+    /// (the default); the normal buffer still benefits those pixels.
+    #[cfg_attr(not(feature = "denoise"), allow(dead_code))]
+    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { Color::new(1.0, 1.0, 1.0) }
 }
 
 pub struct HitRecord<'a> {
