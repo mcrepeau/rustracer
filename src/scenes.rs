@@ -79,6 +79,19 @@ pub fn build_random_scene() -> SceneData {
         axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
         stretch: Vec3::new(1.0, 1.0, 1.0),
     });
+    dynamic.push(DynamicSphere {
+        center: Point3::new(-2.0, 1.0, -2.0),
+        velocity: Vec3::default(),
+        radius: 1.0,
+        mat: Arc::new(PearlMaterial {
+            base_color:     Color::new(0.98, 0.93, 0.88),
+            ior:            1.56,
+            film_thickness: 450.0,
+        }),
+        restitution: 0.50, is_static: true, orbit: None,
+        axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
+        stretch: Vec3::new(1.0, 1.0, 1.0),
+    });
 
     // Glass marbles — small glass spheres falling near the diamond.
     // Two flavours:
