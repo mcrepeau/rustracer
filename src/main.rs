@@ -11,6 +11,8 @@ mod onb;
 mod pdf;
 mod sphere;
 mod quad;
+mod cylinder;
+mod cone;
 mod transform;
 mod camera;
 mod renderer;

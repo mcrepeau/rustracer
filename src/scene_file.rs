@@ -9,6 +9,8 @@ use crate::hittable::{Hittable, HittableList, Material};
 use crate::material::{
     Dielectric, DiffuseLight, Lambertian, Metal, PbrMaterial, PearlMaterial, SpectralDielectric,
 };
+use crate::cone::Cone;
+use crate::cylinder::Cylinder;
 use crate::quad::{make_box, Quad};
 use crate::renderer::Background;
 use crate::scene::SceneData;
@@ -82,9 +84,11 @@ pub struct ObjectConfig {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ShapeConfig {
-    Sphere { center: [f32; 3], radius: f32 },
-    Quad   { corner: [f32; 3], u: [f32; 3], v: [f32; 3] },
-    Box    { p_min:  [f32; 3], p_max: [f32; 3] },
+    Sphere   { center: [f32; 3], radius: f32 },
+    Quad     { corner: [f32; 3], u: [f32; 3], v: [f32; 3] },
+    Box      { p_min:  [f32; 3], p_max: [f32; 3] },
+    Cylinder { center: [f32; 3], radius: f32, height: f32 },
+    Cone     { center: [f32; 3], radius: f32, height: f32 },
 }
 
 #[derive(Deserialize)]
@@ -213,6 +217,10 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                 Arc::new(Quad::new(p3(corner), v3(u), v3(v), mat)),
             ShapeConfig::Box { p_min, p_max } =>
                 Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), mat))),
+            ShapeConfig::Cylinder { center, radius, height } =>
+                Arc::new(Cylinder { center: p3(center), radius, height, mat }),
+            ShapeConfig::Cone { center, radius, height } =>
+                Arc::new(Cone { center: p3(center), radius, height, mat }),
         };
         static_objects.push(hittable);
     }
