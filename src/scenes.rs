@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Metal, PbrMaterial, SpectralDielectric, SSSMaterial};
+use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Metal, PbrMaterial, PearlMaterial, SpectralDielectric, SSSMaterial};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -362,6 +362,17 @@ pub fn build_nextweek_scene() -> SceneData {
         diamond_r,
         Arc::new(SpectralDielectric { ir_red: 2.407, ir_green: 2.417, ir_blue: 2.426 }),
     )) as Arc<dyn Hittable>);
+
+    // Pearl — Akoya-style cream pearl.  film_thickness=450 nm gives a rose-pink
+    // orient at normal incidence cycling through blue and green at oblique angles.
+    list.add(Sphere::new(
+        Point3::new(400.0, 150.0, 270.0), 50.0,
+        Arc::new(PearlMaterial {
+            base_color:     Color::new(0.98, 0.93, 0.88), // warm cream
+            ior:            1.56,
+            film_thickness: 450.0,
+        }),
+    ));
 
     let earth_tex = Texture::load("assets/earthmap.jpg")
         .unwrap_or_else(|_| Texture::Checker {

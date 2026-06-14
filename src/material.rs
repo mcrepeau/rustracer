@@ -390,3 +390,80 @@ impl Material for BumpMaterial {
     }
     fn can_receive_caustics(&self) -> bool { self.inner.can_receive_caustics() }
 }
+
+// ── Pearl ─────────────────────────────────────────────────────────────────────
+
+/// Two-beam thin-film interference colour for nacre.
+///
+/// Returns an RGB colour in [0,1]³ giving the constructive-interference
+/// intensity at the three representative wavelengths 700 nm (R), 546 nm (G),
+/// 435 nm (B).  Both interfaces in natural nacre undergo a π phase shift
+/// (each layer goes from a lighter to a denser medium), so the shifts cancel
+/// and constructive interference occurs when the optical path difference equals
+/// an integer multiple of λ.
+///
+/// `cos_theta`        – cosine of the incident angle in air.
+/// `film_ior`         – effective IOR of the nacre layer (~1.56).
+/// `film_thickness_nm`– layer thickness in nanometres (~380–500 for natural pearls).
+#[inline]
+fn nacre_color(cos_theta: f32, film_ior: f32, film_thickness_nm: f32) -> Color {
+    // Refracted angle via Snell's law (air → nacre).
+    let sin_sq  = (1.0 - cos_theta * cos_theta).max(0.0);
+    let cos_t   = (1.0 - sin_sq / (film_ior * film_ior)).max(0.0).sqrt();
+    // Optical path difference in nm: OPD = 2 n d cos(θ_t).
+    let opd     = 2.0 * film_ior * film_thickness_nm * cos_t;
+    let irid    = |lambda: f32| 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
+    Color::new(irid(700.0), irid(546.0), irid(435.0))
+}
+
+/// Pearl surface material: thin-film nacre iridescence over a Lambertian body.
+///
+/// Fresnel reflection at the air-nacre interface is tinted by thin-film
+/// interference (the "orient") whose colour shifts through the spectrum as the
+/// viewing angle changes — rose-pink at perpendicular, cycling through blue and
+/// green at oblique angles.  The transmitted fraction scatters diffusely with
+/// the pearl's body colour.
+pub struct PearlMaterial {
+    /// Body colour (cream/white for Akoya, golden for South Sea, black for Tahitian).
+    pub base_color:     Color,
+    /// Effective nacre IOR.  Average of aragonite (~1.68) and organic (~1.44)
+    /// layers; ~1.56 gives a typical Akoya orient cycle.
+    pub ior:            f32,
+    /// Nacre platelet thickness in **nanometres** (natural pearls: 380–600 nm).
+    /// Controls which colour appears at normal incidence and how fast it shifts.
+    pub film_thickness: f32,
+}
+
+impl Material for PearlMaterial {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
+        let unit      = r_in.direction.unit();
+        let cos_theta = (-unit).dot(rec.normal).clamp(0.0, 1.0);
+
+        // Schlick Fresnel for air → nacre (same formula as schlick with ratio = 1/ior).
+        let f = schlick(cos_theta, 1.0 / self.ior);
+
+        if rng.gen::<f32>() < f {
+            // Specular reflection: colour comes from the thin-film orient.
+            let orient = nacre_color(cos_theta, self.ior, self.film_thickness);
+            Some(ScatterRecord {
+                attenuation: orient,
+                ray:         Ray::new_at_time(rec.p, unit.reflect(rec.normal), r_in.time),
+                skip_pdf:    true,
+            })
+        } else {
+            // Diffuse: Lambertian body colour (direction overridden by PDF in renderer).
+            Some(ScatterRecord {
+                attenuation: self.base_color,
+                ray:         Ray::new_at_time(rec.p, rec.normal, r_in.time),
+                skip_pdf:    false,
+            })
+        }
+    }
+
+    fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
+        (rec.normal.dot(scattered.direction.unit()) / PI).max(0.0)
+    }
+
+    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.base_color }
+    fn can_receive_caustics(&self) -> bool { true }
+}
