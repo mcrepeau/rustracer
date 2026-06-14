@@ -197,9 +197,11 @@ pub fn build_random_scene() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
-        enable_caustics: true,
-        photon_map:      None,
-        cached_static:  None,
+        enable_caustics:       true,
+        caustic_quad:          None,
+        caustic_gather_radius: 0.15,
+        photon_map:            None,
+        cached_static:         None,
     }
 }
 
@@ -282,9 +284,11 @@ pub fn build_cornell_box() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
-        enable_caustics: false,
-        photon_map:      None,
-        cached_static:  None,
+        enable_caustics:       false,
+        caustic_quad:          None,
+        caustic_gather_radius: 0.15,
+        photon_map:            None,
+        cached_static:         None,
     }
 }
 
@@ -349,6 +353,16 @@ pub fn build_nextweek_scene() -> SceneData {
     ));
     list.add(ConstantMedium::new(mist_boundary, 0.0001, Color::new(1.0, 1.0, 1.0)));
 
+    // Diamond — large gem floating directly below the area light.
+    // Radius 100 fills the space between the ceiling and the scene objects.
+    // Positioned at x=200, z=200 to clear the perlin sphere at (220,280,300).
+    let diamond_r = 100.0_f32;
+    list.objects.push(Arc::new(Diamond::new(
+        Point3::new(200.0, 430.0, 200.0),
+        diamond_r,
+        Arc::new(SpectralDielectric { ir_red: 2.407, ir_green: 2.417, ir_blue: 2.426 }),
+    )) as Arc<dyn Hittable>);
+
     let earth_tex = Texture::load("assets/earthmap.jpg")
         .unwrap_or_else(|_| Texture::Checker {
             scale: 2.0,
@@ -385,7 +399,15 @@ pub fn build_nextweek_scene() -> SceneData {
     let cluster: Arc<dyn Hittable> = Arc::new(Translate::new(cluster, Vec3::new(-100.0, 270.0, 395.0)));
     list.objects.push(cluster);
 
-    SceneData {
+    // Light quad geometry — reused as the photon-map emitter for caustics.
+    let caustic_quad = (
+        Point3::new(123.0, 554.0, 147.0),
+        Vec3::new(300.0,   0.0,   0.0),
+        Vec3::new(  0.0,   0.0, 265.0),
+        Color::new(7.0, 7.0, 7.0),
+    );
+
+    let mut scene = SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights,
         background: Background::Solid(Color::default()),
@@ -409,10 +431,16 @@ pub fn build_nextweek_scene() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
-        enable_caustics: false,
-        photon_map:      None,
-        cached_static:  None,
-    }
+        enable_caustics:       true,
+        caustic_quad:          Some(caustic_quad),
+        caustic_gather_radius: 10.0,
+        photon_map:            None,
+        cached_static:         None,
+    };
+    // Static scene: rebuild() is never called from tick(), so build the
+    // photon map once here at construction time.
+    scene.rebuild_caustics();
+    scene
 }
 
 pub fn build_solar_system_scene() -> SceneData {
@@ -720,9 +748,11 @@ pub fn build_solar_system_scene() -> SceneData {
         named_bodies,
         // Large physics_dt lets the path tracer accumulate many samples
         // between each planet-position update (planets barely move per tick).
-        physics_dt:    Duration::from_millis(500),
-        enable_caustics: false,
-        photon_map:      None,
-        cached_static: None,
+        physics_dt:            Duration::from_millis(500),
+        enable_caustics:       false,
+        caustic_quad:          None,
+        caustic_gather_radius: 0.15,
+        photon_map:            None,
+        cached_static:         None,
     }
 }

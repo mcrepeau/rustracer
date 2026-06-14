@@ -9,7 +9,7 @@ use crate::renderer::Background;
 use crate::ring::Ring;
 use crate::sphere::Sphere;
 use crate::transform::{Rotate, Scale, Translate};
-use crate::vec3::{Point3, Vec3};
+use crate::vec3::{Color, Point3, Vec3};
 
 pub struct Orbit {
     pub parent_idx:  Option<usize>, // None = orbit the fixed origin
@@ -77,9 +77,14 @@ pub struct SceneData {
     /// Use a larger value for slow-moving scenes (solar system) so the path
     /// tracer can accumulate more samples before each position reset.
     pub physics_dt:     Duration,
-    /// Enable caustic photon mapping for this scene.  Only meaningful for
-    /// scenes lit by Background::Physical (a directional sun).
+    /// Enable caustic photon mapping for this scene.
     pub enable_caustics: bool,
+    /// Area-light emitter for the photon map when `Background` is not
+    /// `Physical`.  Fields: (origin, U-extent, V-extent, emission colour).
+    pub caustic_quad:          Option<(Point3, Vec3, Vec3, Color)>,
+    /// Photon gather radius in world units.  Must match the scene's spatial
+    /// scale: ~0.15 for unit-scale scenes, ~10 for 0–555 coordinate scenes.
+    pub caustic_gather_radius: f32,
     /// Caustic photon map, rebuilt after every `rebuild()` when enabled.
     pub photon_map:      Option<Arc<PhotonMap>>,
     /// BVH over `static_objects`, built once on the first `rebuild()` call and
@@ -367,17 +372,21 @@ impl SceneData {
     /// Rebuild only the photon map, reusing the current world BVH.
     /// Call this after sun-direction changes as well as after physics ticks.
     pub fn rebuild_caustics(&mut self) {
-        if self.enable_caustics {
-            if let Background::Physical { sun_dir } = self.background {
-                // Derive photon power from the actual sky radiance at the sun
-                // direction so caustic brightness stays in proportion to the
-                // surrounding ground illumination computed by the path tracer.
-                let sun_color = self.background.eval(sun_dir) * std::f32::consts::PI;
-                let world = Arc::clone(&self.world);
-                self.photon_map = Some(Arc::new(
-                    PhotonMap::build(world.as_ref(), sun_dir, sun_color, 200_000)
-                ));
-            }
+        if !self.enable_caustics { return; }
+        let r     = self.caustic_gather_radius;
+        let world = Arc::clone(&self.world);
+        if let Background::Physical { sun_dir } = self.background {
+            // Derive photon power from the actual sky radiance at the sun
+            // direction so caustic brightness stays in proportion to the
+            // surrounding ground illumination computed by the path tracer.
+            let sun_color = self.background.eval(sun_dir) * std::f32::consts::PI;
+            self.photon_map = Some(Arc::new(
+                PhotonMap::build(world.as_ref(), sun_dir, sun_color, 200_000, r)
+            ));
+        } else if let Some((origin, u, v, color)) = self.caustic_quad {
+            self.photon_map = Some(Arc::new(
+                PhotonMap::build_from_quad(world.as_ref(), origin, u, v, color, 200_000, r)
+            ));
         }
     }
 }
