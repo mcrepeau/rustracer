@@ -554,7 +554,7 @@ fn main() {
                     // Skipped for scenes where first-hit geometry doesn't correlate
                     // with the final pixel colour (indirect lighting, volumes).
                     #[cfg(feature = "denoise")]
-                    if samples == 1 && scene.use_oidn_aux {
+                    if samples == 1 && matches!(scene.background, Background::Physical { .. }) {
                         let (alb, nrm) = render_aux_pass(win_w, win_h, &camera,
                                                          scene.world.as_ref(), bg);
                         aux_albedo = alb;

@@ -14,7 +14,7 @@ pub struct DiffuseLight {
 impl Material for DiffuseLight {
     fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
     fn emitted(&self, u: f32, v: f32, p: Point3) -> Color { self.emit.value(u, v, p) }
-    fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color { self.emit.value(u, v, p) }
+    fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color { self.emitted(u, v, p) }
 }
 
 pub struct Lambertian {
@@ -198,6 +198,85 @@ impl Material for MarbleMaterial {
     }
 }
 
+/// Sample a new direction from the Henyey-Greenstein phase function around `wi`.
+/// `g` ∈ (-1, 1): 0 = isotropic, >0 = forward-biased, <0 = back-scattered.
+fn hg_sample(wi: Vec3, g: f32, rng: &mut dyn RngCore) -> Vec3 {
+    let xi1 = rng.gen::<f32>();
+    let xi2 = rng.gen::<f32>();
+    let cos_theta = if g.abs() < 1e-3 {
+        1.0 - 2.0 * xi1
+    } else {
+        let sq = (1.0 - g * g) / (1.0 - g + 2.0 * g * xi1);
+        ((1.0 + g * g - sq * sq) / (2.0 * g)).clamp(-1.0, 1.0)
+    };
+    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+    let phi = 2.0 * PI * xi2;
+    let (t, b) = make_onb(wi);
+    (t * (sin_theta * phi.cos()) + b * (sin_theta * phi.sin()) + wi * cos_theta).unit()
+}
+
+/// Translucent marble: glass boundary with volumetric multiple scattering inside.
+///
+/// Entering rays refract normally (IOR).  While inside, each path segment samples
+/// a free-path distance from `Exp(density)`.  If a scatter occurs before the exit
+/// surface, the path deflects via the Henyey-Greenstein phase function and the
+/// throughput is tinted by `albedo` (one event's worth of colour absorption).
+/// Otherwise the ray refracts out through the far surface.
+///
+/// This produces the characteristic soft glow of jade and glass marbles: light
+/// enters from a wide cone, diffuses over a few scattering lengths, and exits
+/// smoothly from a spread of surface points.
+///
+/// - `albedo` — per-scatter tint; channels < 1 bleed energy into surviving
+///   wavelengths, naturally creating a coloured glow without explicit `σ_a`.
+/// - `density` — σ_t (events per unit length).  For radius-0.15 marbles,
+///   `density ≈ 7` gives ≈2 scatters per diameter traversal.
+/// - `g` — anisotropy (0 = isotropic; ~0.3 suits glass inclusions).
+pub struct SSSMaterial {
+    pub albedo:  Color,
+    pub ior:     f32,
+    pub density: f32,
+    pub g:       f32,
+}
+
+impl Material for SSSMaterial {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
+        let unit      = r_in.direction.unit();
+        let cos_theta = (-unit).dot(rec.normal).min(1.0);
+        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+        let ratio     = if rec.front_face { 1.0 / self.ior } else { self.ior };
+
+        // Check for a volumetric scatter event before the exit surface.
+        if !rec.front_face && self.density > 0.0 {
+            let path_length = (rec.p - r_in.origin).length();
+            let t_scat      = -(rng.gen::<f32>().max(1e-9).ln()) / self.density;
+            if t_scat < path_length {
+                let p_scat  = r_in.origin + unit * t_scat;
+                let new_dir = hg_sample(unit, self.g, rng);
+                return Some(ScatterRecord {
+                    attenuation: self.albedo,
+                    ray:         Ray::new_at_time(p_scat, new_dir, r_in.time),
+                    skip_pdf:    true,
+                });
+            }
+        }
+
+        // Boundary event (entry or unscattered exit): standard Fresnel.
+        let direction = if ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>() {
+            unit.reflect(rec.normal)
+        } else {
+            unit.refract(rec.normal, ratio)
+        };
+        Some(ScatterRecord {
+            attenuation: Color::new(1.0, 1.0, 1.0),
+            ray:         Ray::new_at_time(rec.p, direction, r_in.time),
+            skip_pdf:    true,
+        })
+    }
+
+    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
+}
+
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
 ///
 /// The specular lobe uses the GGX NDF (Trowbridge-Reitz) with Smith G2 shadowing
@@ -308,7 +387,7 @@ impl BumpMaterial {
         let t2 = self.perlin.turb(Point3::new(p.z * s, p.x * s, p.y * s), 4) - 0.5;
         let t3 = self.perlin.turb(Point3::new(p.y * s, p.z * s, p.x * s), 4) - 0.5;
         let normal = (rec.normal + Vec3::new(t1, t2, t3) * self.strength).unit();
-        HitRecord { p: rec.p, normal, mat: rec.mat, t: rec.t, u: rec.u, v: rec.v, front_face: rec.front_face }
+        HitRecord { p, normal, mat: rec.mat, t: rec.t, u: rec.u, v: rec.v, front_face: rec.front_face }
     }
 }
 

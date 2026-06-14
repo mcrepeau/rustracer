@@ -77,11 +77,6 @@ pub struct SceneData {
     /// Use a larger value for slow-moving scenes (solar system) so the path
     /// tracer can accumulate more samples before each position reset.
     pub physics_dt:     Duration,
-    /// Whether to fill OIDN albedo/normal aux buffers for this scene.
-    /// Disable for scenes dominated by indirect lighting or volumes where
-    /// first-hit geometry doesn't correlate with final pixel colour.
-    #[cfg_attr(not(feature = "denoise"), allow(dead_code))]
-    pub use_oidn_aux:   bool,
     /// Enable caustic photon mapping for this scene.  Only meaningful for
     /// scenes lit by Background::Physical (a directional sun).
     pub enable_caustics: bool,

@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Metal, PbrMaterial, SpectralDielectric};
+use crate::material::{BumpMaterial, Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Metal, PbrMaterial, SpectralDielectric, SSSMaterial};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -80,11 +80,14 @@ pub fn build_random_scene() -> SceneData {
         stretch: Vec3::new(1.0, 1.0, 1.0),
     });
 
-    // Glass marbles — small glass spheres with internal Perlin swirl, falling near the diamond.
-    // color2 is pure white so the clear areas of the marble are fully transparent,
-    // making the coloured ribbons (color1) stand out sharply.
+    // Glass marbles — small glass spheres falling near the diamond.
+    // Two flavours:
+    //   MarbleMaterial  — Perlin swirl pattern visible through the glass (colour
+    //                     applied once at the exit surface).
+    //   SSSMaterial     — volumetric multiple scattering: light diffuses over ~2
+    //                     mean-free-paths inside and exits as a soft coloured glow.
     let marble_perlin = Arc::new(Perlin::new(&mut rng));
-    // Palette used for both the dedicated marbles and the random dropping spheres.
+    // Palette for MarbleMaterial swirl spheres (color1 = ribbon, color2 = clear base).
     let marble_palette: &[(Color, Color)] = &[
         (Color::new(0.05, 0.70, 0.15), Color::new(1.0, 1.0, 1.0)), // cat's-eye green
         (Color::new(0.05, 0.15, 0.85), Color::new(1.0, 1.0, 1.0)), // cobalt blue
@@ -95,6 +98,20 @@ pub fn build_random_scene() -> SceneData {
         (Color::new(0.00, 0.70, 0.70), Color::new(1.0, 1.0, 1.0)), // teal
         (Color::new(0.80, 0.10, 0.50), Color::new(1.0, 1.0, 1.0)), // magenta
     ];
+    // Per-scatter scattering albedos for SSSMaterial (bright channel ~ 1, others < 1
+    // so absorption builds colour over ~2 scatters per diameter traversal).
+    let sss_colors: &[Color] = &[
+        Color::new(0.60, 1.00, 0.60),  // jade green
+        Color::new(0.40, 0.55, 1.00),  // cobalt blue
+        Color::new(1.00, 0.70, 0.15),  // amber
+        Color::new(1.00, 0.30, 0.20),  // ruby red
+        Color::new(0.55, 0.20, 1.00),  // violet
+        Color::new(1.00, 0.85, 0.30),  // gold
+        Color::new(0.20, 1.00, 0.85),  // teal
+        Color::new(1.00, 0.35, 0.70),  // rose
+    ];
+    // Dedicated SSS marbles dropped near the diamond — these showcase the organic
+    // translucent glow most clearly since they are large and well-lit.
     let dedicated_marbles: &[(usize, Point3)] = &[
         (0, Point3::new(1.5,  8.0, -1.0)),
         (1, Point3::new(2.5,  6.0, -2.0)),
@@ -102,15 +119,16 @@ pub fn build_random_scene() -> SceneData {
         (3, Point3::new(3.0,  7.0, -1.5)),
         (4, Point3::new(2.0,  9.0, -0.8)),
     ];
-    for &(palette_idx, center) in dedicated_marbles {
-        let (color1, color2) = marble_palette[palette_idx];
+    for &(idx, center) in dedicated_marbles {
         dynamic.push(DynamicSphere {
             center,
             velocity:    Vec3::default(),
             radius:      0.15,
-            mat:         Arc::new(MarbleMaterial {
-                ir: 1.5, color1, color2, scale: 8.0,
-                perlin: Arc::clone(&marble_perlin),
+            mat:         Arc::new(SSSMaterial {
+                albedo:  sss_colors[idx],
+                ior:     1.5,
+                density: 7.0,   // σ_t ≈ 7 → mean free path 0.14 ≈ marble radius
+                g:       0.30,  // slightly forward-scattering glass inclusions
             }),
             restitution: 0.60,
             is_static:   false,
@@ -130,9 +148,15 @@ pub fn build_random_scene() -> SceneData {
             if (ground_pos - Point3::new( 0.0, 0.2, 0.0)).length() < 1.2 { continue; }
             if (ground_pos - Point3::new(-4.0, 0.2, 0.0)).length() < 1.2 { continue; }
             let choose: f32 = rng.gen();
-            let (mat, restitution): (Arc<dyn Material>, f32) = if choose < 0.60 {
+            let (mat, restitution): (Arc<dyn Material>, f32) = if choose < 0.40 {
+                // Perlin swirl marble
                 let (color1, color2) = marble_palette[rng.gen_range(0..marble_palette.len())];
                 (Arc::new(MarbleMaterial { ir: 1.5, color1, color2, scale: 8.0, perlin: Arc::clone(&marble_perlin) }), 0.60)
+            } else if choose < 0.60 {
+                // SSS translucent marble — organic coloured glow
+                let albedo  = sss_colors[rng.gen_range(0..sss_colors.len())];
+                let density = rng.gen_range(5.0_f32..9.0);
+                (Arc::new(SSSMaterial { albedo, ior: 1.5, density, g: 0.30 }), 0.60)
             } else if choose < 0.75 {
                 let albedo = Color::random(&mut rng) * Color::random(&mut rng);
                 let roughness: f32 = rng.gen_range(0.5..1.0);
@@ -173,7 +197,6 @@ pub fn build_random_scene() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
-        use_oidn_aux:   true,
         enable_caustics: true,
         photon_map:      None,
         cached_static:  None,
@@ -259,7 +282,6 @@ pub fn build_cornell_box() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
-        use_oidn_aux:   false,
         enable_caustics: false,
         photon_map:      None,
         cached_static:  None,
@@ -387,7 +409,6 @@ pub fn build_nextweek_scene() -> SceneData {
         max_samples:    2000,
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
-        use_oidn_aux:   false,
         enable_caustics: false,
         photon_map:      None,
         cached_static:  None,
@@ -700,7 +721,6 @@ pub fn build_solar_system_scene() -> SceneData {
         // Large physics_dt lets the path tracer accumulate many samples
         // between each planet-position update (planets barely move per tick).
         physics_dt:    Duration::from_millis(500),
-        use_oidn_aux:  false,
         enable_caustics: false,
         photon_map:      None,
         cached_static: None,

@@ -142,9 +142,11 @@ fn trace_photon(
         let sr  = rec.mat.scatter(&ray, &rec, rng)?;
 
         if sr.skip_pdf {
-            // Specular or transmissive bounce — continue tracing
+            // Specular or transmissive bounce — continue tracing.
+            // Use sr.ray.origin (not rec.p) so SSS interior scatters start
+            // from the correct volumetric point rather than the surface.
             power     *= sr.attenuation;
-            pos        = rec.p;
+            pos        = sr.ray.origin;
             dir        = sr.ray.direction;
             spec_depth += 1;
 
