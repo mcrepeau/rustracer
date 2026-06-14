@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::f32::consts::PI;
+use hashbrown::HashMap;
 use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -10,6 +10,8 @@ use crate::vec3::{Color, Point3, Vec3};
 
 struct RawPhoton { x: f32, y: f32, z: f32, r: f32, g: f32, b: f32 }
 
+const GATHER_RADIUS: f32 = 0.15;
+const DISK_R:        f32 = 20.0;
 
 /// Grid-accelerated caustic photon map.
 ///
@@ -23,13 +25,12 @@ struct RawPhoton { x: f32, y: f32, z: f32, r: f32, g: f32, b: f32 }
 /// of the caustic irradiance at a surface point, pre-divided by π so the
 /// caller only needs to multiply by the surface albedo to get radiance.
 pub struct PhotonMap {
-    photons:       Vec<RawPhoton>,
-    grid:          HashMap<(i32, i32, i32), Vec<u32>>,
-    gather_radius: f32,
-    gather_r2:     f32,
+    photons:  Vec<RawPhoton>,
+    grid:     HashMap<(i32, i32, i32), Vec<u32>>,
+    gather_r2: f32,
     /// Epanechnikov kernel normaliser ÷ π: 2/(π² R²).
     /// Pre-folding the Lambertian 1/π lets callers write `albedo * irradiance`.
-    norm:          f32,
+    norm:     f32,
 }
 
 impl PhotonMap {
@@ -37,9 +38,6 @@ impl PhotonMap {
     /// `sun_color` should be `background.eval(sun_dir) * PI` so the caustic
     /// brightness is automatically calibrated to the sky model.
     pub fn build(world: &dyn Hittable, sun_dir: Vec3, sun_color: Color, num_photons: u32) -> Self {
-        const GATHER_RADIUS: f32 = 0.15;
-        const DISK_R:        f32 = 20.0;
-
         let sun_down = (-sun_dir).unit();
         let up = if sun_down.x.abs() < 0.999 {
             Vec3::new(1.0, 0.0, 0.0)
@@ -71,25 +69,24 @@ impl PhotonMap {
 
         let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
         for (idx, p) in photons.iter().enumerate() {
-            let key = (cell_coord(p.x, GATHER_RADIUS), cell_coord(p.y, GATHER_RADIUS), cell_coord(p.z, GATHER_RADIUS));
+            let key = (cell_coord(p.x), cell_coord(p.y), cell_coord(p.z));
             grid.entry(key).or_default().push(idx as u32);
         }
 
         Self {
             photons,
             grid,
-            gather_radius: GATHER_RADIUS,
-            gather_r2:     GATHER_RADIUS * GATHER_RADIUS,
-            norm:          2.0 / (PI * PI * GATHER_RADIUS * GATHER_RADIUS),
+            gather_r2: GATHER_RADIUS * GATHER_RADIUS,
+            norm:      2.0 / (PI * PI * GATHER_RADIUS * GATHER_RADIUS),
         }
     }
 
     /// Epanechnikov-filtered irradiance estimate at `pos`, already divided by π
     /// so the caller multiplies by albedo to get reflected radiance.
     pub fn irradiance(&self, pos: Point3) -> Color {
-        let cx = cell_coord(pos.x, self.gather_radius);
-        let cy = cell_coord(pos.y, self.gather_radius);
-        let cz = cell_coord(pos.z, self.gather_radius);
+        let cx = cell_coord(pos.x);
+        let cy = cell_coord(pos.y);
+        let cz = cell_coord(pos.z);
         let mut acc = Color::new(0.0, 0.0, 0.0);
 
         for dz in -1i32..=1 {
@@ -117,7 +114,7 @@ impl PhotonMap {
     pub fn stored_count(&self) -> usize { self.photons.len() }
 }
 
-#[inline] fn cell_coord(x: f32, size: f32) -> i32 { (x / size).floor() as i32 }
+#[inline] fn cell_coord(x: f32) -> i32 { (x / GATHER_RADIUS).floor() as i32 }
 
 /// Trace one photon from `origin` in `dir`.
 /// Returns `Some(photon)` only when the photon hits a diffuse surface

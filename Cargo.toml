@@ -7,6 +7,7 @@ edition = "2021"
 softbuffer = "0.3"
 winit = "0.28"
 rayon = "1.10"
+hashbrown = "0.15"
 rand = { version = "0.8", features = ["small_rng"] }
 image = "0.25"
 tobj  = "4"
