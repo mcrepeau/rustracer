@@ -33,6 +33,7 @@ impl Material for Lambertian {
         (cosine / PI).max(0.0)
     }
     fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color { self.texture.value(u, v, p) }
+    fn can_receive_caustics(&self) -> bool { true }
 }
 
 pub struct Metal {
@@ -152,6 +153,8 @@ impl Material for SpectralDielectric {
             })
         }
     }
+
+    fn is_spectral(&self) -> bool { true }
 }
 
 /// Glass marble: IOR 1.5 glass exterior with a Perlin-based swirl visible from inside.
@@ -363,6 +366,7 @@ impl Material for PbrMaterial {
     }
 
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
+    fn can_receive_caustics(&self) -> bool { self.metallic < 0.999 }
 }
 
 /// Wraps any material and perturbs the surface normal with Perlin turbulence
@@ -408,4 +412,5 @@ impl Material for BumpMaterial {
     fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color {
         self.inner.albedo_hint(u, v, p)
     }
+    fn can_receive_caustics(&self) -> bool { self.inner.can_receive_caustics() }
 }

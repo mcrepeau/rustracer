@@ -150,17 +150,21 @@ fn trace_photon(
             dir        = sr.ray.direction;
             spec_depth += 1;
 
-            // Guard against SpectralDielectric 3× channel spikes accumulating
-            // over multiple bounces inside the diamond.
-            let lum = 0.2126 * power.x + 0.7152 * power.y + 0.0722 * power.z;
-            if lum > 15.0 { power *= 15.0 / lum; }
+            // Clamp spectral spikes: SpectralDielectric emits 3× single-channel
+            // attenuation; multiple internal reflections can compound this into
+            // extreme values.  Apply only after a spectral bounce so legitimate
+            // metallic mirror concentrations are not silently stolen.
+            if rec.mat.is_spectral() {
+                let lum = 0.2126 * power.x + 0.7152 * power.y + 0.0722 * power.z;
+                if lum > 15.0 { power *= 15.0 / lum; }
+            }
         } else {
-            // First diffuse hit: store only if caustic path (spec_depth > 0)
-            // and the surface is roughly upward-facing (ground plane, not a
-            // sphere's side face).  This prevents photons that exit a marble
-            // sideways from lighting up neighbouring sphere surfaces, which
-            // produces an unnatural "marble-as-lamp" glow.
-            if spec_depth > 0 && rec.normal.y > 0.7 {
+            // First diffuse hit: store only if a caustic path (spec_depth > 0)
+            // reached a material that actually receives caustics.  Using the
+            // material trait avoids the previous hard-coded rec.normal.y > 0.7
+            // threshold, which would have killed caustics on any non-horizontal
+            // surface (walls, sloped terrain, etc.).
+            if spec_depth > 0 && rec.mat.can_receive_caustics() {
                 return Some(RawPhoton {
                     x: rec.p.x, y: rec.p.y, z: rec.p.z,
                     r: power.x, g: power.y, b: power.z,

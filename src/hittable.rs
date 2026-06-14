@@ -23,6 +23,12 @@ pub trait Material: Send + Sync {
     /// (the default); the normal buffer still benefits those pixels.
     #[cfg_attr(not(feature = "denoise"), allow(dead_code))]
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { Color::new(1.0, 1.0, 1.0) }
+    /// True for diffuse materials that should accumulate caustic photons.
+    /// Specular, transmissive, and emissive materials return false (default).
+    fn can_receive_caustics(&self) -> bool { false }
+    /// True if this material produces spectrally-boosted (3× single-channel)
+    /// attenuation that can spike photon power inside a refractive object.
+    fn is_spectral(&self) -> bool { false }
 }
 
 pub struct HitRecord<'a> {
