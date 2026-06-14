@@ -17,6 +17,7 @@ mod renderer;
 mod ring;
 mod scene;
 mod scenes;
+mod scene_file;
 mod output;
 mod diamond;
 mod photon;
@@ -127,10 +128,17 @@ fn main() {
     let s3 = build_nextweek_scene();
     println!("Scene 4: Solar System");
     let s4 = build_solar_system_scene();
-    let mut scenes = [s1, s2, s3, s4];
-    println!("Ready.  [1-4] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
+    let mut scenes: Vec<SceneData> = vec![s1, s2, s3, s4];
+
+    // Scene 5: hot-reloadable file scene
+    match scene_file::load("scene.toml") {
+        Ok(s)  => { println!("Scene 5: {} (scene.toml)", s.name); scenes.push(s); }
+        Err(e) => println!("scene.toml not loaded — {e}"),
+    }
+
+    println!("Ready.  [1-5] scene  [L] reload scene.toml  [F] free camera  WASD+mouse  Space/Shift up/down");
     println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
-    println!("        [Enter] pause  [R] restart (scene 1)  [Esc] quit");
+    println!("        [Enter] pause  [R] restart/reload  [Esc] quit");
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -253,6 +261,37 @@ fn main() {
                                     reset_accum!();
                                     cam_dirty = true;
                                     pending_autofocus = true;
+                                }
+                                VirtualKeyCode::Key5 => {
+                                    if scenes.len() >= 5 {
+                                        scene_idx = 4;
+                                        cam_state = CameraState::from_params(&scenes[4].cam_init);
+                                        strata = (scenes[4].max_samples as f32).sqrt() as u32;
+                                        physics_accum = Duration::ZERO;
+                                        follow_body = None;
+                                        reset_accum!();
+                                        cam_dirty = true;
+                                        pending_autofocus = true;
+                                    } else {
+                                        println!("scene.toml not loaded — edit the file and press [L] to load it");
+                                    }
+                                }
+                                VirtualKeyCode::L => {
+                                    match scene_file::load("scene.toml") {
+                                        Ok(s) => {
+                                            println!("Loaded: {}", s.name);
+                                            if scenes.len() >= 5 { scenes[4] = s; } else { scenes.push(s); }
+                                            scene_idx = 4;
+                                            cam_state = CameraState::from_params(&scenes[4].cam_init);
+                                            strata = (scenes[4].max_samples as f32).sqrt() as u32;
+                                            physics_accum = Duration::ZERO;
+                                            follow_body = None;
+                                            reset_accum!();
+                                            cam_dirty = true;
+                                            pending_autofocus = true;
+                                        }
+                                        Err(e) => println!("Reload failed — {e}"),
+                                    }
                                 }
                                 VirtualKeyCode::Tab => {
                                     let scene = &scenes[scene_idx];
@@ -404,6 +443,20 @@ fn main() {
                                 VirtualKeyCode::R if scene_idx == 0 => {
                                     scenes[0] = build_random_scene();
                                     cam_dirty = true;
+                                }
+                                VirtualKeyCode::R if scene_idx == 4 => {
+                                    match scene_file::load("scene.toml") {
+                                        Ok(s) => {
+                                            println!("Reloaded: {}", s.name);
+                                            scenes[4] = s;
+                                            cam_state = CameraState::from_params(&scenes[4].cam_init);
+                                            strata = (scenes[4].max_samples as f32).sqrt() as u32;
+                                            reset_accum!();
+                                            cam_dirty = true;
+                                            pending_autofocus = true;
+                                        }
+                                        Err(e) => println!("Reload failed — {e}"),
+                                    }
                                 }
                                 _ => {}
                             }

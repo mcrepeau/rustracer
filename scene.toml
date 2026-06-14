@@ -1,0 +1,100 @@
+# rustracer — custom scene file
+# Press [L] in the viewer to hot-reload after editing, or [5] to select this scene.
+#
+# Coordinate system: Y is up.  Objects are placed in world space.
+# Units are arbitrary — keep them consistent within a scene.
+
+name        = "Custom Scene"
+max_samples = 2000
+
+# ── Camera ────────────────────────────────────────────────────────────────────
+# focus_dist defaults to the distance between look_from and look_at if omitted.
+
+[camera]
+look_from  = [0, 2, 8]
+look_at    = [0, 1, 0]
+vfov       = 35.0       # vertical field of view in degrees
+aperture   = 0.05       # 0 = pinhole (no depth-of-field)
+move_speed = 0.2        # WASD speed in free-camera mode
+
+# ── Background ────────────────────────────────────────────────────────────────
+# type = "physical"  →  sky + sun   (use [arrows] to rotate sun at runtime)
+# type = "solid"     →  flat colour  (add [[lights]] for illumination)
+# type = "stars"     →  procedural star field (night sky)
+
+[background]
+type          = "physical"
+sun_azimuth   = 30.0    # degrees clockwise from +Z when viewed from above
+sun_elevation = 45.0    # degrees above the horizon  (0 = horizon, 90 = zenith)
+
+# ── Objects ───────────────────────────────────────────────────────────────────
+# Each [[objects]] entry needs a `shape` and a `material`.
+#
+# Shapes:
+#   sphere  — center [x,y,z]  radius
+#   quad    — corner [x,y,z]  u [x,y,z]  v [x,y,z]
+#   box     — p_min [x,y,z]   p_max [x,y,z]
+#
+# Materials:
+#   lambertian        — color [r,g,b]
+#   metal             — color [r,g,b]  fuzz (0=mirror … 1=rough)
+#   dielectric        — ior  (glass≈1.5)
+#   spectral_dielectric — ior  dispersion (diamond: ior=2.42 dispersion=0.04)
+#   diffuse_light     — color [r,g,b]  (use values >1 for bright emission)
+#   pbr               — albedo [r,g,b]  metallic  roughness
+#   pearl             — base_color  ior  film_thickness  orient_strength  film_scale
+
+# Ground — large sphere acting as a flat floor
+[[objects]]
+shape    = { type = "sphere", center = [0, -1000, 0], radius = 1000 }
+material = { type = "lambertian", color = [0.48, 0.42, 0.36] }
+
+# Left — glass sphere
+[[objects]]
+shape    = { type = "sphere", center = [-2.5, 1, 0], radius = 1.0 }
+material = { type = "dielectric", ior = 1.5 }
+
+# Centre — matte sphere
+[[objects]]
+shape    = { type = "sphere", center = [0, 1, 0], radius = 1.0 }
+material = { type = "lambertian", color = [0.8, 0.3, 0.1] }
+
+# Right — brushed metal sphere
+[[objects]]
+shape    = { type = "sphere", center = [2.5, 1, 0], radius = 1.0 }
+material = { type = "metal", color = [0.9, 0.8, 0.7], fuzz = 0.02 }
+
+# Back — pearl sphere
+[[objects]]
+shape    = { type = "sphere", center = [0, 1, -2.8], radius = 1.0 }
+material = { type = "pearl", orient_strength = 0.4, film_scale = 4.0 }
+
+# Front — small diamond
+[[objects]]
+shape    = { type = "sphere", center = [0, 0.35, 2.8], radius = 0.35 }
+material = { type = "spectral_dielectric", ior = 2.42, dispersion = 0.04 }
+
+# PBR box on the right side
+[[objects]]
+shape    = { type = "box", p_min = [3.2, 0, -0.6], p_max = [4.6, 1.8, 0.6] }
+material = { type = "pbr", albedo = [0.6, 0.2, 0.15], roughness = 0.25, metallic = 0.6 }
+
+# ── Lights ────────────────────────────────────────────────────────────────────
+# Lights are DiffuseLight quads added to both the world and the NEE (next-event
+# estimation) sampler.  Omit this section when using type = "physical" background
+# — the sky provides enough illumination.  Required for type = "solid" scenes.
+#
+# [[lights]]
+# corner = [213, 554, 227]
+# u      = [300, 0, 0]
+# v      = [0, 0, 265]
+# color  = [7.0, 7.0, 7.0]   # HDR intensity
+
+# ── Caustics ──────────────────────────────────────────────────────────────────
+# Photon-map caustics for refractive objects.  Only effective with
+# type = "physical" background (uses the sun as the photon emitter).
+# Enabling this adds ~1 s of build time at startup / reload.
+#
+# [caustics]
+# enabled       = true
+# gather_radius = 0.15   # match the spatial scale of your scene

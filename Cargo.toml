@@ -11,6 +11,8 @@ hashbrown = "0.15"
 rand = { version = "0.8", features = ["small_rng"] }
 image = "0.25"
 tobj  = "4"
+serde = { version = "1", features = ["derive"] }
+toml  = "0.8"
 oidn  = { version = "2", optional = true }
 
 [features]
