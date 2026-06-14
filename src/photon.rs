@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::f32::consts::PI;
 use rand::Rng;
 use rand::rngs::SmallRng;
@@ -9,6 +8,59 @@ use crate::ray::Ray;
 use crate::vec3::{Color, Point3, Vec3};
 
 struct RawPhoton { x: f32, y: f32, z: f32, r: f32, g: f32, b: f32 }
+
+/// Flat 3D grid for O(1) photon cell lookup without hash overhead.
+/// Dimensions are derived from the actual photon bounding box so memory
+/// usage scales with the lit region, not the full scene extent.
+struct PhotonGrid {
+    cells: Vec<Vec<u32>>,
+    nx:    usize,
+    ny:    usize,
+    nz:    usize,
+    ox:    i32,   // minimum cell coordinate on each axis
+    oy:    i32,
+    oz:    i32,
+}
+
+impl PhotonGrid {
+    fn build(photons: &[RawPhoton], cell_size: f32) -> Self {
+        if photons.is_empty() {
+            return Self { cells: Vec::new(), nx: 0, ny: 0, nz: 0, ox: 0, oy: 0, oz: 0 };
+        }
+        let (mut lx, mut hx) = (i32::MAX, i32::MIN);
+        let (mut ly, mut hy) = (i32::MAX, i32::MIN);
+        let (mut lz, mut hz) = (i32::MAX, i32::MIN);
+        for p in photons {
+            let (cx, cy, cz) = (cell_coord(p.x, cell_size), cell_coord(p.y, cell_size), cell_coord(p.z, cell_size));
+            lx = lx.min(cx); hx = hx.max(cx);
+            ly = ly.min(cy); hy = hy.max(cy);
+            lz = lz.min(cz); hz = hz.max(cz);
+        }
+        let (nx, ny, nz) = ((hx-lx+1) as usize, (hy-ly+1) as usize, (hz-lz+1) as usize);
+        let mut cells = vec![Vec::<u32>::new(); nx * ny * nz];
+        for (idx, p) in photons.iter().enumerate() {
+            let ix = (cell_coord(p.x, cell_size) - lx) as usize;
+            let iy = (cell_coord(p.y, cell_size) - ly) as usize;
+            let iz = (cell_coord(p.z, cell_size) - lz) as usize;
+            cells[iz * ny * nx + iy * nx + ix].push(idx as u32);
+        }
+        Self { cells, nx, ny, nz, ox: lx, oy: ly, oz: lz }
+    }
+
+    /// Returns the photon index slice for cell `(cx, cy, cz)`, or `&[]` if out of bounds.
+    #[inline]
+    fn get(&self, cx: i32, cy: i32, cz: i32) -> &[u32] {
+        let ix = cx - self.ox;
+        let iy = cy - self.oy;
+        let iz = cz - self.oz;
+        if ix < 0 || iy < 0 || iz < 0
+            || ix >= self.nx as i32
+            || iy >= self.ny as i32
+            || iz >= self.nz as i32
+        { return &[]; }
+        &self.cells[iz as usize * self.ny * self.nx + iy as usize * self.nx + ix as usize]
+    }
+}
 
 /// Grid-accelerated caustic photon map.
 ///
@@ -23,7 +75,7 @@ struct RawPhoton { x: f32, y: f32, z: f32, r: f32, g: f32, b: f32 }
 /// caller only needs to multiply by the surface albedo to get radiance.
 pub struct PhotonMap {
     photons:       Vec<RawPhoton>,
-    grid:          HashMap<(i32, i32, i32), Vec<u32>>,
+    grid:          PhotonGrid,
     gather_radius: f32,
     gather_r2:     f32,
     /// Epanechnikov kernel normaliser ÷ π: 2/(π² R²).
@@ -68,11 +120,7 @@ impl PhotonMap {
             })
             .collect();
 
-        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
-        for (idx, p) in photons.iter().enumerate() {
-            let key = cell_key(p.x, p.y, p.z, GATHER_RADIUS);
-            grid.entry(key).or_default().push(idx as u32);
-        }
+        let grid = PhotonGrid::build(&photons, GATHER_RADIUS);
 
         Self {
             photons,
@@ -94,16 +142,14 @@ impl PhotonMap {
         for dz in -1i32..=1 {
             for dy in -1i32..=1 {
                 for dx in -1i32..=1 {
-                    if let Some(ids) = self.grid.get(&(cx + dx, cy + dy, cz + dz)) {
-                        for &id in ids {
-                            let p  = &self.photons[id as usize];
-                            let d2 = (p.x - pos.x).powi(2)
-                                   + (p.y - pos.y).powi(2)
-                                   + (p.z - pos.z).powi(2);
-                            if d2 < self.gather_r2 {
-                                // Epanechnikov weight: w = 1 − d²/R²
-                                acc += Color::new(p.r, p.g, p.b) * (1.0 - d2 / self.gather_r2);
-                            }
+                    for &id in self.grid.get(cx + dx, cy + dy, cz + dz) {
+                        let p  = &self.photons[id as usize];
+                        let d2 = (p.x - pos.x).powi(2)
+                               + (p.y - pos.y).powi(2)
+                               + (p.z - pos.z).powi(2);
+                        if d2 < self.gather_r2 {
+                            // Epanechnikov weight: w = 1 − d²/R²
+                            acc += Color::new(p.r, p.g, p.b) * (1.0 - d2 / self.gather_r2);
                         }
                     }
                 }
@@ -117,9 +163,6 @@ impl PhotonMap {
 }
 
 #[inline] fn cell_coord(x: f32, size: f32) -> i32 { (x / size).floor() as i32 }
-#[inline] fn cell_key(x: f32, y: f32, z: f32, size: f32) -> (i32, i32, i32) {
-    (cell_coord(x, size), cell_coord(y, size), cell_coord(z, size))
-}
 
 /// Trace one photon from `origin` in `dir`.
 /// Returns `Some(photon)` only when the photon hits a diffuse surface

@@ -59,6 +59,19 @@ fn schlick(cosine: f32, ref_idx: f32) -> f32 {
     r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
 }
 
+/// Dielectric boundary scatter shared by all glass-like materials.
+/// Returns `(exit_direction, reflected)` where `reflected` is true for TIR
+/// or Fresnel reflection and false for refraction.
+fn dielectric_boundary(ior: f32, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> (Vec3, bool) {
+    let ratio     = if rec.front_face { 1.0 / ior } else { ior };
+    let unit      = r_in.direction.unit();
+    let cos_theta = (-unit).dot(rec.normal).min(1.0);
+    let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+    let reflected = ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>();
+    let direction = if reflected { unit.reflect(rec.normal) } else { unit.refract(rec.normal, ratio) };
+    (direction, reflected)
+}
+
 // ── GGX / PBR helpers ─────────────────────────────────────────────────────────
 
 /// Schlick Fresnel with a colored F0 (supports metal tints).
@@ -88,15 +101,7 @@ pub struct Dielectric {
 
 impl Material for Dielectric {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let ratio = if rec.front_face { 1.0 / self.ir } else { self.ir };
-        let unit = r_in.direction.unit();
-        let cos_theta = (-unit).dot(rec.normal).min(1.0);
-        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-        let direction = if ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>() {
-            unit.reflect(rec.normal)
-        } else {
-            unit.refract(rec.normal, ratio)
-        };
+        let (direction, _) = dielectric_boundary(self.ir, r_in, rec, rng);
         Some(ScatterRecord { attenuation: Color::new(1.0, 1.0, 1.0), ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
     }
 }
@@ -124,34 +129,18 @@ impl Material for SpectralDielectric {
             1 => (self.ir_green, 1),
             _ => (self.ir_blue,  2),
         };
-
-        let ratio     = if rec.front_face { 1.0 / ir } else { ir };
-        let unit      = r_in.direction.unit();
-        let cos_theta = (-unit).dot(rec.normal).min(1.0);
-        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-
-        let reflects = ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>();
-
-        if reflects {
-            // TIR or Fresnel reflection: direction and attenuation are wavelength-independent.
-            Some(ScatterRecord {
-                attenuation: Color::new(1.0, 1.0, 1.0),
-                ray:         Ray::new_at_time(rec.p, unit.reflect(rec.normal), r_in.time),
-                skip_pdf:    true,
-            })
+        let (direction, reflected) = dielectric_boundary(ir, r_in, rec, rng);
+        // Reflection is wavelength-independent; refraction isolates the hero channel.
+        let attenuation = if reflected {
+            Color::new(1.0, 1.0, 1.0)
         } else {
-            // Refraction: direction depends on the hero wavelength; isolate that channel.
-            let attenuation = match channel {
+            match channel {
                 0 => Color::new(3.0, 0.0, 0.0),
                 1 => Color::new(0.0, 3.0, 0.0),
                 _ => Color::new(0.0, 0.0, 3.0),
-            };
-            Some(ScatterRecord {
-                attenuation,
-                ray:      Ray::new_at_time(rec.p, unit.refract(rec.normal, ratio), r_in.time),
-                skip_pdf: true,
-            })
-        }
+            }
+        };
+        Some(ScatterRecord { attenuation, ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
     }
 
     fn is_spectral(&self) -> bool { true }
@@ -175,28 +164,20 @@ pub struct MarbleMaterial {
 
 impl Material for MarbleMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let ratio     = if rec.front_face { 1.0 / self.ir } else { self.ir };
-        let unit      = r_in.direction.unit();
-        let cos_theta = (-unit).dot(rec.normal).min(1.0);
-        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-
-        let reflects  = ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>();
-        let direction = if reflects { unit.reflect(rec.normal) } else { unit.refract(rec.normal, ratio) };
-
+        let (direction, _) = dielectric_boundary(self.ir, r_in, rec, rng);
         // Apply the swirl colour only when the ray is inside the marble (front_face = false).
         // rec.u is the sphere-local azimuthal angle (0..1 = full wrap), so the band
         // pattern always spans the sphere regardless of its world-space position.
         // Perlin turbulence distorts the bands to give organic, marble-like swirls.
         let attenuation = if !rec.front_face {
             let noise = self.perlin.turb(rec.p * self.scale, 7);
-            let phi   = rec.u * 2.0 * PI;                 // 0..2π around the sphere
-            let arg   = phi * 2.0 + noise * 8.0;          // 2 ribbon wraps, turbulence distorted
+            let phi   = rec.u * 2.0 * PI;
+            let arg   = phi * 2.0 + noise * 8.0;
             let t     = (0.5 * (1.0 + arg.sin())).clamp(0.0, 1.0);
             self.color1 * t + self.color2 * (1.0 - t)
         } else {
             Color::new(1.0, 1.0, 1.0)
         };
-
         Some(ScatterRecord { attenuation, ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
     }
 }
@@ -244,10 +225,7 @@ pub struct SSSMaterial {
 
 impl Material for SSSMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let unit      = r_in.direction.unit();
-        let cos_theta = (-unit).dot(rec.normal).min(1.0);
-        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-        let ratio     = if rec.front_face { 1.0 / self.ior } else { self.ior };
+        let unit = r_in.direction.unit();
 
         // Check for a volumetric scatter event before the exit surface.
         if !rec.front_face && self.density > 0.0 {
@@ -265,11 +243,7 @@ impl Material for SSSMaterial {
         }
 
         // Boundary event (entry or unscattered exit): standard Fresnel.
-        let direction = if ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>() {
-            unit.reflect(rec.normal)
-        } else {
-            unit.refract(rec.normal, ratio)
-        };
+        let (direction, _) = dielectric_boundary(self.ior, r_in, rec, rng);
         Some(ScatterRecord {
             attenuation: Color::new(1.0, 1.0, 1.0),
             ray:         Ray::new_at_time(rec.p, direction, r_in.time),
