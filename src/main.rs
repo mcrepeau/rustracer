@@ -19,6 +19,7 @@ mod scene;
 mod scenes;
 mod output;
 mod diamond;
+mod photon;
 #[cfg(feature = "denoise")]
 mod denoise;
 
@@ -66,7 +67,7 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     let strata = (samples as f32).sqrt() as u32;
     let t0 = Instant::now();
     for s in 0..samples {
-        render_tiles(scratch, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, 1.0);
+        render_tiles(scratch, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, 1.0, scene.photon_map.as_deref());
     }
     t0.elapsed()
 }
@@ -538,7 +539,8 @@ fn main() {
                     // apparent brightness regardless of the current exposure setting.
                     let bg_scale = 1.0 / exposure;
                     render_tiles(&mut scratch, samples, strata, win_w, win_h, &camera,
-                                 scene.world.as_ref(), bg, &scene.lights, bg_scale);
+                                 scene.world.as_ref(), bg, &scene.lights, bg_scale,
+                                 scene.photon_map.as_deref());
 
                     for i in 0..(win_w * win_h) as usize {
                         accumulator[i] += scratch[i];

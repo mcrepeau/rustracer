@@ -4,6 +4,7 @@ use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
+use crate::photon::PhotonMap;
 use crate::renderer::Background;
 use crate::ring::Ring;
 use crate::sphere::Sphere;
@@ -81,6 +82,11 @@ pub struct SceneData {
     /// first-hit geometry doesn't correlate with final pixel colour.
     #[cfg_attr(not(feature = "denoise"), allow(dead_code))]
     pub use_oidn_aux:   bool,
+    /// Enable caustic photon mapping for this scene.  Only meaningful for
+    /// scenes lit by Background::Physical (a directional sun).
+    pub enable_caustics: bool,
+    /// Caustic photon map, rebuilt after every `rebuild()` when enabled.
+    pub photon_map:      Option<Arc<PhotonMap>>,
     /// BVH over `static_objects`, built once on the first `rebuild()` call and
     /// reused every subsequent tick so static geometry is never re-partitioned.
     pub(crate) cached_static: Option<Arc<dyn Hittable>>,
@@ -360,5 +366,14 @@ impl SceneData {
             }
         }
         self.world = Arc::new(BvhTree::from_list(list));
+
+        if self.enable_caustics {
+            if let Background::Physical { sun_dir } = self.background {
+                let world = Arc::clone(&self.world);
+                self.photon_map = Some(Arc::new(
+                    PhotonMap::build(world.as_ref(), sun_dir, 200_000)
+                ));
+            }
+        }
     }
 }

@@ -174,6 +174,8 @@ pub fn build_random_scene() -> SceneData {
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
         use_oidn_aux:   true,
+        enable_caustics: true,
+        photon_map:      None,
         cached_static:  None,
     }
 }
@@ -258,6 +260,8 @@ pub fn build_cornell_box() -> SceneData {
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
         use_oidn_aux:   false,
+        enable_caustics: false,
+        photon_map:      None,
         cached_static:  None,
     }
 }
@@ -384,6 +388,8 @@ pub fn build_nextweek_scene() -> SceneData {
         named_bodies:   vec![],
         physics_dt:     Duration::from_millis(16),
         use_oidn_aux:   false,
+        enable_caustics: false,
+        photon_map:      None,
         cached_static:  None,
     }
 }
@@ -695,6 +701,8 @@ pub fn build_solar_system_scene() -> SceneData {
         // between each planet-position update (planets barely move per tick).
         physics_dt:    Duration::from_millis(500),
         use_oidn_aux:  false,
+        enable_caustics: false,
+        photon_map:      None,
         cached_static: None,
     }
 }

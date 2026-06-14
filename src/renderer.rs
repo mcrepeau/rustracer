@@ -1,6 +1,7 @@
 use crate::camera::Camera;
 use crate::hittable::{Hittable, HittableList};
 use crate::pdf::{CosinePdf, HittablePdf, MixturePdf, Pdf};
+use crate::photon::PhotonMap;
 use crate::ray::Ray;
 use crate::vec3::{Color, Vec3};
 use rand::Rng;
@@ -146,7 +147,7 @@ fn star_field(dir: Vec3) -> Color {
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
 /// Pass `1.0 / exposure` to keep the star field at constant apparent brightness
 /// regardless of the scene exposure setting.
-pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, rng: &mut impl Rng) -> Color {
+pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, photon_map: Option<&PhotonMap>, rng: &mut impl Rng) -> Color {
     let mut throughput = Color::new(1.0, 1.0, 1.0);
     let mut color      = Color::default();
     let mut ray        = *r;
@@ -166,6 +167,20 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     throughput *= sr.attenuation;
                     ray = sr.ray;
                 } else {
+                    // Caustic injection: add photon-map irradiance at this
+                    // diffuse surface.  The photon map stores only paths that
+                    // went through at least one specular bounce (caustics),
+                    // so there is no double-counting with direct NEE.
+                    // `irradiance()` already divides by π, so we only need
+                    // to multiply by the surface albedo (Lambertian: L=albedo×E/π).
+                    if let Some(pm) = photon_map {
+                        let irr = pm.irradiance(rec.p);
+                        if irr.x > 0.0 || irr.y > 0.0 || irr.z > 0.0 {
+                            let alb = rec.mat.albedo_hint(rec.u, rec.v, rec.p);
+                            color += throughput * alb * irr;
+                        }
+                    }
+
                     let scattered_dir;
                     let pdf_val;
 
@@ -271,16 +286,17 @@ pub fn render_aux_pass(
 /// `strata` = floor(sqrt(max_samples)); controls the stratified-sampling grid size.
 #[allow(clippy::too_many_arguments)]
 pub fn render_tiles(
-    scratch:    &mut [Color],
-    sample_idx: u32,
-    strata:     u32,
-    width:      u32,
-    height:     u32,
-    camera:     &Camera,
-    world:      &dyn Hittable,
-    background: Background,
-    lights:     &HittableList,
-    bg_scale:   f32,
+    scratch:     &mut [Color],
+    sample_idx:  u32,
+    strata:      u32,
+    width:       u32,
+    height:      u32,
+    camera:      &Camera,
+    world:       &dyn Hittable,
+    background:  Background,
+    lights:      &HittableList,
+    bg_scale:    f32,
+    photon_map:  Option<&PhotonMap>,
 ) {
     let w        = width  as usize;
     let w_denom  = (width  - 1).max(1) as f32;
@@ -315,6 +331,6 @@ pub fn render_tiles(
 
             let u = (col as f32 + u_jitter) / w_denom;
             let v = (ray_y as f32 + v_jitter) / h_denom;
-        *out = ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, bg_scale, &mut rng);
+        *out = ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, bg_scale, photon_map, &mut rng);
     });
 }
