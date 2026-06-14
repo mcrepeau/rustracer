@@ -33,7 +33,9 @@ pub struct PhotonMap {
 
 impl PhotonMap {
     /// Trace `num_photons` from a disk facing `sun_dir` and build the map.
-    pub fn build(world: &dyn Hittable, sun_dir: Vec3, num_photons: u32) -> Self {
+    /// `sun_color` should be `background.eval(sun_dir) * PI` so the caustic
+    /// brightness is automatically calibrated to the sky model.
+    pub fn build(world: &dyn Hittable, sun_dir: Vec3, sun_color: Color, num_photons: u32) -> Self {
         const GATHER_RADIUS: f32 = 0.15;
         const DISK_R:        f32 = 20.0;
 
@@ -50,7 +52,6 @@ impl PhotonMap {
         // Power per photon: sun_color × disk_area / (num_photons × π).
         // The ×1/π pre-folds the Lambertian BRDF normaliser.
         let disk_area    = PI * DISK_R * DISK_R;
-        let sun_color    = Color::new(5.0, 4.8, 4.2);
         let photon_power = sun_color * (disk_area / (num_photons as f32 * PI));
 
         let photons: Vec<RawPhoton> = (0..num_photons)

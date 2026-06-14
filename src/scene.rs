@@ -374,9 +374,13 @@ impl SceneData {
     pub fn rebuild_caustics(&mut self) {
         if self.enable_caustics {
             if let Background::Physical { sun_dir } = self.background {
+                // Derive photon power from the actual sky radiance at the sun
+                // direction so caustic brightness stays in proportion to the
+                // surrounding ground illumination computed by the path tracer.
+                let sun_color = self.background.eval(sun_dir) * std::f32::consts::PI;
                 let world = Arc::clone(&self.world);
                 self.photon_map = Some(Arc::new(
-                    PhotonMap::build(world.as_ref(), sun_dir, 200_000)
+                    PhotonMap::build(world.as_ref(), sun_dir, sun_color, 200_000)
                 ));
             }
         }
