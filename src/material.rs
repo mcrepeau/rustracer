@@ -54,6 +54,7 @@ impl Material for Metal {
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
 }
 
+#[inline]
 fn schlick(cosine: f32, ref_idx: f32) -> f32 {
     let r0 = ((1.0 - ref_idx) / (1.0 + ref_idx)).powi(2);
     r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
@@ -62,6 +63,7 @@ fn schlick(cosine: f32, ref_idx: f32) -> f32 {
 /// Dielectric boundary scatter shared by all glass-like materials.
 /// Returns `(exit_direction, reflected)` where `reflected` is true for TIR
 /// or Fresnel reflection and false for refraction.
+#[inline]
 fn dielectric_boundary(ior: f32, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> (Vec3, bool) {
     let ratio     = if rec.front_face { 1.0 / ior } else { ior };
     let unit      = r_in.direction.unit();
