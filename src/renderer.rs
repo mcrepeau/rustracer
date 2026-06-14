@@ -1,5 +1,6 @@
 use crate::camera::Camera;
 use crate::hittable::{Hittable, HittableList};
+use crate::material::{clear_pearl_sun_dir, set_pearl_sun_dir};
 use crate::pdf::{CosinePdf, HittablePdf, MixturePdf, Pdf};
 use crate::photon::PhotonMap;
 use crate::ray::Ray;
@@ -303,6 +304,11 @@ pub fn render_tiles(
     let h_denom  = (height - 1).max(1) as f32;
     let strata2  = strata * strata;
     let strata_f = strata as f32;
+
+    match background {
+        Background::Physical { sun_dir } => set_pearl_sun_dir(sun_dir),
+        _                                => clear_pearl_sun_dir(),
+    }
 
     scratch.par_iter_mut().enumerate().for_each(|(i, out)| {
         let row = i / w;

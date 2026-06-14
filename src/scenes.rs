@@ -84,9 +84,11 @@ pub fn build_random_scene() -> SceneData {
         velocity: Vec3::default(),
         radius: 1.0,
         mat: Arc::new(PearlMaterial {
-            base_color:     Color::new(0.98, 0.93, 0.88),
-            ior:            1.56,
-            film_thickness: 450.0,
+            base_color:      Color::new(0.98, 0.93, 0.88),
+            ior:             1.56,
+            film_thickness:  450.0,
+            orient_strength: 0.30,
+            film_scale:      5.0,
         }),
         restitution: 0.50, is_static: true, orbit: None,
         axial_angle: 0.0, axial_speed: 0.0, axial_tilt: 0.0, ring: None,
@@ -381,9 +383,11 @@ pub fn build_nextweek_scene() -> SceneData {
     list.add(Sphere::new(
         Point3::new(400.0, 150.0, 270.0), 50.0,
         Arc::new(PearlMaterial {
-            base_color:     Color::new(0.98, 0.93, 0.88), // warm cream
-            ior:            1.56,
-            film_thickness: 450.0,
+            base_color:      Color::new(0.98, 0.93, 0.88),
+            ior:             1.56,
+            film_thickness:  450.0,
+            orient_strength: 0.30,
+            film_scale:      0.10,
         }),
     ));
 

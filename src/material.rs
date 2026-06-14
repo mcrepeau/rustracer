@@ -1,5 +1,6 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use rand::{Rng, RngCore};
 use crate::perlin::Perlin;
 use crate::vec3::{Color, Point3, Vec3};
@@ -391,6 +392,42 @@ impl Material for BumpMaterial {
     fn can_receive_caustics(&self) -> bool { self.inner.can_receive_caustics() }
 }
 
+// ── Pearl sun-direction context ───────────────────────────────────────────────
+// The renderer sets this once per frame (before the parallel tile pass) so that
+// PearlMaterial::scatter can compute nacre_color from the sun's incident angle
+// rather than only the camera-ray angle.  Relaxed ordering is fine: a one-frame
+// lag is imperceptible, and reads/writes on different cores never race on the
+// same frame because the write happens strictly before par_iter_mut fires.
+
+static PEARL_SUN_X: AtomicU32 = AtomicU32::new(0);
+static PEARL_SUN_Y: AtomicU32 = AtomicU32::new(0x3F80_0000); // f32 1.0
+static PEARL_SUN_Z: AtomicU32 = AtomicU32::new(0);
+static PEARL_SUN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_pearl_sun_dir(dir: Vec3) {
+    PEARL_SUN_X.store(dir.x.to_bits(), Ordering::Relaxed);
+    PEARL_SUN_Y.store(dir.y.to_bits(), Ordering::Relaxed);
+    PEARL_SUN_Z.store(dir.z.to_bits(), Ordering::Relaxed);
+    PEARL_SUN_ACTIVE.store(true, Ordering::Relaxed);
+}
+
+pub fn clear_pearl_sun_dir() {
+    PEARL_SUN_ACTIVE.store(false, Ordering::Relaxed);
+}
+
+#[inline]
+fn pearl_sun_dir() -> Option<Vec3> {
+    if PEARL_SUN_ACTIVE.load(Ordering::Relaxed) {
+        Some(Vec3::new(
+            f32::from_bits(PEARL_SUN_X.load(Ordering::Relaxed)),
+            f32::from_bits(PEARL_SUN_Y.load(Ordering::Relaxed)),
+            f32::from_bits(PEARL_SUN_Z.load(Ordering::Relaxed)),
+        ))
+    } else {
+        None
+    }
+}
+
 // ── Pearl ─────────────────────────────────────────────────────────────────────
 
 /// Two-beam thin-film interference colour for nacre.
@@ -412,8 +449,31 @@ fn nacre_color(cos_theta: f32, film_ior: f32, film_thickness_nm: f32) -> Color {
     let cos_t   = (1.0 - sin_sq / (film_ior * film_ior)).max(0.0).sqrt();
     // Optical path difference in nm: OPD = 2 n d cos(θ_t).
     let opd     = 2.0 * film_ior * film_thickness_nm * cos_t;
-    let irid    = |lambda: f32| 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
-    Color::new(irid(700.0), irid(546.0), irid(435.0))
+    let irid = |lambda: f32| 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
+    let raw  = Color::new(irid(700.0), irid(546.0), irid(435.0));
+    // At grazing angles the 2-beam model saturates to vivid single-channel
+    // primaries that look artificial on a sphere's rim.  Real nacre has
+    // ~100 stacked platelet layers whose many-beam interference suppresses
+    // off-axis saturation.  Approximate this by blending toward white with
+    // weight (1 − cos²θ) so the rim shows pale pearl luster, not solid colour.
+    // Blend toward white linearly with grazing angle.  Real nacre has ~100
+    // stacked platelet layers; their many-beam interference suppresses off-axis
+    // saturation more gently than a harsh quadratic rolloff.  A linear weight
+    // keeps mid-sphere colours (the most visible part) while still preventing
+    // vivid primary-colour spikes right at the silhouette.
+    let t = cos_theta.powf(0.5);
+    raw * t + Color::new(1.0, 1.0, 1.0) * (1.0 - t)
+}
+
+/// Smooth, aperiodic noise in [−1, 1] — three sine waves at golden-ratio
+/// spaced frequencies so the pattern never visibly tiles.
+/// Caller scales `p` by `film_scale` to control patch size.
+#[inline]
+fn oil_noise(p: Point3) -> f32 {
+    let a = (p.x * 1.618_f32 + p.z).sin();
+    let b = (p.z * 1.618_f32 - p.x).sin();
+    let c = (p.x * 0.618_f32 + p.y + p.z).sin();
+    (a + b + c) * (1.0 / 3.0)
 }
 
 /// Pearl surface material: thin-film nacre iridescence over a Lambertian body.
@@ -425,13 +485,19 @@ fn nacre_color(cos_theta: f32, film_ior: f32, film_thickness_nm: f32) -> Color {
 /// the pearl's body colour.
 pub struct PearlMaterial {
     /// Body colour (cream/white for Akoya, golden for South Sea, black for Tahitian).
-    pub base_color:     Color,
+    pub base_color:      Color,
     /// Effective nacre IOR.  Average of aragonite (~1.68) and organic (~1.44)
     /// layers; ~1.56 gives a typical Akoya orient cycle.
-    pub ior:            f32,
+    pub ior:             f32,
     /// Nacre platelet thickness in **nanometres** (natural pearls: 380–600 nm).
     /// Controls which colour appears at normal incidence and how fast it shifts.
-    pub film_thickness: f32,
+    pub film_thickness:  f32,
+    /// How strongly the orient tints the diffuse body colour [0–1].
+    /// 0 = plain Lambertian cream; 0.3 = visible sheen; 1 = fully replaced.
+    pub orient_strength: f32,
+    /// Spatial frequency of oil-spill film-thickness variation.
+    /// Use ~5.0 for unit-scale objects, ~0.1 for objects ~50 units across.
+    pub film_scale:      f32,
 }
 
 impl Material for PearlMaterial {
@@ -439,21 +505,30 @@ impl Material for PearlMaterial {
         let unit      = r_in.direction.unit();
         let cos_theta = (-unit).dot(rec.normal).clamp(0.0, 1.0);
 
-        // Schlick Fresnel for air → nacre (same formula as schlick with ratio = 1/ior).
-        let f = schlick(cos_theta, 1.0 / self.ior);
+        let varied = self.film_thickness + oil_noise(rec.p * self.film_scale) * 150.0;
+        let f      = schlick(cos_theta, 1.0 / self.ior);
 
         if rng.gen::<f32>() < f {
-            // Specular reflection: colour comes from the thin-film orient.
-            let orient = nacre_color(cos_theta, self.ior, self.film_thickness);
+            // Specular: OPD depends on the view angle with the normal.
+            let orient = nacre_color(cos_theta, self.ior, varied);
             Some(ScatterRecord {
                 attenuation: orient,
                 ray:         Ray::new_at_time(rec.p, unit.reflect(rec.normal), r_in.time),
                 skip_pdf:    true,
             })
         } else {
-            // Diffuse: Lambertian body colour (direction overridden by PDF in renderer).
+            // Diffuse: use the sun-film angle for nacre_color so that moving the
+            // sun shifts the interference colour across the whole pearl.  When no
+            // sun is active (solid background) fall back to the view angle.
+            let cos_illumin = match pearl_sun_dir() {
+                Some(sun) => rec.normal.dot(sun).clamp(0.0, 1.0),
+                None      => cos_theta,
+            };
+            let orient  = nacre_color(cos_illumin, self.ior, varied);
+            let s       = self.orient_strength;
+            let tinted  = self.base_color * (orient * s + Color::new(1.0, 1.0, 1.0) * (1.0 - s));
             Some(ScatterRecord {
-                attenuation: self.base_color,
+                attenuation: tinted,
                 ray:         Ray::new_at_time(rec.p, rec.normal, r_in.time),
                 skip_pdf:    false,
             })
