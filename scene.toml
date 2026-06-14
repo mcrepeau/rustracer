@@ -23,7 +23,8 @@ move_speed = 0.2        # WASD speed in free-camera mode
 # type = "stars"     →  procedural star field (night sky)
 
 [background]
-type          = "physical"
+type          = "solid"
+color 		  = [0.48, 0.42, 0.36]
 sun_azimuth   = 30.0    # degrees clockwise from +Z when viewed from above
 sun_elevation = 45.0    # degrees above the horizon  (0 = horizon, 90 = zenith)
 
@@ -51,7 +52,7 @@ material = { type = "lambertian", color = [0.48, 0.42, 0.36] }
 
 # Left — glass sphere
 [[objects]]
-shape    = { type = "sphere", center = [-2.5, 1, 0], radius = 1.0 }
+shape    = { type = "sphere", center = [-2, 1, 0], radius = 1.0 }
 material = { type = "dielectric", ior = 1.5 }
 
 # Centre — matte sphere
@@ -61,22 +62,22 @@ material = { type = "lambertian", color = [0.8, 0.3, 0.1] }
 
 # Right — brushed metal sphere
 [[objects]]
-shape    = { type = "sphere", center = [2.5, 1, 0], radius = 1.0 }
+shape    = { type = "sphere", center = [2, 1, 0], radius = 1.0 }
 material = { type = "metal", color = [0.9, 0.8, 0.7], fuzz = 0.02 }
 
 # Back — pearl sphere
 [[objects]]
-shape    = { type = "sphere", center = [0, 1, -2.8], radius = 1.0 }
+shape    = { type = "sphere", center = [0, 1, -3], radius = 1.0 }
 material = { type = "pearl", orient_strength = 0.4, film_scale = 4.0 }
 
 # Front — small diamond
 [[objects]]
-shape    = { type = "sphere", center = [0, 0.35, 2.8], radius = 0.35 }
+shape    = { type = "quad", corner = [2, -2, 2], u = [1, 1, 1], v = [2, 2, 2] }
 material = { type = "spectral_dielectric", ior = 2.42, dispersion = 0.04 }
 
 # PBR box on the right side
 [[objects]]
-shape    = { type = "box", p_min = [3.2, 0, -0.6], p_max = [4.6, 1.8, 0.6] }
+shape    = { type = "box", p_min = [4, 0, -0.6], p_max = [5, 1.8, 0.6] }
 material = { type = "pbr", albedo = [0.6, 0.2, 0.15], roughness = 0.25, metallic = 0.6 }
 
 # ── Lights ────────────────────────────────────────────────────────────────────

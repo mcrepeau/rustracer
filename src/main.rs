@@ -136,7 +136,7 @@ fn main() {
         Err(e) => println!("scene.toml not loaded — {e}"),
     }
 
-    println!("Ready.  [1-5] scene  [L] reload scene.toml  [F] free camera  WASD+mouse  Space/Shift up/down");
+    println!("Ready.  [1-5] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
     println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
     println!("        [Enter] pause  [R] restart/reload  [Esc] quit");
 
@@ -273,24 +273,7 @@ fn main() {
                                         cam_dirty = true;
                                         pending_autofocus = true;
                                     } else {
-                                        println!("scene.toml not loaded — edit the file and press [L] to load it");
-                                    }
-                                }
-                                VirtualKeyCode::L => {
-                                    match scene_file::load("scene.toml") {
-                                        Ok(s) => {
-                                            println!("Loaded: {}", s.name);
-                                            if scenes.len() >= 5 { scenes[4] = s; } else { scenes.push(s); }
-                                            scene_idx = 4;
-                                            cam_state = CameraState::from_params(&scenes[4].cam_init);
-                                            strata = (scenes[4].max_samples as f32).sqrt() as u32;
-                                            physics_accum = Duration::ZERO;
-                                            follow_body = None;
-                                            reset_accum!();
-                                            cam_dirty = true;
-                                            pending_autofocus = true;
-                                        }
-                                        Err(e) => println!("Reload failed — {e}"),
+                                        println!("scene.toml not loaded — edit the file and press [R] to reload it");
                                     }
                                 }
                                 VirtualKeyCode::Tab => {
