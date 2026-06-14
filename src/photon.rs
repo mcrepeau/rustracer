@@ -34,7 +34,7 @@ pub struct PhotonMap {
 impl PhotonMap {
     /// Trace `num_photons` from a disk facing `sun_dir` and build the map.
     pub fn build(world: &dyn Hittable, sun_dir: Vec3, num_photons: u32) -> Self {
-        const GATHER_RADIUS: f32 = 0.25;
+        const GATHER_RADIUS: f32 = 0.15;
         const DISK_R:        f32 = 20.0;
 
         let sun_down = (-sun_dir).unit();
@@ -153,13 +153,17 @@ fn trace_photon(
             if lum > 15.0 { power *= 15.0 / lum; }
         } else {
             // First diffuse hit: store only if caustic path (spec_depth > 0)
-            if spec_depth > 0 {
+            // and the surface is roughly upward-facing (ground plane, not a
+            // sphere's side face).  This prevents photons that exit a marble
+            // sideways from lighting up neighbouring sphere surfaces, which
+            // produces an unnatural "marble-as-lamp" glow.
+            if spec_depth > 0 && rec.normal.y > 0.7 {
                 return Some(RawPhoton {
                     x: rec.p.x, y: rec.p.y, z: rec.p.z,
                     r: power.x, g: power.y, b: power.z,
                 });
             }
-            return None; // direct diffuse hit — not a caustic
+            return None;
         }
     }
     None

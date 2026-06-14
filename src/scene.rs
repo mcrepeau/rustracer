@@ -366,7 +366,12 @@ impl SceneData {
             }
         }
         self.world = Arc::new(BvhTree::from_list(list));
+        self.rebuild_caustics();
+    }
 
+    /// Rebuild only the photon map, reusing the current world BVH.
+    /// Call this after sun-direction changes as well as after physics ticks.
+    pub fn rebuild_caustics(&mut self) {
         if self.enable_caustics {
             if let Background::Physical { sun_dir } = self.background {
                 let world = Arc::clone(&self.world);

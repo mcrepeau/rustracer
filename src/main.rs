@@ -336,6 +336,7 @@ fn main() {
                                             sun_dir.x * s + sun_dir.z * c,
                                         ).unit();
                                         reset_accum!();
+                                        scenes[scene_idx].rebuild_caustics();
                                     }
                                 }
                                 VirtualKeyCode::Up | VirtualKeyCode::Down => {
@@ -347,6 +348,7 @@ fn main() {
                                         let scale = new_el.cos() / horiz;
                                         *sun_dir = vec3::Vec3::new(sun_dir.x * scale, new_el.sin(), sun_dir.z * scale);
                                         reset_accum!();
+                                        scenes[scene_idx].rebuild_caustics();
                                     }
                                 }
                                 VirtualKeyCode::C => {
