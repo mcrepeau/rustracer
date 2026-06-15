@@ -115,6 +115,47 @@ fn run_bench() {
     println!("\nDone.");
 }
 
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, exposure: f32) {
+    buf.par_iter_mut()
+        .zip(accumulator.par_iter())
+        .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
+}
+
+#[cfg(feature = "denoise")]
+fn spawn_denoiser(
+    win_w: u32,
+    win_h: u32,
+    accumulator:     &[Color],
+    samples:         u32,
+    aux_albedo:      &[f32],
+    aux_normal:      &[f32],
+    denoised:        &Arc<Mutex<Vec<Color>>>,
+    denoise_running: &Arc<AtomicBool>,
+    denoise_epoch:   &Arc<AtomicU64>,
+) {
+    let sc    = 1.0 / samples.max(1) as f32;
+    let input = accumulator.iter()
+        .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
+        .collect::<Vec<f32>>();
+    let alb     = aux_albedo.to_vec();
+    let nrm     = aux_normal.to_vec();
+    let dst     = Arc::clone(denoised);
+    let running = Arc::clone(denoise_running);
+    let epoch   = denoise_epoch.load(Ordering::Relaxed);
+    let ep_ref  = Arc::clone(denoise_epoch);
+    running.store(true, Ordering::Relaxed);
+    std::thread::spawn(move || {
+        if let Some(result) = denoise::denoise_rgb(win_w, win_h, input, alb, nrm) {
+            if ep_ref.load(Ordering::Relaxed) == epoch {
+                *dst.lock().unwrap() = result;
+            }
+        }
+        running.store(false, Ordering::Release);
+    });
+}
+
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -348,27 +389,10 @@ fn main() {
                                 #[cfg(feature = "denoise")]
                                 VirtualKeyCode::N => {
                                     oidn_on = !oidn_on;
-                                    if oidn_on && samples > 0 && !denoise_running.load(Ordering::Relaxed) {
-                                        let w = win_w; let h = win_h;
-                                        let sc = 1.0 / samples.max(1) as f32;
-                                        let input: Vec<f32> = accumulator.iter()
-                                            .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
-                                            .collect();
-                                        let alb     = aux_albedo.clone();
-                                        let nrm     = aux_normal.clone();
-                                        let dst     = Arc::clone(&denoised);
-                                        let running = Arc::clone(&denoise_running);
-                                        let epoch   = denoise_epoch.load(Ordering::Relaxed);
-                                        let ep_ref  = Arc::clone(&denoise_epoch);
-                                        running.store(true, Ordering::Relaxed);
-                                        std::thread::spawn(move || {
-                                            if let Some(result) = denoise::denoise_rgb(w, h, input, alb, nrm) {
-                                                if ep_ref.load(Ordering::Relaxed) == epoch {
-                                                    *dst.lock().unwrap() = result;
-                                                }
-                                            }
-                                            running.store(false, Ordering::Relaxed);
-                                        });
+                                    if oidn_on && samples > 0 && !denoise_running.load(Ordering::Acquire) {
+                                        spawn_denoiser(win_w, win_h, &accumulator, samples,
+                                            &aux_albedo, &aux_normal,
+                                            &denoised, &denoise_running, &denoise_epoch);
                                     }
                                     window.request_redraw();
                                 }
@@ -534,27 +558,10 @@ fn main() {
                     }
 
                     #[cfg(feature = "denoise")]
-                    if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Relaxed) {
-                        let w = win_w; let h = win_h;
-                        let sc = 1.0 / samples.max(1) as f32;
-                        let input: Vec<f32> = accumulator.iter()
-                            .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
-                            .collect();
-                        let alb     = aux_albedo.clone();
-                        let nrm     = aux_normal.clone();
-                        let dst     = Arc::clone(&denoised);
-                        let running = Arc::clone(&denoise_running);
-                        let epoch   = denoise_epoch.load(Ordering::Relaxed);
-                        let ep_ref  = Arc::clone(&denoise_epoch);
-                        running.store(true, Ordering::Relaxed);
-                        std::thread::spawn(move || {
-                            if let Some(result) = denoise::denoise_rgb(w, h, input, alb, nrm) {
-                                if ep_ref.load(Ordering::Relaxed) == epoch {
-                                    *dst.lock().unwrap() = result;
-                                }
-                            }
-                            running.store(false, Ordering::Relaxed);
-                        });
+                    if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
+                        spawn_denoiser(win_w, win_h, &accumulator, samples,
+                            &aux_albedo, &aux_normal,
+                            &denoised, &denoise_running, &denoise_epoch);
                     }
 
                     window.request_redraw();
@@ -565,11 +572,11 @@ fn main() {
 
             Event::RedrawRequested(_) => {
                 let mut buffer = surface.buffer_mut().unwrap();
+                let sc = 1.0 / samples.max(1) as f32;
                 #[cfg(feature = "denoise")]
                 {
                     let denoised_guard = denoised.lock().unwrap();
                     let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
-                    let sc = 1.0 / samples.max(1) as f32;
                     let buf: &mut [u32] = &mut buffer;
                     if use_denoised {
                         buf.par_iter_mut()
@@ -580,18 +587,11 @@ fn main() {
                                 *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure);
                             });
                     } else {
-                        buf.par_iter_mut()
-                            .zip(accumulator.par_iter())
-                            .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
+                        write_tonemap(buf, &accumulator, sc, exposure);
                     }
                 }
                 #[cfg(not(feature = "denoise"))]
-                {
-                    let sc = 1.0 / samples.max(1) as f32;
-                    (*buffer).par_iter_mut()
-                        .zip(accumulator.par_iter())
-                        .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
-                }
+                write_tonemap(&mut buffer, &accumulator, sc, exposure);
                 buffer.present().unwrap();
             }
 
