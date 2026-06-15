@@ -46,8 +46,10 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
     let cos_gamma = d.dot(sun).clamp(-1.0, 1.0);
     let gamma     = cos_gamma.acos();
 
-    // Below ground — return black
-    if d.y < 0.0 { return Color::default(); }
+    // Below horizon: fade the horizon color to black over ~4° so there is no
+    // hard seam where the sky meets the ground plane.
+    let fade = (d.y * 15.0 + 1.0).clamp(0.0, 1.0);
+    if fade == 0.0 { return Color::default(); }
 
     let t = turbidity.clamp(1.0, 20.0);
 
@@ -124,7 +126,7 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
     let g = (-0.9689*big_x + 1.8758*big_y + 0.0415*big_z).max(0.0);
     let b = ( 0.0557*big_x - 0.2040*big_y + 1.0570*big_z).max(0.0);
 
-    Color::new(r, g, b)
+    Color::new(r * fade, g * fade, b * fade)
 }
 
 // ── Path tracer ───────────────────────────────────────────────────────────────

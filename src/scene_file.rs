@@ -51,6 +51,9 @@ pub struct CameraConfig {
     pub focus_dist: Option<f32>,
     #[serde(default = "default_move_speed")]
     pub move_speed: f32,
+    /// Aperture blade count for polygonal bokeh (0 = circular, 5/6/8 = typical lenses).
+    #[serde(default)]
+    pub aperture_blades: u32,
 }
 
 fn default_vfov()       -> f32 { 40.0 }
@@ -192,12 +195,13 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     let focus_dist = file.camera.focus_dist
         .unwrap_or_else(|| (from - at).length().max(0.01));
     let cam_init = SceneCameraParams {
-        pos:        from,
-        lookat:     at,
-        vfov:       file.camera.vfov,
-        aperture:   file.camera.aperture,
+        pos:             from,
+        lookat:          at,
+        vfov:            file.camera.vfov,
+        aperture:        file.camera.aperture,
         focus_dist,
-        move_speed: file.camera.move_speed,
+        move_speed:      file.camera.move_speed,
+        aperture_blades: file.camera.aperture_blades,
     };
 
     // ── Background ────────────────────────────────────────────────────────────
