@@ -1,7 +1,7 @@
 use crate::camera::Camera;
 use crate::hittable::{Hittable, HittableList};
 use crate::material::{clear_pearl_sun_dir, set_pearl_sun_dir};
-use crate::pdf::{CosinePdf, HittablePdf, MixturePdf, Pdf};
+use crate::pdf::{CosinePdf, HittablePdf, Pdf};
 use crate::photon::PhotonMap;
 use crate::ray::Ray;
 use crate::vec3::{Color, Vec3};
@@ -10,12 +10,8 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rayon::prelude::*;
 
-const MAX_DEPTH:      i32 = 50;
-const MAX_LUMINANCE:  f32 = 10.0;
-// Fraction of scatter samples drawn toward explicit lights vs. cosine lobe.
-// Higher values reduce noise in scenes dominated by a single area light;
-// lower values help when indirect illumination dominates.
-const LIGHT_PDF_WEIGHT: f32 = 0.7;
+const MAX_DEPTH:     i32 = 50;
+const MAX_LUMINANCE: f32 = 10.0;
 
 // ── Background ────────────────────────────────────────────────────────────────
 
@@ -60,9 +56,10 @@ fn sky_color(dir: Vec3, sun_dir: Vec3) -> Color {
 
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
 pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, photon_map: Option<&PhotonMap>, rng: &mut impl Rng) -> Color {
-    let mut throughput = Color::new(1.0, 1.0, 1.0);
-    let mut color      = Color::default();
-    let mut ray        = *r;
+    let mut throughput    = Color::new(1.0, 1.0, 1.0);
+    let mut color         = Color::default();
+    let mut ray           = *r;
+    let mut prev_specular = true; // camera ray: always add emission on first hit
 
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
@@ -71,20 +68,23 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                 break;
             }
             Some(rec) => {
-                color += throughput * rec.mat.emitted(rec.u, rec.v, rec.p);
+                // Add emission only when the previous bounce was specular (or the
+                // camera ray). After a diffuse bounce, direct light is handled below
+                // by explicit NEE, so we skip emitted() to avoid double-counting.
+                if prev_specular || lights.objects.is_empty() {
+                    color += throughput * rec.mat.emitted(rec.u, rec.v, rec.p);
+                }
 
                 let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
 
                 if sr.skip_pdf {
-                    throughput *= sr.attenuation;
-                    ray = sr.ray;
+                    throughput    *= sr.attenuation;
+                    ray            = sr.ray;
+                    prev_specular  = true;
                 } else {
-                    // Caustic injection: add photon-map irradiance at this
-                    // diffuse surface.  The photon map stores only paths that
-                    // went through at least one specular bounce (caustics),
-                    // so there is no double-counting with direct NEE.
-                    // `irradiance()` already divides by π, so we only need
-                    // to multiply by the surface albedo (Lambertian: L=albedo×E/π).
+                    // Caustic injection: add photon-map irradiance at this diffuse
+                    // surface. The photon map stores only caustic paths (at least one
+                    // specular bounce), so there is no double-counting with NEE below.
                     if let Some(pm) = photon_map {
                         let irr = pm.irradiance(rec.p);
                         if irr.x > 0.0 || irr.y > 0.0 || irr.z > 0.0 {
@@ -93,28 +93,40 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                         }
                     }
 
-                    let scattered_dir;
-                    let pdf_val;
+                    // ── Direct lighting (explicit NEE) ────────────────────────────
+                    // Sample one direction toward an area light, cast a shadow ray
+                    // with any_hit() (exits at the first blocker — much cheaper than
+                    // finding the closest hit), and accumulate if unoccluded.
+                    if !lights.objects.is_empty() {
+                        let lpdf      = HittablePdf::new(lights, rec.p, ray.time);
+                        let light_dir = lpdf.generate(rng);
+                        let shadow    = Ray::new_at_time(rec.p, light_dir, ray.time);
+                        if let Some(lrec) = lights.hit(&shadow, 0.001, f32::INFINITY) {
+                            // Stop the shadow ray just before the light surface so we
+                            // don't re-intersect the light itself.
+                            if !world.any_hit(&shadow, 0.001, lrec.t * (1.0 - 1e-4)) {
+                                let l_pdf = lpdf.value(light_dir);
+                                let brdf  = rec.mat.scattering_pdf(&ray, &rec, &shadow);
+                                if l_pdf > 0.0 && brdf > 0.0 {
+                                    let emitted = lrec.mat.emitted(lrec.u, lrec.v, lrec.p);
+                                    color += throughput * sr.attenuation * brdf * emitted / l_pdf;
+                                }
+                            }
+                        }
+                    }
 
-                    if lights.objects.is_empty() {
-                        let cpdf = CosinePdf::new(rec.normal);
-                        scattered_dir = cpdf.generate(rng);
-                        pdf_val = cpdf.value(scattered_dir);
-                    } else {
-                        let cpdf  = CosinePdf::new(rec.normal);
-                        let lpdf  = HittablePdf::new(lights, rec.p, ray.time);
-                        let mpdf  = MixturePdf::new(&cpdf, &lpdf, LIGHT_PDF_WEIGHT);
-                        scattered_dir = mpdf.generate(rng);
-                        pdf_val       = mpdf.value(scattered_dir);
-                    };
-
+                    // ── Indirect lighting (cosine-weighted BRDF sample) ───────────
+                    let cpdf     = CosinePdf::new(rec.normal);
+                    let ind_dir  = cpdf.generate(rng);
+                    let pdf_val  = cpdf.value(ind_dir);
                     if pdf_val <= 0.0 { break; }
-                    let scattered = Ray::new_at_time(rec.p, scattered_dir, ray.time);
+                    let scattered = Ray::new_at_time(rec.p, ind_dir, ray.time);
                     let scat_pdf  = rec.mat.scattering_pdf(&ray, &rec, &scattered);
                     if scat_pdf <= 0.0 { break; }
 
-                    throughput *= sr.attenuation * (scat_pdf / pdf_val);
-                    ray = scattered;
+                    throughput   *= sr.attenuation * (scat_pdf / pdf_val);
+                    ray           = scattered;
+                    prev_specular = false;
                 }
 
                 if depth >= 2 {
