@@ -2,6 +2,7 @@ mod aabb;
 mod bvh;
 mod vec3;
 mod ray;
+mod spectrum;
 mod hittable;
 mod texture;
 mod material;

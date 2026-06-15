@@ -42,7 +42,7 @@ pub fn build_random_scene() -> SceneData {
     let diamond_obj = Diamond::new(
         Point3::new(2.0, diamond_pav, -1.5),
         diamond_r,
-        Arc::new(SpectralDielectric { ir_red: 2.407, ir_green: 2.417, ir_blue: 2.426 }),
+        Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
     );
     let diamond_planes = diamond_obj.planes().to_vec();
     let diamond: Arc<dyn Hittable> = Arc::new(diamond_obj);
@@ -354,7 +354,7 @@ pub fn build_nextweek_scene() -> SceneData {
     list.objects.push(Arc::new(Diamond::new(
         Point3::new(200.0, 430.0, 200.0),
         diamond_r,
-        Arc::new(SpectralDielectric { ir_red: 2.407, ir_green: 2.417, ir_blue: 2.426 }),
+        Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
     )) as Arc<dyn Hittable>);
 
     // Pearl â€” Akoya-style cream pearl.  film_thickness=450 nm gives a rose-pink

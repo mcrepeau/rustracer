@@ -128,7 +128,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     let ind_dir  = cpdf.generate(rng);
                     let pdf_val  = cpdf.value(ind_dir);
                     if pdf_val <= 0.0 { break; }
-                    let scattered = Ray::new_at_time(rec.p, ind_dir, ray.time);
+                    let scattered = Ray::scatter_from(rec.p, ind_dir, &ray);
                     let scat_pdf  = rec.mat.scattering_pdf(&ray, &rec, &scattered);
                     if scat_pdf <= 0.0 { break; }
 
@@ -272,6 +272,11 @@ pub fn render_tiles(
 
             let u = (col as f32 + u_jitter) / w_denom;
             let v = (ray_y as f32 + v_jitter) / h_denom;
-        *out = ray_color(&camera.get_ray(u, v, &mut rng), world, background, lights, bg_scale, photon_map, &mut rng);
+        let mut cam_ray = camera.get_ray(u, v, &mut rng);
+        // Sample a hero wavelength uniformly over the visible spectrum.
+        // Spectral materials (dispersive glass, thin-film pearl) read this
+        // from the ray; non-spectral materials ignore it.
+        cam_ray.wavelength = rng.gen_range(380.0_f32..700.0);
+        *out = ray_color(&cam_ray, world, background, lights, bg_scale, photon_map, &mut rng);
     });
 }

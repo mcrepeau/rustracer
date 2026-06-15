@@ -7,6 +7,7 @@ use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord};
 use crate::texture::Texture;
+use crate::spectrum::{cauchy_ior, spectral_to_rgb};
 
 pub struct DiffuseLight {
     pub emit: Texture,
@@ -26,7 +27,7 @@ impl Material for Lambertian {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let albedo = self.texture.value(rec.u, rec.v, rec.p);
         // Direction is overridden by the PDF in ray_color; normal is a harmless placeholder.
-        Some(ScatterRecord { attenuation: albedo, ray: Ray::new_at_time(rec.p, rec.normal, r_in.time), skip_pdf: false })
+        Some(ScatterRecord { attenuation: albedo, ray: Ray::scatter_from(rec.p, rec.normal, r_in), skip_pdf: false })
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
@@ -45,7 +46,7 @@ pub struct Metal {
 impl Material for Metal {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let reflected = r_in.direction.unit().reflect(rec.normal);
-        let ray = Ray::new_at_time(rec.p, reflected + self.fuzz * Vec3::random_unit_vector(rng), r_in.time);
+        let ray = Ray::scatter_from(rec.p, reflected + self.fuzz * Vec3::random_unit_vector(rng), r_in);
         if ray.direction.dot(rec.normal) > 0.0 {
             Some(ScatterRecord { attenuation: self.albedo, ray, skip_pdf: true })
         } else {
@@ -105,45 +106,47 @@ pub struct Dielectric {
 impl Material for Dielectric {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let (direction, _) = dielectric_boundary(self.ir, r_in, rec, rng);
-        Some(ScatterRecord { attenuation: Color::new(1.0, 1.0, 1.0), ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
+        Some(ScatterRecord { attenuation: Color::new(1.0, 1.0, 1.0), ray: Ray::scatter_from(rec.p, direction, r_in), skip_pdf: true })
     }
 }
 
-/// Dispersive dielectric that refracts each wavelength (R/G/B) at its own IOR.
+/// Dispersive dielectric using a continuous hero-wavelength model.
 ///
-/// At each scatter event a hero wavelength is chosen uniformly at random.
-/// Refractions use the wavelength-specific IOR and carry 3× weight on a single
-/// channel so the Monte Carlo estimator remains unbiased.  Reflections (TIR or
-/// Fresnel) are wavelength-independent and carry full (1,1,1) weight, keeping
-/// those paths uncoloured.
+/// The ray carries a wavelength λ ∈ [380, 700] nm sampled once per path.
+/// At each boundary event the IOR is evaluated via the Cauchy equation
+/// n(λ) = B + C/λ² (λ in μm), and refracted rays are weighted by the CIE
+/// colour-matching function for that wavelength — normalised so that
+/// E_λ[weight] = (1,1,1).  This produces smooth spectral dispersion (rainbows,
+/// coloured diamond fire) rather than the coarse R/G/B bands of the 3-channel
+/// approach.  Reflections carry (1,1,1) since Fresnel is nearly achromatic.
 ///
-/// For a round brilliant diamond use  ir_red = 2.407, ir_green = 2.417,
-/// ir_blue = 2.426  (Cauchy model fit to measured dispersion data).
+/// Cauchy parameters for common materials (B, C in μm²):
+/// - Crown glass:  cauchy_b ≈ 1.507, cauchy_c ≈ 0.00375
+/// - Dense flint:  cauchy_b ≈ 1.612, cauchy_c ≈ 0.00950
+/// - Diamond:      cauchy_b ≈ 2.395, cauchy_c ≈ 0.00585
 pub struct SpectralDielectric {
-    pub ir_red:   f32,
-    pub ir_green: f32,
-    pub ir_blue:  f32,
+    pub cauchy_b: f32,
+    pub cauchy_c: f32,
 }
 
 impl Material for SpectralDielectric {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let (ir, channel): (f32, u8) = match rng.gen_range(0u8..3) {
-            0 => (self.ir_red,   0),
-            1 => (self.ir_green, 1),
-            _ => (self.ir_blue,  2),
-        };
-        let (direction, reflected) = dielectric_boundary(ir, r_in, rec, rng);
-        // Reflection is wavelength-independent; refraction isolates the hero channel.
-        let attenuation = if reflected {
-            Color::new(1.0, 1.0, 1.0)
+        let ior = cauchy_ior(r_in.wavelength, self.cauchy_b, self.cauchy_c);
+        let (direction, reflected) = dielectric_boundary(ior, r_in, rec, rng);
+
+        // Apply the CMF weight exactly once per path: on the first refraction.
+        // Subsequent refractions use (1,1,1) so the weight doesn't compound.
+        // Reflections are always achromatic — Fresnel reflectance is nearly flat
+        // across the visible spectrum.
+        let weight_this_refraction = !reflected && !r_in.spectral_weighted;
+        let attenuation = if weight_this_refraction {
+            spectral_to_rgb(r_in.wavelength)
         } else {
-            match channel {
-                0 => Color::new(3.0, 0.0, 0.0),
-                1 => Color::new(0.0, 3.0, 0.0),
-                _ => Color::new(0.0, 0.0, 3.0),
-            }
+            Color::new(1.0, 1.0, 1.0)
         };
-        Some(ScatterRecord { attenuation, ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
+        let mut scattered = Ray::scatter_from(rec.p, direction, r_in);
+        if weight_this_refraction { scattered.spectral_weighted = true; }
+        Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
     }
 
     fn is_spectral(&self) -> bool { true }
@@ -181,7 +184,7 @@ impl Material for MarbleMaterial {
         } else {
             Color::new(1.0, 1.0, 1.0)
         };
-        Some(ScatterRecord { attenuation, ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
+        Some(ScatterRecord { attenuation, ray: Ray::scatter_from(rec.p, direction, r_in), skip_pdf: true })
     }
 }
 
@@ -239,7 +242,7 @@ impl Material for SSSMaterial {
                 let new_dir = hg_sample(unit, self.g, rng);
                 return Some(ScatterRecord {
                     attenuation: self.albedo,
-                    ray:         Ray::new_at_time(p_scat, new_dir, r_in.time),
+                    ray:         Ray::scatter_from(p_scat, new_dir, r_in),
                     skip_pdf:    true,
                 });
             }
@@ -249,7 +252,7 @@ impl Material for SSSMaterial {
         let (direction, _) = dielectric_boundary(self.ior, r_in, rec, rng);
         Some(ScatterRecord {
             attenuation: Color::new(1.0, 1.0, 1.0),
-            ray:         Ray::new_at_time(rec.p, direction, r_in.time),
+            ray:         Ray::scatter_from(rec.p, direction, r_in),
             skip_pdf:    true,
         })
     }
@@ -323,7 +326,7 @@ impl Material for PbrMaterial {
             let weight = f * (g2 * vo_h / (cos_o.max(1e-6) * cos_h));
             Some(ScatterRecord {
                 attenuation: weight / p_spec,
-                ray: Ray::new_at_time(rec.p, wi, r_in.time),
+                ray: Ray::scatter_from(rec.p, wi, r_in),
                 skip_pdf: true,
             })
         } else {
@@ -331,7 +334,7 @@ impl Material for PbrMaterial {
             // Divide by (1-p_spec) to correct for Russian-roulette sampling.
             Some(ScatterRecord {
                 attenuation: self.albedo * ((1.0 - self.metallic) / (1.0 - p_spec)),
-                ray: Ray::new_at_time(rec.p, rec.normal, r_in.time), // direction overridden by PDF
+                ray: Ray::scatter_from(rec.p, rec.normal, r_in), // direction overridden by PDF
                 skip_pdf: false,
             })
         }
@@ -386,39 +389,41 @@ fn pearl_sun_dir() -> Option<Vec3> {
 
 // ── Pearl ─────────────────────────────────────────────────────────────────────
 
-/// Two-beam thin-film interference colour for nacre.
+/// Spectral thin-film interference colour for nacre, computed via a full
+/// spectral integral over the visible range.
 ///
-/// Returns an RGB colour in [0,1]³ giving the constructive-interference
-/// intensity at the three representative wavelengths 700 nm (R), 546 nm (G),
-/// 435 nm (B).  Both interfaces in natural nacre undergo a π phase shift
-/// (each layer goes from a lighter to a denser medium), so the shifts cancel
-/// and constructive interference occurs when the optical path difference equals
-/// an integer multiple of λ.
+/// Evaluates OPD = 2 n d cos(θ_t) and integrates the two-beam interference
+/// intensity against the CIE 1931 CMFs at every 5 nm step from 380–700 nm.
+/// This gives a physically correct, deterministic iridescent colour per bounce
+/// without relying on the hero wavelength — avoiding the convergence problem
+/// that arises because the interference cosine oscillates ~3 full cycles across
+/// the visible range, which would average to near-grey with single-wavelength
+/// sampling.
 ///
-/// `cos_theta`        – cosine of the incident angle in air.
-/// `film_ior`         – effective IOR of the nacre layer (~1.56).
-/// `film_thickness_nm`– layer thickness in nanometres (~380–500 for natural pearls).
+/// The integral is normalised so that a non-dispersive surface (constant OPD,
+/// irid = 0.5 everywhere) returns (0.5, 0.5, 0.5); blending toward white at
+/// grazing angles mimics the many-beam suppression of real nacre.
 #[inline]
 fn nacre_color(cos_theta: f32, film_ior: f32, film_thickness_nm: f32) -> Color {
-    // Refracted angle via Snell's law (air → nacre).
-    let sin_sq  = (1.0 - cos_theta * cos_theta).max(0.0);
-    let cos_t   = (1.0 - sin_sq / (film_ior * film_ior)).max(0.0).sqrt();
-    // Optical path difference in nm: OPD = 2 n d cos(θ_t).
-    let opd     = 2.0 * film_ior * film_thickness_nm * cos_t;
-    let irid = |lambda: f32| 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
-    let raw  = Color::new(irid(700.0), irid(546.0), irid(435.0));
-    // At grazing angles the 2-beam model saturates to vivid single-channel
-    // primaries that look artificial on a sphere's rim.  Real nacre has
-    // ~100 stacked platelet layers whose many-beam interference suppresses
-    // off-axis saturation.  Approximate this by blending toward white with
-    // weight (1 − cos²θ) so the rim shows pale pearl luster, not solid colour.
-    // Blend toward white linearly with grazing angle.  Real nacre has ~100
-    // stacked platelet layers; their many-beam interference suppresses off-axis
-    // saturation more gently than a harsh quadratic rolloff.  A linear weight
-    // keeps mid-sphere colours (the most visible part) while still preventing
-    // vivid primary-colour spikes right at the silhouette.
-    let t = cos_theta.powf(0.5);
-    raw * t + Color::new(1.0, 1.0, 1.0) * (1.0 - t)
+    let sin_sq = (1.0 - cos_theta * cos_theta).max(0.0);
+    let cos_t  = (1.0 - sin_sq / (film_ior * film_ior)).max(0.0).sqrt();
+    let opd    = 2.0 * film_ior * film_thickness_nm * cos_t;
+
+    // Spectral integral: Σ CMF(λ) × irid(λ) over 65 wavelengths, 380–700 nm.
+    let mut color = Color::default();
+    let mut lambda = 380.0_f32;
+    while lambda <= 700.01 {
+        let irid = 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
+        color += spectral_to_rgb(lambda) * irid;
+        lambda += 5.0;
+    }
+    color /= 65.0; // Normalise: mean = (0.5, 0.5, 0.5) for flat interference.
+
+    // Grazing blend: at cos_theta → 0 the many-beam interference in real nacre
+    // suppresses saturation; blend toward white luster ((1,1,1) × 0.5).
+    let t     = cos_theta.powf(0.5);
+    let luster = Color::new(0.5, 0.5, 0.5);
+    color * t + luster * (1.0 - t)
 }
 
 /// Smooth, aperiodic noise in [−1, 1] — three sine waves at golden-ratio
@@ -465,17 +470,15 @@ impl Material for PearlMaterial {
         let f      = schlick(cos_theta, 1.0 / self.ior);
 
         if rng.gen::<f32>() < f {
-            // Specular: OPD depends on the view angle with the normal.
+            // Specular: full spectral integral for iridescent reflection colour.
             let orient = nacre_color(cos_theta, self.ior, varied);
             Some(ScatterRecord {
                 attenuation: orient,
-                ray:         Ray::new_at_time(rec.p, unit.reflect(rec.normal), r_in.time),
+                ray:         Ray::scatter_from(rec.p, unit.reflect(rec.normal), r_in),
                 skip_pdf:    true,
             })
         } else {
-            // Diffuse: use the sun-film angle for nacre_color so that moving the
-            // sun shifts the interference colour across the whole pearl.  When no
-            // sun is active (solid background) fall back to the view angle.
+            // Diffuse: use sun-film angle so moving the sun shifts the colour.
             let cos_illumin = match pearl_sun_dir() {
                 Some(sun) => rec.normal.dot(sun).clamp(0.0, 1.0),
                 None      => cos_theta,
@@ -485,7 +488,7 @@ impl Material for PearlMaterial {
             let tinted  = self.base_color * (orient * s + Color::new(1.0, 1.0, 1.0) * (1.0 - s));
             Some(ScatterRecord {
                 attenuation: tinted,
-                ray:         Ray::new_at_time(rec.p, rec.normal, r_in.time),
+                ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
                 skip_pdf:    false,
             })
         }
