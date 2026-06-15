@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
@@ -202,37 +203,71 @@ impl PhysicsState {
             }
         }
 
+        // Broad-phase: uniform grid — O(n) candidate pairs instead of O(n²).
+        // Cell size = 2 × max_radius guarantees any colliding pair's centers
+        // are at most 1 cell apart in each dimension.
         let n = self.dynamic.len();
+        let max_r   = self.dynamic.iter().map(|ds| ds.radius).fold(0.0f32, f32::max);
+        let cell    = (max_r * 2.0).max(1e-6);
+        let inv     = 1.0 / cell;
+        let cell_of = |p: Point3| -> (i32, i32, i32) {
+            ((p.x * inv).floor() as i32,
+             (p.y * inv).floor() as i32,
+             (p.z * inv).floor() as i32)
+        };
+
+        let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::with_capacity(n);
         for i in 0..n {
+            grid.entry(cell_of(self.dynamic[i].center)).or_default().push(i);
+        }
+
+        // Collect candidate pairs (i < j) from the 3×3×3 neighbourhood.
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        for i in 0..n {
+            let (cx, cy, cz) = cell_of(self.dynamic[i].center);
+            for dx in -1i32..=1 {
+                for dy in -1i32..=1 {
+                    for dz in -1i32..=1 {
+                        if let Some(nbrs) = grid.get(&(cx+dx, cy+dy, cz+dz)) {
+                            for &j in nbrs {
+                                if j > i { pairs.push((i, j)); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Narrow phase: resolve collisions for candidate pairs.
+        for (i, j) in pairs {
             let (left, right) = self.dynamic.split_at_mut(i + 1);
             let a = &mut left[i];
-            for b in right.iter_mut() {
-                let diff     = a.center - b.center;
-                let dist_sq  = diff.length_squared();
-                let min_dist = a.radius + b.radius;
-                if dist_sq >= min_dist * min_dist { continue; }
-                let dist   = dist_sq.sqrt().max(1e-6);
-                let normal = diff / dist;
-                let rel_v  = (a.velocity - b.velocity).dot(normal);
-                if rel_v >= 0.0 { continue; }
-                let ma = a.radius * a.radius * a.radius;
-                let mb = b.radius * b.radius * b.radius;
-                let e  = (a.restitution + b.restitution) * 0.5;
-                if a.is_static {
-                    b.velocity += (1.0 + e) * rel_v * normal;
-                    b.center    = a.center - normal * min_dist;
-                } else if b.is_static {
-                    a.velocity -= (1.0 + e) * rel_v * normal;
-                    a.center    = b.center + normal * min_dist;
-                } else {
-                    let j  = -(1.0 + e) * rel_v / (1.0/ma + 1.0/mb);
-                    a.velocity += (j / ma) * normal;
-                    b.velocity -= (j / mb) * normal;
-                    let overlap = min_dist - dist;
-                    let ra = mb / (ma + mb);
-                    a.center += (overlap * ra) * normal;
-                    b.center -= (overlap * (1.0 - ra)) * normal;
-                }
+            let b = &mut right[j - i - 1];
+            let diff     = a.center - b.center;
+            let dist_sq  = diff.length_squared();
+            let min_dist = a.radius + b.radius;
+            if dist_sq >= min_dist * min_dist { continue; }
+            let dist   = dist_sq.sqrt().max(1e-6);
+            let normal = diff / dist;
+            let rel_v  = (a.velocity - b.velocity).dot(normal);
+            if rel_v >= 0.0 { continue; }
+            let ma = a.radius * a.radius * a.radius;
+            let mb = b.radius * b.radius * b.radius;
+            let e  = (a.restitution + b.restitution) * 0.5;
+            if a.is_static {
+                b.velocity += (1.0 + e) * rel_v * normal;
+                b.center    = a.center - normal * min_dist;
+            } else if b.is_static {
+                a.velocity -= (1.0 + e) * rel_v * normal;
+                a.center    = b.center + normal * min_dist;
+            } else {
+                let imp = -(1.0 + e) * rel_v / (1.0/ma + 1.0/mb);
+                a.velocity += (imp / ma) * normal;
+                b.velocity -= (imp / mb) * normal;
+                let overlap = min_dist - dist;
+                let ra = mb / (ma + mb);
+                a.center += (overlap * ra) * normal;
+                b.center -= (overlap * (1.0 - ra)) * normal;
             }
         }
 

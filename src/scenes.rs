@@ -139,8 +139,8 @@ pub fn build_random_scene() -> SceneData {
         });
     }
 
-    for a in -11i32..11 {
-        for b in -11i32..11 {
+    for a in -15i32..15 {
+        for b in -15i32..15 {
             let cx = a as f32 + 0.9 * rng.gen::<f32>();
             let cz = b as f32 + 0.9 * rng.gen::<f32>();
             let ground_pos = Point3::new(cx, 0.2, cz);
