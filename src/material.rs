@@ -469,20 +469,24 @@ impl Material for PearlMaterial {
         let varied = self.film_thickness + oil_noise(rec.p * self.film_scale) * 150.0;
         let f      = schlick(cos_theta, 1.0 / self.ior);
 
+        // Nacre is a diffuse structural-colour material: OPD in the aragonite
+        // platelet stack is determined by how light *enters* the film (the
+        // illumination angle), not by the specular reflection or view angle.
+        // Use the sun–normal angle for both paths so the colour shifts as the
+        // sun moves; fall back to the view angle when no sun is available.
+        let cos_illumin = match pearl_sun_dir() {
+            Some(sun) => rec.normal.dot(sun).clamp(0.0, 1.0),
+            None      => cos_theta,
+        };
+
         if rng.gen::<f32>() < f {
-            // Specular: full spectral integral for iridescent reflection colour.
-            let orient = nacre_color(cos_theta, self.ior, varied);
+            let orient = nacre_color(cos_illumin, self.ior, varied);
             Some(ScatterRecord {
                 attenuation: orient,
                 ray:         Ray::scatter_from(rec.p, unit.reflect(rec.normal), r_in),
                 skip_pdf:    true,
             })
         } else {
-            // Diffuse: use sun-film angle so moving the sun shifts the colour.
-            let cos_illumin = match pearl_sun_dir() {
-                Some(sun) => rec.normal.dot(sun).clamp(0.0, 1.0),
-                None      => cos_theta,
-            };
             let orient  = nacre_color(cos_illumin, self.ior, varied);
             let s       = self.orient_strength;
             let tinted  = self.base_color * (orient * s + Color::new(1.0, 1.0, 1.0) * (1.0 - s));
