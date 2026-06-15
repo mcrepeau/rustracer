@@ -336,10 +336,18 @@ impl SceneData {
         let r     = self.caustic_gather_radius;
         let world = Arc::clone(&self.world);
         if let Background::Physical { sun_dir, .. } = self.background {
-            // Derive photon power from the actual sky radiance at the sun
-            // direction so caustic brightness stays in proportion to the
-            // surrounding ground illumination computed by the path tracer.
-            let sun_color = self.background.eval(sun_dir) * std::f32::consts::PI;
+            // Derive photon power from the circumsolar sky radiance, sampled just
+            // *outside* the solar disc (disc check fires at cos_gamma > 0.9997, i.e.
+            // within ~1.3°; we offset by ~2.3° to stay clear).  The disc enhancement
+            // in preetham_sky is a visual trick for specular highlights — using it
+            // here would inflate photon power ~50× and create impossibly bright caustics.
+            let perp = if sun_dir.x.abs() < 0.9 {
+                Vec3::new(0.0, -sun_dir.z, sun_dir.y).unit()
+            } else {
+                Vec3::new(-sun_dir.z, 0.0, sun_dir.x).unit()
+            };
+            let power_dir = (sun_dir + perp * 0.04).unit(); // 0.04 rad ≈ 2.3°
+            let sun_color = self.background.eval(power_dir) * std::f32::consts::PI;
             self.photon_map = Some(Arc::new(
                 PhotonMap::build(world.as_ref(), sun_dir, sun_color, 200_000, r)
             ));
