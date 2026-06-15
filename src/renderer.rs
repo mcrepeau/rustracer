@@ -18,38 +18,113 @@ const MAX_LUMINANCE: f32 = 10.0;
 #[derive(Clone, Copy)]
 pub enum Background {
     Solid(Color),
-    Physical { sun_dir: Vec3 },
+    Physical { sun_dir: Vec3, turbidity: f32 },
 }
 
 impl Background {
     pub fn eval(self, dir: Vec3) -> Color {
         match self {
             Background::Solid(c) => c,
-            Background::Physical { sun_dir } => sky_color(dir, sun_dir),
+            Background::Physical { sun_dir, turbidity } => preetham_sky(dir, sun_dir, turbidity),
         }
     }
 }
 
-/// Physically-inspired sky model: blue zenith shading to warm horizon, soft Mie glow.
-fn sky_color(dir: Vec3, sun_dir: Vec3) -> Color {
-    let d        = dir.unit();
-    let sun      = sun_dir.unit();
-    let sun_elev = sun.y.clamp(0.0, 1.0);
-    let cos_a    = d.dot(sun).max(0.0);
-    let t        = d.y.max(0.0).powf(0.4);
+/// Preetham (1999) analytic sky model.
+///
+/// Computes CIE Yxy from the Perez luminance distribution, converts to
+/// linear sRGB.  Turbidity T ∈ [1, 20]: 2 = very clear, 3 = clear,
+/// 5 = light haze, 10 = heavy haze.  Output is scaled so a midday
+/// zenith sits around 0.7 in linear before ACES tone mapping.
+fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
+    use std::f32::consts::PI;
 
-    let zenith  = Color::new(0.08, 0.22, 0.75) * (0.4 + 0.6 * sun_elev);
-    let horizon = Color::new(0.70, 0.55, 0.35) * (1.0 - sun_elev)
-                + Color::new(0.65, 0.78, 0.92) *  sun_elev;
-    let sky = zenith * t + horizon * (1.0 - t);
+    let d   = dir.unit();
+    let sun = sun_dir.unit();
 
-    let mie = Color::new(1.0, 0.85, 0.60) * cos_a.powf(8.0) * 0.8 * sun_elev;
+    // Angle between sky sample and sun
+    let cos_gamma = d.dot(sun).clamp(-1.0, 1.0);
+    let gamma     = cos_gamma.acos();
 
-    if d.y < 0.0 {
-        sky * (1.0 + d.y * 5.0).max(0.0)
-    } else {
-        sky + mie
+    // Below ground — return black
+    if d.y < 0.0 { return Color::default(); }
+
+    let t = turbidity.clamp(1.0, 20.0);
+
+    // Sun zenith angle (floor at 1° above horizon; model invalid for θ_s > 90°)
+    let cos_theta_s = sun.y.max(0.0175);   // sin(1°) ≈ 0.0175
+    let theta_s     = cos_theta_s.acos();
+
+    // Perez distribution F(θ,γ; A–E) = (1+A·exp(B/cosθ))·(1+C·exp(D·γ)+E·cos²γ)
+    let perez = |a: f32, b: f32, c: f32, dp: f32, e: f32,
+                 ct: f32, g: f32, cg: f32| -> f32 {
+        (1.0 + a * (b / ct).exp()) * (1.0 + c * (dp * g).exp() + e * cg * cg)
+    };
+
+    // Coefficients A–E (each linearly dependent on turbidity)
+    let (ay, by_, cy, dy, ey) = (
+         0.1787*t - 1.4630, -0.3554*t + 0.4275,
+         0.0227*t + 5.3251,  0.1206*t - 2.5771, -0.0670*t + 0.3703,
+    );
+    let (ax, bx, cx, dx, ex) = (
+        -0.0193*t - 0.2592, -0.0665*t + 0.0008,
+        -0.0004*t + 0.2125, -0.0641*t - 0.8989, -0.0033*t + 0.0452,
+    );
+    let (acy, bcy, ccy, dcy, ecy) = (
+        -0.0167*t - 0.2608, -0.0950*t + 0.0092,
+        -0.0079*t + 0.2102, -0.0441*t - 1.6537, -0.0109*t + 0.0529,
+    );
+
+    // Normalization: F at zenith (cosθ=1) looking toward sun (γ=θ_s)
+    let fn_y  = perez(ay,  by_,  cy,  dy,  ey,  1.0, theta_s, cos_theta_s);
+    let fn_x  = perez(ax,  bx,   cx,  dx,  ex,  1.0, theta_s, cos_theta_s);
+    let fn_cy = perez(acy, bcy,  ccy, dcy, ecy, 1.0, theta_s, cos_theta_s);
+
+    // Zenith luminance Y_z (kcd/m²), Preetham eq. 7
+    let yz = ((4.0453*t - 4.9710) * ((4.0/9.0 - t/120.0) * (PI - 2.0*theta_s)).tan()
+             - 0.2155*t + 2.4192).max(0.0);
+
+    // Solar disc: rays within ~1.3° of sun get a bright warm-white return
+    if cos_gamma > 0.9997 && sun.y > 0.0 {
+        let disc = yz * 80.0 * 0.05;
+        return Color::new(disc, disc * 0.95, disc * 0.85);
     }
+
+    // Zenith chromaticity x_z, y_z (Preetham table 2 polynomial, θ_s in radians)
+    let ts  = theta_s;
+    let ts2 = ts * ts;
+    let ts3 = ts2 * ts;
+    let xz = t*t * ( 0.00166*ts3 - 0.00375*ts2 + 0.00209*ts)
+           + t   * (-0.02903*ts3 + 0.06377*ts2 - 0.03202*ts + 0.00394)
+           +       ( 0.11693*ts3 - 0.21196*ts2 + 0.06052*ts + 0.25886);
+    let yzc = t*t * ( 0.00275*ts3 - 0.00610*ts2 + 0.00317*ts)
+            + t   * (-0.04214*ts3 + 0.08970*ts2 - 0.04153*ts + 0.00516)
+            +       ( 0.15346*ts3 - 0.26756*ts2 + 0.06670*ts + 0.26688);
+
+    // Evaluate Perez distribution at sky sample (clamp cosθ to avoid horizon singularity)
+    let ct  = d.y.max(0.001);
+    let fy  = perez(ay,  by_,  cy,  dy,  ey,  ct, gamma, cos_gamma);
+    let fx  = perez(ax,  bx,   cx,  dx,  ex,  ct, gamma, cos_gamma);
+    let fcy = perez(acy, bcy,  ccy, dcy, ecy, ct, gamma, cos_gamma);
+
+    // Sky Yxy
+    let cap_y  = (yz  * fy  / fn_y).max(0.0);
+    let cap_x  = (xz  * fx  / fn_x).clamp(0.001, 0.998);
+    let cap_yc = (yzc * fcy / fn_cy).clamp(0.001, 0.998);
+
+    // xyY → XYZ
+    // Scale kcd/m² → renderer linear units (0.05 maps midday zenith to ~0.7 linear)
+    let lum   = cap_y * 0.05;
+    let big_x = cap_x / cap_yc * lum;
+    let big_y = lum;
+    let big_z = ((1.0 - cap_x - cap_yc) / cap_yc * lum).max(0.0);
+
+    // XYZ → linear sRGB (D65)
+    let r = ( 3.2406*big_x - 1.5372*big_y - 0.4986*big_z).max(0.0);
+    let g = (-0.9689*big_x + 1.8758*big_y + 0.0415*big_z).max(0.0);
+    let b = ( 0.0557*big_x - 0.2040*big_y + 1.0570*big_z).max(0.0);
+
+    Color::new(r, g, b)
 }
 
 // ── Path tracer ───────────────────────────────────────────────────────────────
@@ -241,7 +316,7 @@ pub fn render_tiles(
     let strata_f = strata as f32;
 
     match background {
-        Background::Physical { sun_dir } => set_pearl_sun_dir(sun_dir),
+        Background::Physical { sun_dir, .. } => set_pearl_sun_dir(sun_dir),
         _                                => clear_pearl_sun_dir(),
     }
 

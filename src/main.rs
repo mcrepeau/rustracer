@@ -358,7 +358,7 @@ fn main() {
                                     window.request_redraw();
                                 }
                                 VirtualKeyCode::Left | VirtualKeyCode::Right => {
-                                    if let Background::Physical { sun_dir } = &mut scenes[scene_idx].background {
+                                    if let Background::Physical { sun_dir, .. } = &mut scenes[scene_idx].background {
                                         let step = if key == VirtualKeyCode::Right { 0.1f32 } else { -0.1f32 };
                                         let (s, c) = step.sin_cos();
                                         *sun_dir = vec3::Vec3::new(
@@ -371,7 +371,7 @@ fn main() {
                                     }
                                 }
                                 VirtualKeyCode::Up | VirtualKeyCode::Down => {
-                                    if let Background::Physical { sun_dir } = &mut scenes[scene_idx].background {
+                                    if let Background::Physical { sun_dir, .. } = &mut scenes[scene_idx].background {
                                         let step = if key == VirtualKeyCode::Up { 0.1f32 } else { -0.1f32 };
                                         let el = sun_dir.y.asin();
                                         let new_el = (el + step).clamp(-10f32.to_radians(), 85f32.to_radians());
@@ -520,7 +520,7 @@ fn main() {
                     #[cfg(not(feature = "denoise"))]
                     let oidn_hint = "";
                     let spp_label = format!("{samples} spp");
-                    let sun_hint = if let Background::Physical { sun_dir } = scene.background {
+                    let sun_hint = if let Background::Physical { sun_dir, .. } = scene.background {
                         format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
                     window.set_title(&format!(

@@ -59,7 +59,7 @@ fn default_move_speed() -> f32 { 0.5  }
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackgroundConfig {
-    /// Physically-inspired sky with a sun.
+    /// Preetham atmospheric sky with a physical sun.
     Physical {
         /// Degrees clockwise from +Z axis when viewed from above.
         #[serde(default)]
@@ -67,12 +67,16 @@ pub enum BackgroundConfig {
         /// Degrees above the horizon (0 = horizon, 90 = zenith).
         #[serde(default = "default_sun_elevation")]
         sun_elevation: f32,
+        /// Atmospheric turbidity T (1 = ideal clear, 3 = clear, 5 = light haze, 10 = heavy haze).
+        #[serde(default = "default_turbidity")]
+        turbidity:     f32,
     },
     /// Uniform colour background.
     Solid { color: [f32; 3] },
 }
 
 fn default_sun_elevation() -> f32 { 30.0 }
+fn default_turbidity()     -> f32 {  3.0 }
 
 #[derive(Deserialize)]
 pub struct ObjectConfig {
@@ -198,7 +202,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
 
     // ── Background ────────────────────────────────────────────────────────────
     let background = match file.background {
-        BackgroundConfig::Physical { sun_azimuth, sun_elevation } => {
+        BackgroundConfig::Physical { sun_azimuth, sun_elevation, turbidity } => {
             let el = sun_elevation.to_radians();
             let az = sun_azimuth.to_radians();
             Background::Physical {
@@ -207,6 +211,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                     el.sin(),
                     el.cos() * az.cos(),
                 ).unit(),
+                turbidity,
             }
         }
         BackgroundConfig::Solid { color } => Background::Solid(col(color)),

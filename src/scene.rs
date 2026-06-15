@@ -335,7 +335,7 @@ impl SceneData {
         if !self.enable_caustics { return; }
         let r     = self.caustic_gather_radius;
         let world = Arc::clone(&self.world);
-        if let Background::Physical { sun_dir } = self.background {
+        if let Background::Physical { sun_dir, .. } = self.background {
             // Derive photon power from the actual sky radiance at the sun
             // direction so caustic brightness stays in proportion to the
             // surrounding ground illumination computed by the path tracer.

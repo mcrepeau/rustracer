@@ -180,7 +180,7 @@ pub fn build_random_scene() -> SceneData {
     SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights:         HittableList::new(),
-        background:     Background::Physical { sun_dir: Vec3::new(-0.4, 0.9, -0.3).unit() },
+        background:     Background::Physical { sun_dir: Vec3::new(-0.4, 0.9, -0.3).unit(), turbidity: 3.0 },
         name:           "Random Spheres",
         cam_init:       SceneCameraParams {
             pos: Point3::new(13.0, 2.0, 3.0), lookat: Point3::new(0.0, 0.0, 0.0),
