@@ -179,6 +179,14 @@ pub enum MaterialConfig {
         anisotropy: f32,
         #[serde(default)]
         anisotropy_angle: f32,
+        #[serde(default)]
+        clearcoat: f32,
+        #[serde(default = "default_clearcoat_roughness")]
+        clearcoat_roughness: f32,
+        #[serde(default)]
+        film_thickness: f32,
+        #[serde(default = "default_film_ior")]
+        film_ior: f32,
     },
     Pearl {
         #[serde(default = "default_pearl_color")]
@@ -191,15 +199,20 @@ pub enum MaterialConfig {
         orient_strength: f32,
         #[serde(default = "default_film_scale")]
         film_scale:      f32,
+        #[serde(default = "default_luster_roughness")]
+        luster_roughness: f32,
     },
 }
 
-fn default_roughness()       -> f32       { 0.5 }
-fn default_pearl_color()     -> [f32; 3]  { [0.98, 0.93, 0.88] }
-fn default_pearl_ior()       -> f32       { 1.56 }
-fn default_film_thickness()  -> f32       { 450.0 }
-fn default_orient_strength() -> f32       { 0.30 }
-fn default_film_scale()      -> f32       { 3.0 }
+fn default_roughness()          -> f32 { 0.5 }
+fn default_clearcoat_roughness() -> f32 { 0.03 }
+fn default_film_ior()           -> f32 { 1.5 }
+fn default_pearl_color()        -> [f32; 3] { [0.98, 0.93, 0.88] }
+fn default_pearl_ior()          -> f32 { 1.56 }
+fn default_film_thickness()     -> f32 { 450.0 }
+fn default_orient_strength()    -> f32 { 0.30 }
+fn default_film_scale()         -> f32 { 3.0 }
+fn default_luster_roughness()   -> f32 { 0.05 }
 
 /// A quad that emits light — added to both the world and the NEE light list.
 #[derive(Deserialize)]
@@ -405,11 +418,14 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
         MaterialConfig::DiffuseLight { color } =>
             Arc::new(DiffuseLight { emit: Texture::from(col(color)) }),
 
-        MaterialConfig::Pbr { albedo, metallic, roughness, anisotropy, anisotropy_angle } =>
-            Arc::new(PbrMaterial { albedo: col(albedo), metallic, roughness, anisotropy, anisotropy_angle }),
+        MaterialConfig::Pbr { albedo, metallic, roughness, anisotropy, anisotropy_angle,
+                              clearcoat, clearcoat_roughness, film_thickness, film_ior } =>
+            Arc::new(PbrMaterial { albedo: col(albedo), metallic, roughness,
+                                   anisotropy, anisotropy_angle,
+                                   clearcoat, clearcoat_roughness, film_thickness, film_ior }),
 
-        MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale } =>
-            Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale }),
+        MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale, luster_roughness } =>
+            Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale, luster_roughness }),
     })
 }
 

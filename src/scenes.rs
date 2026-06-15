@@ -69,14 +69,14 @@ pub fn build_random_scene() -> SceneData {
             center: Point3::new(-4.0, 1.0, 0.0),
             velocity: Vec3::default(),
             radius: 1.0,
-            mat: Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, metallic: 0.0, anisotropy: 0.0, anisotropy_angle: 0.0 }),
+            mat: Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, metallic: 0.0, anisotropy: 0.0, anisotropy_angle: 0.0, clearcoat: 0.0, clearcoat_roughness: 0.03, film_thickness: 0.0, film_ior: 1.5 }),
             restitution: 0.35, is_static: true,
         },
         DynamicSphere {
             center: Point3::new( 4.0, 1.0, 0.0),
             velocity: Vec3::default(),
             radius: 1.0,
-            mat: Arc::new(PbrMaterial { albedo: Color::new(0.85, 0.65, 0.25), roughness: 0.25, metallic: 1.0, anisotropy: 0.85, anisotropy_angle: 0.0 }),
+            mat: Arc::new(PbrMaterial { albedo: Color::new(0.85, 0.65, 0.25), roughness: 0.25, metallic: 1.0, anisotropy: 0.85, anisotropy_angle: 0.0, clearcoat: 0.0, clearcoat_roughness: 0.03, film_thickness: 0.0, film_ior: 1.5 }),
             restitution: 0.80, is_static: true,
         },
         DynamicSphere {
@@ -84,11 +84,26 @@ pub fn build_random_scene() -> SceneData {
             velocity: Vec3::default(),
             radius: 1.0,
             mat: Arc::new(PearlMaterial {
-                base_color:      Color::new(0.98, 0.93, 0.88),
-                ior:             1.56,
-                film_thickness:  450.0,
-                orient_strength: 0.30,
-                film_scale:      5.0,
+                base_color:       Color::new(0.98, 0.93, 0.88),
+                ior:              1.56,
+                film_thickness:   450.0,
+                orient_strength:  0.30,
+                film_scale:       5.0,
+                luster_roughness: 0.05,
+            }),
+            restitution: 0.50, is_static: true,
+        },
+        // Iridescent clearcoat: near-black base under a thin-film dielectric coat.
+        // Orbit the camera to watch the rainbow cycle across the surface.
+        DynamicSphere {
+            center: Point3::new(2.0, 1.0, -2.0),
+            velocity: Vec3::default(),
+            radius: 1.0,
+            mat: Arc::new(PbrMaterial {
+                albedo: Color::new(0.02, 0.01, 0.03), roughness: 0.6, metallic: 0.0,
+                anisotropy: 0.0, anisotropy_angle: 0.0,
+                clearcoat: 0.9, clearcoat_roughness: 0.03,
+                film_thickness: 480.0, film_ior: 1.45,
             }),
             restitution: 0.50, is_static: true,
         },
@@ -170,11 +185,11 @@ pub fn build_random_scene() -> SceneData {
             } else if choose < 0.75 {
                 let albedo = Color::random(&mut rng) * Color::random(&mut rng);
                 let roughness: f32 = rng.gen_range(0.5..1.0);
-                (Arc::new(PbrMaterial { albedo, roughness, metallic: 0.0, anisotropy: 0.0, anisotropy_angle: 0.0 }), 0.35)
+                (Arc::new(PbrMaterial { albedo, roughness, metallic: 0.0, anisotropy: 0.0, anisotropy_angle: 0.0, clearcoat: 0.0, clearcoat_roughness: 0.03, film_thickness: 0.0, film_ior: 1.5 }), 0.35)
             } else if choose < 0.92 {
                 let albedo   = Color::random_range(0.5, 1.0, &mut rng);
                 let roughness: f32 = rng.gen_range(0.0..0.5);
-                (Arc::new(PbrMaterial { albedo, roughness, metallic: 1.0, anisotropy: 0.0, anisotropy_angle: 0.0 }), 0.5 + (1.0 - roughness) * 0.35)
+                (Arc::new(PbrMaterial { albedo, roughness, metallic: 1.0, anisotropy: 0.0, anisotropy_angle: 0.0, clearcoat: 0.0, clearcoat_roughness: 0.03, film_thickness: 0.0, film_ior: 1.5 }), 0.5 + (1.0 - roughness) * 0.35)
             } else {
                 (Arc::new(Dielectric { ir: 1.5 }), 0.65)
             };
@@ -378,11 +393,12 @@ pub fn build_nextweek_scene() -> SceneData {
     list.add(Sphere::new(
         Point3::new(400.0, 150.0, 270.0), 50.0,
         Arc::new(PearlMaterial {
-            base_color:      Color::new(0.98, 0.93, 0.88),
-            ior:             1.56,
-            film_thickness:  450.0,
-            orient_strength: 0.30,
-            film_scale:      0.10,
+            base_color:       Color::new(0.98, 0.93, 0.88),
+            ior:              1.56,
+            film_thickness:   450.0,
+            orient_strength:  0.30,
+            film_scale:       0.10,
+            luster_roughness: 0.05,
         }),
     ));
 

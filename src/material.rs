@@ -315,27 +315,41 @@ impl Material for SSSMaterial {
 /// - `metallic`: 0 = dielectric (F0 ≈ 0.04, tinted diffuse), 1 = conductor (no diffuse).
 /// - `anisotropy`: 0 = isotropic, 1 = maximum elongation (brushed-metal look).
 /// - `anisotropy_angle`: rotates the highlight direction in the tangent plane (radians).
+/// - `clearcoat`: weight of a smooth dielectric overcoat [0–1].
+/// - `clearcoat_roughness`: roughness of the coat surface (default ~0.03).
+/// - `film_thickness`: thin-film thickness in nm (0 = achromatic; 400–800 for vivid colours).
+/// - `film_ior`: IOR of the thin film (default 1.5 for common dielectric coats).
 pub struct PbrMaterial {
-    pub albedo:           Color,
-    pub roughness:        f32,
-    pub metallic:         f32,
-    pub anisotropy:       f32,
-    pub anisotropy_angle: f32,
+    pub albedo:              Color,
+    pub roughness:           f32,
+    pub metallic:            f32,
+    pub anisotropy:          f32,
+    pub anisotropy_angle:    f32,
+    pub clearcoat:           f32,
+    pub clearcoat_roughness: f32,
+    pub film_thickness:      f32,
+    pub film_ior:            f32,
 }
 
 impl Material for PbrMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let n  = rec.normal;
-        let wo = (-r_in.direction).unit();
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         if cos_o <= 0.0 { return None; }
 
         let alpha = (self.roughness * self.roughness).max(1e-4_f32);
-        // F0: interpolate between dielectric (0.04) and conductor (albedo)
-        let f0 = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
-               + self.albedo * self.metallic;
+        let f0    = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
+                  + self.albedo * self.metallic;
 
-        // Fresnel at viewing angle: drives specular/diffuse split probability.
+        // Clearcoat lobe: dielectric IOR 1.5 (F0 = 0.04), scaled by clearcoat weight.
+        let p_coat = if self.clearcoat > 1e-3 {
+            schlick(cos_o, 1.0 / 1.5_f32) * self.clearcoat
+        } else {
+            0.0
+        };
+
+        // Base specular probability from Fresnel at the view angle.
         let f_approx = schlick_color(cos_o, f0);
         let p_spec = if self.metallic > 0.999 {
             1.0_f32
@@ -344,74 +358,106 @@ impl Material for PbrMaterial {
                 .clamp(0.04, 0.9)
         };
 
-        if rng.gen::<f32>() < p_spec {
+        if rng.gen::<f32>() < p_coat {
+            // ── Clearcoat specular ────────────────────────────────────────────
+            let alpha_coat = (self.clearcoat_roughness * self.clearcoat_roughness).max(1e-4);
+            let (t, b) = make_onb(n);
             let xi1: f32 = rng.gen();
             let xi2: f32 = rng.gen();
 
-            let (wi, weight) = if self.anisotropy > 1e-3 {
-                // ── Anisotropic GGX via VNDF (Heitz 2018) ────────────────────
-                // Disney parameterisation: aspect = sqrt(1 − 0.9·aniso)
-                // α_x < α   → smooth along tangent   → elongated highlight in t
-                // α_y > α   → rough along bitangent
-                let aspect = (1.0 - 0.9 * self.anisotropy).max(0.001_f32).sqrt();
-                let ax = alpha * aspect;
-                let ay = alpha / aspect;
+            let cos_th = ((1.0 - xi2) / (xi2 * (alpha_coat * alpha_coat - 1.0) + 1.0)).max(0.0).sqrt();
+            let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
+            let phi    = 2.0 * PI * xi1;
+            let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
 
-                // Tangent frame, optionally rotated by anisotropy_angle
-                let (t0, b0) = make_onb(n);
-                let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
-                let t = t0 * ca + b0 * sa;
-                let b = b0 * ca - t0 * sa;
+            let vo_h  = wo.dot(h).max(0.0);
+            let wi    = (2.0 * vo_h * h - wo).unit();
+            let cos_i = wi.dot(n);
+            if cos_i <= 0.0 { return None; }
 
-                // Sample microfacet normal from the VNDF in tangent space
-                let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
-                let m_ts  = vndf_sample_aniso(wo_ts, ax, ay, xi1, xi2);
-                let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
+            let cos_h  = h.dot(n).max(1e-6);
+            let f_coat = schlick(vo_h, 1.0 / 1.5_f32) * self.clearcoat;
+            let g2     = smith_g1(cos_o, alpha_coat) * smith_g1(cos_i, alpha_coat);
 
-                let vo_h  = wo.dot(m).max(0.0);
-                let wi    = (2.0 * vo_h * m - wo).unit();
-                let cos_i = wi.dot(n);
-                if cos_i <= 0.0 { return None; }
-
-                // VNDF weight = F · G₁(wᵢ)  [with uncorrelated Smith G₂]
-                let wi_ts  = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
-                let g1_wi  = smith_g1_aniso(wi_ts.z, wi_ts.x, wi_ts.y, ax, ay);
-                let f      = schlick_color(vo_h, f0);
-                (wi, f * g1_wi)
+            // Thin-film tint: uses half-vector angle → view-dependent rainbow.
+            // nacre_color() performs the full spectral integral (see PearlMaterial).
+            let film = if self.film_thickness > 0.0 {
+                nacre_color(vo_h, self.film_ior, self.film_thickness)
             } else {
-                // ── Isotropic GGX via NDF sampling (Walter et al. 2007) ──────
-                let (t, b) = make_onb(n);
-
-                let cos_th = ((1.0 - xi2) / (xi2 * (alpha * alpha - 1.0) + 1.0)).max(0.0).sqrt();
-                let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
-                let phi    = 2.0 * PI * xi1;
-                let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
-
-                let vo_h  = wo.dot(h).max(0.0);
-                let wi    = (2.0 * vo_h * h - wo).unit();
-                let cos_i = wi.dot(n);
-                if cos_i <= 0.0 { return None; }
-
-                let cos_h = h.dot(n).max(1e-6);
-                let g2    = smith_g1(cos_o, alpha) * smith_g1(cos_i, alpha);
-                let f     = schlick_color(vo_h, f0);
-                // Weight: F·G·(vo·h) / (cos_o · cos_h)
-                (wi, f * (g2 * vo_h / (cos_o.max(1e-6) * cos_h)))
+                Color::new(1.0, 1.0, 1.0)
             };
 
+            // Weight: F_coat · film · G₂ · (vo·h) / (cos_o · cos_h · p_coat)
+            let weight = f_coat * film * g2 * vo_h / (cos_o.max(1e-6) * cos_h * p_coat);
             Some(ScatterRecord {
-                attenuation: weight / p_spec,
-                ray: Ray::scatter_from(rec.p, wi, r_in),
-                skip_pdf: true,
+                attenuation: weight,
+                ray:         Ray::scatter_from(rec.p, wi, r_in),
+                skip_pdf:    true,
             })
         } else {
-            // ── Diffuse Lambertian (dielectrics only) ─────────────────────────
-            // Divide by (1-p_spec) to correct for Russian-roulette sampling.
-            Some(ScatterRecord {
-                attenuation: self.albedo * ((1.0 - self.metallic) / (1.0 - p_spec)),
-                ray: Ray::scatter_from(rec.p, rec.normal, r_in), // direction overridden by PDF
-                skip_pdf: false,
-            })
+            // ── Base layer ────────────────────────────────────────────────────
+            // All base weights divided by (1 − p_coat) for Russian-roulette correction.
+            if rng.gen::<f32>() < p_spec {
+                let xi1: f32 = rng.gen();
+                let xi2: f32 = rng.gen();
+
+                let (wi, weight) = if self.anisotropy > 1e-3 {
+                    // ── Anisotropic GGX via VNDF (Heitz 2018) ────────────────
+                    let aspect = (1.0 - 0.9 * self.anisotropy).max(0.001_f32).sqrt();
+                    let ax = alpha * aspect;
+                    let ay = alpha / aspect;
+
+                    let (t0, b0) = make_onb(n);
+                    let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
+                    let t = t0 * ca + b0 * sa;
+                    let b = b0 * ca - t0 * sa;
+
+                    let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+                    let m_ts  = vndf_sample_aniso(wo_ts, ax, ay, xi1, xi2);
+                    let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
+
+                    let vo_h  = wo.dot(m).max(0.0);
+                    let wi    = (2.0 * vo_h * m - wo).unit();
+                    let cos_i = wi.dot(n);
+                    if cos_i <= 0.0 { return None; }
+
+                    let wi_ts = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
+                    let g1_wi = smith_g1_aniso(wi_ts.z, wi_ts.x, wi_ts.y, ax, ay);
+                    let f     = schlick_color(vo_h, f0);
+                    (wi, f * g1_wi)
+                } else {
+                    // ── Isotropic GGX via NDF sampling (Walter et al. 2007) ──
+                    let (t, b) = make_onb(n);
+
+                    let cos_th = ((1.0 - xi2) / (xi2 * (alpha * alpha - 1.0) + 1.0)).max(0.0).sqrt();
+                    let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
+                    let phi    = 2.0 * PI * xi1;
+                    let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
+
+                    let vo_h  = wo.dot(h).max(0.0);
+                    let wi    = (2.0 * vo_h * h - wo).unit();
+                    let cos_i = wi.dot(n);
+                    if cos_i <= 0.0 { return None; }
+
+                    let cos_h = h.dot(n).max(1e-6);
+                    let g2    = smith_g1(cos_o, alpha) * smith_g1(cos_i, alpha);
+                    let f     = schlick_color(vo_h, f0);
+                    (wi, f * (g2 * vo_h / (cos_o.max(1e-6) * cos_h)))
+                };
+
+                Some(ScatterRecord {
+                    attenuation: weight / (p_spec * (1.0 - p_coat)),
+                    ray:         Ray::scatter_from(rec.p, wi, r_in),
+                    skip_pdf:    true,
+                })
+            } else {
+                // ── Diffuse Lambertian (dielectrics only) ─────────────────────
+                Some(ScatterRecord {
+                    attenuation: self.albedo * ((1.0 - self.metallic) / ((1.0 - p_spec) * (1.0 - p_coat))),
+                    ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
+                    skip_pdf:    false,
+                })
+            }
         }
     }
 
@@ -521,53 +567,79 @@ fn oil_noise(p: Point3) -> f32 {
 /// the pearl's body colour.
 pub struct PearlMaterial {
     /// Body colour (cream/white for Akoya, golden for South Sea, black for Tahitian).
-    pub base_color:      Color,
+    pub base_color:       Color,
     /// Effective nacre IOR.  Average of aragonite (~1.68) and organic (~1.44)
     /// layers; ~1.56 gives a typical Akoya orient cycle.
-    pub ior:             f32,
+    pub ior:              f32,
     /// Nacre platelet thickness in **nanometres** (natural pearls: 380–600 nm).
-    /// Controls which colour appears at normal incidence and how fast it shifts.
-    pub film_thickness:  f32,
+    pub film_thickness:   f32,
     /// How strongly the orient tints the diffuse body colour [0–1].
-    /// 0 = plain Lambertian cream; 0.3 = visible sheen; 1 = fully replaced.
-    pub orient_strength: f32,
-    /// Spatial frequency of oil-spill film-thickness variation.
-    /// Use ~5.0 for unit-scale objects, ~0.1 for objects ~50 units across.
-    pub film_scale:      f32,
+    pub orient_strength:  f32,
+    /// Spatial frequency of the thickness variation (oil-spill pattern).
+    pub film_scale:       f32,
+    /// GGX roughness of the pearl luster (0 = mirror, 0.05 = soft Akoya sheen).
+    pub luster_roughness: f32,
 }
 
 impl Material for PearlMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let unit      = r_in.direction.unit();
-        let cos_theta = (-unit).dot(rec.normal).clamp(0.0, 1.0);
+        let n         = rec.normal;
+        let wo        = (-r_in.direction).unit();
+        let cos_theta = wo.dot(n).clamp(0.0, 1.0);
 
         let varied = self.film_thickness + oil_noise(rec.p * self.film_scale) * 150.0;
         let f      = schlick(cos_theta, 1.0 / self.ior);
 
-        // Nacre is a diffuse structural-colour material: OPD in the aragonite
-        // platelet stack is determined by how light *enters* the film (the
-        // illumination angle), not by the specular reflection or view angle.
-        // Use the sun–normal angle for both paths so the colour shifts as the
-        // sun moves; fall back to the view angle when no sun is available.
+        // Illumination angle: governs the nacre glow on the diffuse path.
+        // OPD is set when light enters the aragonite platelet stack, so this
+        // component shifts with the sun position, not the camera angle.
         let cos_illumin = match pearl_sun_dir() {
-            Some(sun) => rec.normal.dot(sun).clamp(0.0, 1.0),
+            Some(sun) => n.dot(sun).clamp(0.0, 1.0),
             None      => cos_theta,
         };
 
         if rng.gen::<f32>() < f {
-            let orient = nacre_color(cos_illumin, self.ior, varied);
+            // ── GGX luster: view-dependent thin-film iridescence ──────────────
+            // nacre_color uses the half-vector angle (vo_h) so the rainbow cycles
+            // as you orbit the camera — the physically correct path for specular
+            // reflection off the nacre film surface.
+            let (t, b)    = make_onb(n);
+            let alpha_l   = (self.luster_roughness * self.luster_roughness).max(1e-4);
+            let xi1: f32  = rng.gen();
+            let xi2: f32  = rng.gen();
+
+            let cos_th = ((1.0 - xi2) / (xi2 * (alpha_l * alpha_l - 1.0) + 1.0)).max(0.0).sqrt();
+            let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
+            let phi    = 2.0 * PI * xi1;
+            let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
+
+            let vo_h  = wo.dot(h).max(0.0);
+            let wi    = (2.0 * vo_h * h - wo).unit();
+            let cos_i = wi.dot(n);
+            if cos_i <= 0.0 { return None; }
+
+            let cos_h  = h.dot(n).max(1e-6);
+            let g2     = smith_g1(cos_theta, alpha_l) * smith_g1(cos_i, alpha_l);
+            let f_h    = schlick(vo_h, 1.0 / self.ior);
+            let orient = nacre_color(vo_h, self.ior, varied);
+
+            // NDF weight (F·G·vo_h)/(cos_o·cos_h), divided by RR probability f.
+            let attenuation = orient * (f_h * g2 * vo_h / (cos_theta.max(1e-6) * cos_h)) / f;
             Some(ScatterRecord {
-                attenuation: orient,
-                ray:         Ray::scatter_from(rec.p, unit.reflect(rec.normal), r_in),
-                skip_pdf:    true,
+                attenuation,
+                ray:      Ray::scatter_from(rec.p, wi, r_in),
+                skip_pdf: true,
             })
         } else {
-            let orient  = nacre_color(cos_illumin, self.ior, varied);
-            let s       = self.orient_strength;
-            let tinted  = self.base_color * (orient * s + Color::new(1.0, 1.0, 1.0) * (1.0 - s));
+            // ── Diffuse nacre glow: illumination-angle thin film ──────────────
+            // Colour is set by how light enters the platelet stack → shifts with
+            // sun movement, not camera orbit.  Existing behaviour preserved.
+            let orient = nacre_color(cos_illumin, self.ior, varied);
+            let s      = self.orient_strength;
+            let tinted = self.base_color * (orient * s + Color::new(1.0, 1.0, 1.0) * (1.0 - s));
             Some(ScatterRecord {
                 attenuation: tinted,
-                ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
+                ray:         Ray::scatter_from(rec.p, n, r_in),
                 skip_pdf:    false,
             })
         }
