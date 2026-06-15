@@ -429,7 +429,7 @@ pub fn build_nextweek_scene() -> SceneData {
         colliders:        vec![],
         convex_colliders: vec![],
         gravity:          0.0,
-        settled:        true,
+        settled:        false,
         paused:         false,
         max_samples:    2000,
         enable_caustics:       true,

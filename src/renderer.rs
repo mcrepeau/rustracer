@@ -59,8 +59,6 @@ fn sky_color(dir: Vec3, sun_dir: Vec3) -> Color {
 // ── Path tracer ───────────────────────────────────────────────────────────────
 
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
-/// Pass `1.0 / exposure` to keep the star field at constant apparent brightness
-/// regardless of the scene exposure setting.
 pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, photon_map: Option<&PhotonMap>, rng: &mut impl Rng) -> Color {
     let mut throughput = Color::new(1.0, 1.0, 1.0);
     let mut color      = Color::default();

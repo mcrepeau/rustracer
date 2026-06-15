@@ -30,6 +30,15 @@ impl Vec3 {
 
     #[inline] pub fn unit(self) -> Self { self / self.length() }
 
+    /// Build a tangent-space ONB for a surface normal (must already be unit).
+    /// Returns `(u_axis, v_axis)`, both perpendicular to `self` and each other.
+    pub fn onb(self) -> (Self, Self) {
+        let up = if self.y.abs() < 0.9 { Self::new(0.0, 1.0, 0.0) } else { Self::new(1.0, 0.0, 0.0) };
+        let u  = self.cross(up).unit();
+        let v  = self.cross(u);
+        (u, v)
+    }
+
     pub fn near_zero(self) -> bool {
         const S: f32 = 1e-6;
         self.x.abs() < S && self.y.abs() < S && self.z.abs() < S

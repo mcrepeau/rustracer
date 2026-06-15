@@ -237,14 +237,20 @@ impl SceneData {
         if self.static_objects.is_empty() && self.dynamic.is_empty() { return; }
 
         // Build the static BVH once and reuse it on every subsequent tick.
-        if self.cached_static.is_none() && !self.static_objects.is_empty() {
+        // is_static dynamic spheres never move, so they are included here too.
+        if self.cached_static.is_none() {
             let mut sl = HittableList::new();
             for obj in &self.static_objects { sl.objects.push(Arc::clone(obj)); }
-            self.cached_static = Some(Arc::new(BvhTree::from_list(sl)));
+            for ds in &self.dynamic {
+                if ds.is_static { sl.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat))); }
+            }
+            if !sl.objects.is_empty() {
+                self.cached_static = Some(Arc::new(BvhTree::from_list(sl)));
+            }
         }
 
-        // Static-only scene: skip the outer BvhTree wrap.
-        if self.dynamic.is_empty() {
+        // All spheres are static: world = cached_static, no outer wrap needed.
+        if self.dynamic.iter().all(|ds| ds.is_static) {
             if let Some(s) = &self.cached_static { self.world = Arc::clone(s); }
             return;
         }
@@ -252,7 +258,7 @@ impl SceneData {
         let mut list = HittableList::new();
         if let Some(s) = &self.cached_static { list.objects.push(Arc::clone(s)); }
         for ds in &self.dynamic {
-            list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
+            if !ds.is_static { list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat))); }
         }
         self.world = Arc::new(BvhTree::from_list(list));
     }

@@ -29,10 +29,8 @@ impl InfinitePlane {
         wave_scale:     f32,
         mat:            Arc<dyn Material>,
     ) -> Self {
-        let n      = normal.unit();
-        let up     = if n.y.abs() < 0.9 { Vec3::new(0.0, 1.0, 0.0) } else { Vec3::new(1.0, 0.0, 0.0) };
-        let u_axis = n.cross(up).unit();
-        let v_axis = n.cross(u_axis); // already unit since n ⊥ u_axis
+        let n = normal.unit();
+        let (u_axis, v_axis) = n.onb();
         Self { point, normal: n, wave_amplitude, wave_scale, mat, u_axis, v_axis }
     }
 }

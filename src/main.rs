@@ -201,6 +201,18 @@ fn main() {
                 }
             }
         }
+        macro_rules! switch_scene {
+            ($idx:expr) => {{
+                let i = $idx;
+                scene_idx        = i;
+                cam_state        = CameraState::from_params(&scenes[i].cam_init);
+                strata           = (scenes[i].max_samples as f32).sqrt() as u32;
+                physics_accum    = Duration::ZERO;
+                reset_accum!();
+                cam_dirty        = true;
+                pending_autofocus = true;
+            }};
+        }
 
         match event {
             Event::WindowEvent { event, .. } => match event {
@@ -252,23 +264,11 @@ fn main() {
                                 }
                                 VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 => {
                                     let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, _ => 0 };
-                                    scene_idx = idx;
-                                    cam_state = CameraState::from_params(&scenes[idx].cam_init);
-                                    strata = (scenes[idx].max_samples as f32).sqrt() as u32;
-                                    physics_accum = Duration::ZERO;
-                                    reset_accum!();
-                                    cam_dirty = true;
-                                    pending_autofocus = true;
+                                    switch_scene!(idx);
                                 }
                                 VirtualKeyCode::Key4 => {
                                     if scenes.len() >= 4 {
-                                        scene_idx = 3;
-                                        cam_state = CameraState::from_params(&scenes[3].cam_init);
-                                        strata = (scenes[3].max_samples as f32).sqrt() as u32;
-                                        physics_accum = Duration::ZERO;
-                                        reset_accum!();
-                                        cam_dirty = true;
-                                        pending_autofocus = true;
+                                        switch_scene!(3);
                                     } else {
                                         println!("scene.toml not loaded — edit the file and press [R] to reload it");
                                     }
@@ -391,8 +391,11 @@ fn main() {
                                 }
                                 VirtualKeyCode::R if scene_idx == 0 => {
                                     scenes[0] = build_random_scene();
+                                    strata = (scenes[0].max_samples as f32).sqrt() as u32;
                                     physics_accum = Duration::ZERO;
+                                    reset_accum!();
                                     cam_dirty = true;
+                                    pending_autofocus = true;
                                 }
                                 VirtualKeyCode::R if scene_idx == 3 => {
                                     match scene_file::load("scene.toml") {

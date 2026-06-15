@@ -348,10 +348,12 @@ impl Material for PbrMaterial {
 
 // ── Pearl sun-direction context ───────────────────────────────────────────────
 // The renderer sets this once per frame (before the parallel tile pass) so that
-// PearlMaterial::scatter can compute nacre_color from the sun's incident angle
-// rather than only the camera-ray angle.  Relaxed ordering is fine: a one-frame
-// lag is imperceptible, and reads/writes on different cores never race on the
-// same frame because the write happens strictly before par_iter_mut fires.
+// PearlMaterial::scatter can add a nacre highlight from the sun's incident angle.
+// PEARL_SUN_ACTIVE gates all reads: any call path that doesn't set the direction
+// first (photon tracing, unit tests) receives None from pearl_sun_dir() and the
+// sun highlight is simply omitted — no stale data is used.
+// Relaxed ordering is correct: the write happens-before par_iter_mut fires, and
+// a one-frame lag on the read side is imperceptible.
 
 static PEARL_SUN_X: AtomicU32 = AtomicU32::new(0);
 static PEARL_SUN_Y: AtomicU32 = AtomicU32::new(0x3F80_0000); // f32 1.0

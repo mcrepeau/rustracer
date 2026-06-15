@@ -18,9 +18,7 @@ pub struct Disk {
 impl Disk {
     pub fn new(center: Point3, normal: Vec3, radius: f32, mat: Arc<dyn Material>) -> Self {
         let n = normal.unit();
-        let up     = if n.y.abs() < 0.9 { Vec3::new(0.0, 1.0, 0.0) } else { Vec3::new(1.0, 0.0, 0.0) };
-        let u_axis = n.cross(up).unit();
-        let v_axis = n.cross(u_axis); // already unit since n ⊥ u_axis
+        let (u_axis, v_axis) = n.onb();
         Self { center, normal: n, radius, mat, u_axis, v_axis }
     }
 }
