@@ -46,11 +46,6 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
     let cos_gamma = d.dot(sun).clamp(-1.0, 1.0);
     let gamma     = cos_gamma.acos();
 
-    // Below horizon: fade the horizon color to black over ~4° so there is no
-    // hard seam where the sky meets the ground plane.
-    let fade = (d.y * 15.0 + 1.0).clamp(0.0, 1.0);
-    if fade == 0.0 { return Color::default(); }
-
     let t = turbidity.clamp(1.0, 20.0);
 
     // Sun zenith angle (floor at 1° above horizon; model invalid for θ_s > 90°)
@@ -86,8 +81,8 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
     let yz = ((4.0453*t - 4.9710) * ((4.0/9.0 - t/120.0) * (PI - 2.0*theta_s)).tan()
              - 0.2155*t + 2.4192).max(0.0);
 
-    // Solar disc: rays within ~1.3° of sun get a bright warm-white return
-    if cos_gamma > 0.9997 && sun.y > 0.0 {
+    // Solar disc: rays within ~1.3° of sun and above horizon get a bright warm-white return
+    if cos_gamma > 0.9997 && sun.y > 0.0 && d.y > 0.0 {
         let disc = yz * 80.0 * 0.05;
         return Color::new(disc, disc * 0.95, disc * 0.85);
     }
@@ -126,7 +121,19 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
     let g = (-0.9689*big_x + 1.8758*big_y + 0.0415*big_z).max(0.0);
     let b = ( 0.0557*big_x - 0.2040*big_y + 1.0570*big_z).max(0.0);
 
-    Color::new(r * fade, g * fade, b * fade)
+    let sky = Color::new(r, g, b);
+
+    // Below horizon: blend from the Preetham horizon colour (ct was clamped to 0.001
+    // above, so every below-horizon ray evaluates the horizon slice) toward a warm
+    // dim ground tone.  This ensures scenes whose ground geometry misses near-
+    // horizontal rays (e.g. a finite ground sphere) never show a black band.
+    if d.y < 0.0 {
+        let t = (-d.y * 8.0).min(1.0);
+        let ground = Color::new(0.07, 0.06, 0.05);
+        sky * (1.0 - t) + ground * t
+    } else {
+        sky
+    }
 }
 
 // ── Path tracer ───────────────────────────────────────────────────────────────
