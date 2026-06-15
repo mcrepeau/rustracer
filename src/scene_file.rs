@@ -11,6 +11,8 @@ use crate::material::{
 };
 use crate::cone::Cone;
 use crate::cylinder::Cylinder;
+use crate::disk::Disk;
+use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
 use crate::renderer::Background;
 use crate::scene::SceneData;
@@ -87,8 +89,17 @@ pub enum ShapeConfig {
     Sphere   { center: [f32; 3], radius: f32 },
     Quad     { corner: [f32; 3], u: [f32; 3], v: [f32; 3] },
     Box      { p_min:  [f32; 3], p_max: [f32; 3] },
-    Cylinder { center: [f32; 3], radius: f32, height: f32 },
-    Cone     { center: [f32; 3], radius: f32, height: f32 },
+    Cylinder      { center: [f32; 3], radius: f32, height: f32 },
+    Cone          { center: [f32; 3], radius: f32, height: f32 },
+    Disk          { center: [f32; 3], normal: [f32; 3], radius: f32 },
+    InfinitePlane {
+        point:  [f32; 3],
+        normal: [f32; 3],
+        #[serde(default)]
+        wave_amplitude: f32,
+        #[serde(default = "default_wave_scale")]
+        wave_scale: f32,
+    },
 }
 
 #[derive(Deserialize)]
@@ -157,6 +168,7 @@ pub struct CausticsConfig {
 
 fn default_true()          -> bool { true  }
 fn default_gather_radius() -> f32  { 0.15  }
+fn default_wave_scale()    -> f32  { 1.0   }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -221,6 +233,10 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                 Arc::new(Cylinder { center: p3(center), radius, height, mat }),
             ShapeConfig::Cone { center, radius, height } =>
                 Arc::new(Cone { center: p3(center), radius, height, mat }),
+            ShapeConfig::Disk { center, normal, radius } =>
+                Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
+            ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
+                Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
         };
         static_objects.push(hittable);
     }

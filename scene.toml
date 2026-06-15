@@ -4,103 +4,124 @@
 # Coordinate system: Y is up.  Objects are placed in world space.
 # Units are arbitrary — keep them consistent within a scene.
 
-name        = "Custom Scene"
+name        = "The Lighthouse"
 max_samples = 2000
 
 # ── Camera ────────────────────────────────────────────────────────────────────
-# focus_dist defaults to the distance between look_from and look_at if omitted.
-
 [camera]
-look_from  = [0, 2, 8]
-look_at    = [0, 1, 0]
-vfov       = 35.0       # vertical field of view in degrees
-aperture   = 0.05       # 0 = pinhole (no depth-of-field)
-move_speed = 0.2        # WASD speed in free-camera mode
+look_from  = [2, 4, 12]
+look_at    = [0, 3.5, 0]
+vfov       = 40.0
+aperture   = 0.04
+move_speed = 0.3
 
 # ── Background ────────────────────────────────────────────────────────────────
-# type = "physical"  →  sky + sun   (use [arrows] to rotate sun at runtime)
-# type = "solid"     →  flat colour  (add [[lights]] for illumination)
-# type = "stars"     →  procedural star field (night sky)
-
 [background]
-type          = "solid"
-color 		  = [0.48, 0.42, 0.36]
-sun_azimuth   = 30.0    # degrees clockwise from +Z when viewed from above
-sun_elevation = 45.0    # degrees above the horizon  (0 = horizon, 90 = zenith)
+type          = "physical"
+sun_azimuth   = -55.0
+sun_elevation = 32.0
 
 # ── Objects ───────────────────────────────────────────────────────────────────
-# Each [[objects]] entry needs a `shape` and a `material`.
-#
 # Shapes:
-#   sphere    — center [x,y,z]  radius
-#   quad      — corner [x,y,z]  u [x,y,z]  v [x,y,z]
-#   box       — p_min [x,y,z]   p_max [x,y,z]
-#   cylinder  — center [x,y,z]  radius  height   (center = base, extends +Y)
-#   cone      — center [x,y,z]  radius  height   (center = base, apex = base+height)
+#   sphere         — center [x,y,z]  radius
+#   box            — p_min [x,y,z]   p_max [x,y,z]
+#   cylinder       — center [x,y,z]  radius  height
+#   cone           — center [x,y,z]  radius  height
+#   disk           — center [x,y,z]  normal [x,y,z]  radius
+#   infinite_plane — point [x,y,z]   normal [x,y,z]  (wave_amplitude  wave_scale)
 #
 # Materials:
-#   lambertian        — color [r,g,b]
-#   metal             — color [r,g,b]  fuzz (0=mirror … 1=rough)
-#   dielectric        — ior  (glass≈1.5)
-#   spectral_dielectric — ior  dispersion (diamond: ior=2.42 dispersion=0.04)
-#   diffuse_light     — color [r,g,b]  (use values >1 for bright emission)
-#   pbr               — albedo [r,g,b]  metallic  roughness
-#   pearl             — base_color  ior  film_thickness  orient_strength  film_scale
+#   lambertian          — color [r,g,b]
+#   metal               — color [r,g,b]  fuzz
+#   dielectric          — ior
+#   spectral_dielectric — ior  dispersion
+#   diffuse_light       — color [r,g,b]  (>1 = HDR bright)
+#   pbr                 — albedo [r,g,b]  metallic  roughness
+#   pearl               — film_thickness  film_scale  orient_strength
 
-# Ground — large sphere acting as a flat floor
+# ── Ocean ─────────────────────────────────────────────────────────────────────
+# Wavy dielectric plane: Fresnel reflections at grazing angles, refracted
+# rocky seafloor visible straight-on.  wave_amplitude in world units;
+# wave_scale controls ripple frequency (higher = choppier).
 [[objects]]
-shape    = { type = "sphere", center = [0, -1000, 0], radius = 1000 }
-material = { type = "lambertian", color = [0.48, 0.42, 0.36] }
+shape    = { type = "infinite_plane", point = [0, -0.1, 0], normal = [0, 1, 0], wave_amplitude = 0.04, wave_scale = 2.2 }
+material = { type = "dielectric", ior = 1.33 }
 
-# Left — glass sphere
+# ── Rocky island ──────────────────────────────────────────────────────────────
+# A wide basalt platform — its top face (y = 0) pokes just above the waterline.
+# The rocky sides visible through the water.
 [[objects]]
-shape    = { type = "sphere", center = [-2, 1, 0], radius = 1.0 }
-material = { type = "dielectric", ior = 1.5 }
+shape    = { type = "box", p_min = [-6, -8, -6], p_max = [6, 0, 6] }
+material = { type = "lambertian", color = [0.42, 0.38, 0.32] }
 
-# Centre — matte sphere
+# ══════════════════════════════════════════════════════════════════════════════
+# LIGHTHOUSE
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Stone base — squat box at the tower's foot
 [[objects]]
-shape    = { type = "sphere", center = [0, 1, 0], radius = 1.0 }
-material = { type = "lambertian", color = [0.8, 0.3, 0.1] }
+shape    = { type = "box", p_min = [-0.9, 0, -0.9], p_max = [0.9, 1.2, 0.9] }
+material = { type = "lambertian", color = [0.88, 0.84, 0.78] }
 
-# Right — brushed metal sphere
+# Tower — tall white cylinder
 [[objects]]
-shape    = { type = "sphere", center = [2, 1, 0], radius = 1.0 }
-material = { type = "metal", color = [0.9, 0.8, 0.7], fuzz = 0.02 }
+shape    = { type = "cylinder", center = [0, 1.2, 0], radius = 0.40, height = 5.0 }
+material = { type = "lambertian", color = [0.93, 0.91, 0.88] }
 
-# Back — pearl sphere
+# Watch gallery — wider dark metal band near the top
 [[objects]]
-shape    = { type = "sphere", center = [0, 1, -3], radius = 1.0 }
-material = { type = "pearl", orient_strength = 0.4, film_scale = 4.0 }
+shape    = { type = "cylinder", center = [0, 6.2, 0], radius = 0.54, height = 0.30 }
+material = { type = "metal", color = [0.16, 0.16, 0.18], fuzz = 0.05 }
 
-# PBR box on the right side
+# Fresnel lamp — glass sphere that bends the light
 [[objects]]
-shape    = { type = "box", p_min = [4, 0, -0.6], p_max = [5, 1.8, 0.6] }
-material = { type = "pbr", albedo = [0.6, 0.2, 0.15], roughness = 0.25, metallic = 0.6 }
+shape    = { type = "sphere", center = [0, 6.85, 0], radius = 0.35 }
+material = { type = "dielectric", ior = 1.48 }
+
+# Light beam — emissive disk just in front of the lens
+[[objects]]
+shape    = { type = "disk", center = [0, 6.85, 0.36], normal = [0, 0.05, 1], radius = 0.20 }
+material = { type = "diffuse_light", color = [7.0, 5.5, 3.0] }
+
+# Roof — red-painted iron cone
+[[objects]]
+shape    = { type = "cone", center = [0, 7.20, 0], radius = 0.60, height = 0.88 }
+material = { type = "pbr", albedo = [0.68, 0.09, 0.05], roughness = 0.40, metallic = 0.30 }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KEEPER'S COTTAGE
+# ══════════════════════════════════════════════════════════════════════════════
 
 [[objects]]
-  shape    = { type = "cylinder", center = [3, 0, -1], radius = 0.4, height = 2.0 }
-  material = { type = "metal", color = [0.8, 0.8, 0.9], fuzz = 0.0 }
+shape    = { type = "box", p_min = [2.4, 0, -1.4], p_max = [5.6, 2.2, 1.4] }
+material = { type = "lambertian", color = [0.76, 0.60, 0.42] }
 
 [[objects]]
-shape    = { type = "cone", center = [-4, 0, 0], radius = 1, height = 2 }
-material = { type = "lambertian", color = [0.7, 0.3, 0.2] }
+shape    = { type = "cylinder", center = [5.0, 2.2, 0.7], radius = 0.19, height = 1.05 }
+material = { type = "lambertian", color = [0.38, 0.30, 0.22] }
 
-# ── Lights ────────────────────────────────────────────────────────────────────
-# Lights are DiffuseLight quads added to both the world and the NEE (next-event
-# estimation) sampler.  Omit this section when using type = "physical" background
-# — the sky provides enough illumination.  Required for type = "solid" scenes.
-#
-# [[lights]]
-# corner = [213, 554, 227]
-# u      = [300, 0, 0]
-# v      = [0, 0, 265]
-# color  = [7.0, 7.0, 7.0]   # HDR intensity
+# ══════════════════════════════════════════════════════════════════════════════
+# OCEAN DETAILS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Mooring post — tapered wooden piling at the island edge
+[[objects]]
+shape    = { type = "cone", center = [-5.5, 0, 0.5], radius = 0.22, height = 1.10 }
+material = { type = "pbr", albedo = [0.28, 0.18, 0.10], roughness = 0.75, metallic = 0.0 }
+
+# Pearl buoy — floating in the ocean in front of the island (left)
+[[objects]]
+shape    = { type = "sphere", center = [-4.5, 0.42, 7.5], radius = 0.52 }
+material = { type = "pearl", film_thickness = 500.0, film_scale = 3.5, orient_strength = 0.50 }
+
+# Spectral glass float — fishing-net float bobbing in the foreground (right)
+[[objects]]
+shape    = { type = "sphere", center = [2.8, 0.32, 7.8], radius = 0.42 }
+material = { type = "spectral_dielectric", ior = 1.76, dispersion = 0.08 }
 
 # ── Caustics ──────────────────────────────────────────────────────────────────
-# Photon-map caustics for refractive objects.  Only effective with
-# type = "physical" background (uses the sun as the photon emitter).
-# Enabling this adds ~1 s of build time at startup / reload.
+# Uncomment for caustic pools under the glass float and Fresnel lamp.
 #
 # [caustics]
 # enabled       = true
-# gather_radius = 0.15   # match the spatial scale of your scene
+# gather_radius = 0.12

@@ -13,6 +13,8 @@ mod sphere;
 mod quad;
 mod cylinder;
 mod cone;
+mod disk;
+mod plane;
 mod transform;
 mod camera;
 mod renderer;
