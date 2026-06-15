@@ -56,10 +56,11 @@ fn sky_color(dir: Vec3, sun_dir: Vec3) -> Color {
 
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
 pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, photon_map: Option<&PhotonMap>, rng: &mut impl Rng) -> Color {
-    let mut throughput    = Color::new(1.0, 1.0, 1.0);
-    let mut color         = Color::default();
-    let mut ray           = *r;
-    let mut prev_specular = true; // camera ray: always add emission on first hit
+    let mut throughput      = Color::new(1.0, 1.0, 1.0);
+    let mut color           = Color::default();
+    let mut ray             = *r;
+    let mut prev_specular   = true; // camera ray: always add full emission on first hit
+    let mut prev_mis_w_brdf = 1.0f32; // MIS weight for emission from the previous BRDF sample
 
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
@@ -68,19 +69,26 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                 break;
             }
             Some(rec) => {
-                // Add emission only when the previous bounce was specular (or the
-                // camera ray). After a diffuse bounce, direct light is handled below
-                // by explicit NEE, so we skip emitted() to avoid double-counting.
-                if prev_specular || lights.objects.is_empty() {
-                    color += throughput * rec.mat.emitted(rec.u, rec.v, rec.p);
-                }
+                // Emission weight:
+                //   1.0  — camera ray or after a specular bounce (no NEE was done, no
+                //          double-counting risk).
+                //   MIS  — after a diffuse bounce: the previous iteration already added
+                //          a NEE estimate for direct lighting, so the BRDF-sample path
+                //          that lands on the light gets the complementary MIS weight
+                //          w_brdf = p_brdf / (p_brdf + p_nee) to avoid double-counting
+                //          while still capturing unsampled directions.
+                //   1.0  — no area lights in the scene (no NEE at all).
+                let emit_w = if prev_specular || lights.objects.is_empty() { 1.0 }
+                             else { prev_mis_w_brdf };
+                color += throughput * rec.mat.emitted(rec.u, rec.v, rec.p) * emit_w;
 
                 let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
 
                 if sr.skip_pdf {
-                    throughput    *= sr.attenuation;
-                    ray            = sr.ray;
-                    prev_specular  = true;
+                    throughput      *= sr.attenuation;
+                    ray              = sr.ray;
+                    prev_specular    = true;
+                    prev_mis_w_brdf  = 1.0;
                 } else {
                     // Caustic injection: add photon-map irradiance at this diffuse
                     // surface. The photon map stores only caustic paths (at least one
@@ -93,29 +101,29 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                         }
                     }
 
-                    // ── Direct lighting (explicit NEE) ────────────────────────────
-                    // Sample one direction toward an area light, cast a shadow ray
-                    // with any_hit() (exits at the first blocker — much cheaper than
-                    // finding the closest hit), and accumulate if unoccluded.
+                    // ── Direct lighting: explicit NEE with MIS balance heuristic ──
+                    // w_nee = p_nee / (p_nee + p_brdf)
+                    // The estimator simplifies to: attenuation * brdf * L_e / (p_nee + p_brdf)
                     if !lights.objects.is_empty() {
                         let lpdf      = HittablePdf::new(lights, rec.p, ray.time);
                         let light_dir = lpdf.generate(rng);
                         let shadow    = Ray::new_at_time(rec.p, light_dir, ray.time);
                         if let Some(lrec) = lights.hit(&shadow, 0.001, f32::INFINITY) {
-                            // Stop the shadow ray just before the light surface so we
-                            // don't re-intersect the light itself.
                             if !world.any_hit(&shadow, 0.001, lrec.t * (1.0 - 1e-4)) {
                                 let l_pdf = lpdf.value(light_dir);
                                 let brdf  = rec.mat.scattering_pdf(&ray, &rec, &shadow);
-                                if l_pdf > 0.0 && brdf > 0.0 {
-                                    let emitted = lrec.mat.emitted(lrec.u, lrec.v, lrec.p);
-                                    color += throughput * sr.attenuation * brdf * emitted / l_pdf;
+                                let mis_d = l_pdf + brdf; // balance heuristic denominator
+                                if mis_d > 0.0 && brdf > 0.0 {
+                                    let nee_emit = lrec.mat.emitted(lrec.u, lrec.v, lrec.p);
+                                    color += throughput * sr.attenuation * brdf * nee_emit / mis_d;
                                 }
                             }
                         }
                     }
 
-                    // ── Indirect lighting (cosine-weighted BRDF sample) ───────────
+                    // ── Indirect lighting: cosine-weighted BRDF sample ────────────
+                    // Also compute the MIS weight for the case where this ray hits a
+                    // light next iteration: w_brdf = p_brdf / (p_brdf + p_nee).
                     let cpdf     = CosinePdf::new(rec.normal);
                     let ind_dir  = cpdf.generate(rng);
                     let pdf_val  = cpdf.value(ind_dir);
@@ -124,9 +132,13 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     let scat_pdf  = rec.mat.scattering_pdf(&ray, &rec, &scattered);
                     if scat_pdf <= 0.0 { break; }
 
-                    throughput   *= sr.attenuation * (scat_pdf / pdf_val);
-                    ray           = scattered;
-                    prev_specular = false;
+                    let nee_pdf_for_ind = if lights.objects.is_empty() { 0.0 }
+                                         else { lights.pdf_value(rec.p, ind_dir, ray.time) };
+                    prev_mis_w_brdf = pdf_val / (pdf_val + nee_pdf_for_ind).max(1e-8);
+
+                    throughput    *= sr.attenuation * (scat_pdf / pdf_val);
+                    ray            = scattered;
+                    prev_specular  = false;
                 }
 
                 if depth >= 2 {
