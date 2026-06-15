@@ -27,6 +27,7 @@ mod photon;
 #[cfg(feature = "denoise")]
 mod denoise;
 
+use rayon::prelude::*;
 use vec3::Color;
 use camera::CameraState;
 #[cfg(not(feature = "denoise"))]
@@ -515,9 +516,9 @@ fn main() {
                                  scene.world.as_ref(), bg, &scene.lights, bg_scale,
                                  scene.photon_map.as_deref());
 
-                    for i in 0..(win_w * win_h) as usize {
-                        accumulator[i] += scratch[i];
-                    }
+                    accumulator.par_iter_mut()
+                        .zip(scratch.par_iter())
+                        .for_each(|(a, s)| *a += *s);
                     samples += 1;
 
                     // Build the aux buffers once per render sequence (first sample),
@@ -569,22 +570,27 @@ fn main() {
                     let denoised_guard = denoised.lock().unwrap();
                     let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
                     let sc = 1.0 / samples.max(1) as f32;
-                    for i in 0..(win_w * win_h) as usize {
-                        let raw = accumulator[i] * sc;
-                        let color = if use_denoised {
-                            denoised_guard[i] * denoise_blend + raw * (1.0 - denoise_blend)
-                        } else {
-                            raw
-                        };
-                        buffer[i] = to_rgb_u32(color, exposure);
+                    let buf: &mut [u32] = &mut buffer;
+                    if use_denoised {
+                        buf.par_iter_mut()
+                            .zip(accumulator.par_iter())
+                            .zip(denoised_guard.par_iter())
+                            .for_each(|((dst, &acc), &den)| {
+                                let raw = acc * sc;
+                                *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure);
+                            });
+                    } else {
+                        buf.par_iter_mut()
+                            .zip(accumulator.par_iter())
+                            .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
                     }
                 }
                 #[cfg(not(feature = "denoise"))]
                 {
                     let sc = 1.0 / samples.max(1) as f32;
-                    for i in 0..(win_w * win_h) as usize {
-                        buffer[i] = to_rgb_u32(accumulator[i] * sc, exposure);
-                    }
+                    (*buffer).par_iter_mut()
+                        .zip(accumulator.par_iter())
+                        .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
                 }
                 buffer.present().unwrap();
             }
