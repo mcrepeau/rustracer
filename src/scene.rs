@@ -221,7 +221,7 @@ impl SceneData {
             }
         }
 
-        self.rebuild();
+        self.rebuild_world();
 
         if self.gravity > 0.0 {
             let at_rest = self.dynamic.iter().all(|ds| {
@@ -233,7 +233,7 @@ impl SceneData {
         true
     }
 
-    pub fn rebuild(&mut self) {
+    fn rebuild_world(&mut self) {
         if self.static_objects.is_empty() && self.dynamic.is_empty() { return; }
 
         // Build the static BVH once and reuse it on every subsequent tick.
@@ -243,12 +243,22 @@ impl SceneData {
             self.cached_static = Some(Arc::new(BvhTree::from_list(sl)));
         }
 
+        // Static-only scene: skip the outer BvhTree wrap.
+        if self.dynamic.is_empty() {
+            if let Some(s) = &self.cached_static { self.world = Arc::clone(s); }
+            return;
+        }
+
         let mut list = HittableList::new();
         if let Some(s) = &self.cached_static { list.objects.push(Arc::clone(s)); }
         for ds in &self.dynamic {
             list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
         }
         self.world = Arc::new(BvhTree::from_list(list));
+    }
+
+    pub fn rebuild(&mut self) {
+        self.rebuild_world();
         self.rebuild_caustics();
     }
 

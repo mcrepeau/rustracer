@@ -391,6 +391,7 @@ fn main() {
                                 }
                                 VirtualKeyCode::R if scene_idx == 0 => {
                                     scenes[0] = build_random_scene();
+                                    physics_accum = Duration::ZERO;
                                     cam_dirty = true;
                                 }
                                 VirtualKeyCode::R if scene_idx == 3 => {
@@ -506,9 +507,7 @@ fn main() {
                     let scene = &scenes[scene_idx];
                     let bg    = scene.background;
 
-                    // bg_scale = 1/exposure keeps the star background at constant
-                    // apparent brightness regardless of the current exposure setting.
-                    let bg_scale = 1.0 / exposure;
+                    let bg_scale = 1.0;
                     render_tiles(&mut scratch, samples, strata, win_w, win_h, &camera,
                                  scene.world.as_ref(), bg, &scene.lights, bg_scale,
                                  scene.photon_map.as_deref());
