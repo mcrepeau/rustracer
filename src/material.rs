@@ -84,11 +84,53 @@ fn schlick_color(cos_theta: f32, f0: Color) -> Color {
     f0 + (Color::new(1.0, 1.0, 1.0) - f0) * t
 }
 
-/// Smith G1 term for GGX (height-correlated uncorrelated form).
+/// Smith G1 term for isotropic GGX.
 fn smith_g1(cos_theta: f32, alpha: f32) -> f32 {
     let a2 = alpha * alpha;
     let c2 = cos_theta * cos_theta;
     2.0 * cos_theta / (cos_theta + (a2 + (1.0 - a2) * c2).sqrt())
+}
+
+/// Smith G1 for anisotropic GGX.
+/// `tx` / `ty` are dot(v, tangent) / dot(v, bitangent); `cos_theta` = dot(v, normal).
+fn smith_g1_aniso(cos_theta: f32, tx: f32, ty: f32, ax: f32, ay: f32) -> f32 {
+    let denom = cos_theta + (cos_theta*cos_theta + ax*ax*tx*tx + ay*ay*ty*ty).sqrt();
+    (2.0 * cos_theta / denom.max(1e-6)).clamp(0.0, 1.0)
+}
+
+/// Sample a microfacet normal from the anisotropic GGX VNDF (Heitz 2018).
+/// `wo_ts` is the outgoing direction in tangent space (z = dot(wo, n) > 0).
+/// Returns the microfacet normal in tangent space.
+fn vndf_sample_aniso(wo_ts: Vec3, ax: f32, ay: f32, xi1: f32, xi2: f32) -> Vec3 {
+    // Stretch wo into an isotropic hemisphere
+    let wh = Vec3::new(ax * wo_ts.x, ay * wo_ts.y, wo_ts.z).unit();
+
+    // Orthonormal basis around wh (T1 perpendicular to wh in the xy-plane)
+    let len = (wh.x * wh.x + wh.y * wh.y).sqrt();
+    let t1 = if len > 1e-6 {
+        Vec3::new(-wh.y / len, wh.x / len, 0.0)
+    } else {
+        Vec3::new(1.0, 0.0, 0.0)
+    };
+    let t2 = wh.cross(t1);
+
+    // Sample the projected area of the hemisphere cap (Heitz 2018, Algorithm 2)
+    let a  = 1.0 / (1.0 + wh.z);
+    let r  = xi1.sqrt();
+    let (p1, p2) = if xi2 < a {
+        let phi = xi2 / a * PI;
+        (r * phi.cos(), r * phi.sin())
+    } else {
+        let phi = PI + (xi2 - a) / (1.0 - a) * PI;
+        (r * phi.cos(), r * phi.sin() * wh.z)
+    };
+
+    // Compose sample on the unit hemisphere
+    let p3 = (1.0 - p1*p1 - p2*p2).max(0.0).sqrt();
+    let nh  = t1 * p1 + t2 * p2 + wh * p3;
+
+    // Unstretch → microfacet normal in tangent space
+    Vec3::new(ax * nh.x, ay * nh.y, nh.z.max(0.0)).unit()
 }
 
 /// Build a tangent + bitangent pair perpendicular to `n`.
@@ -262,21 +304,23 @@ impl Material for SSSMaterial {
 
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
 ///
-/// The specular lobe uses the GGX NDF (Trowbridge-Reitz) with Smith G2 shadowing
-/// and Schlick Fresnel.  Specular vs. diffuse is chosen each scatter event via
-/// Russian roulette with probability proportional to the Fresnel reflectance,
-/// keeping the estimator unbiased.
+/// For `anisotropy == 0` the specular lobe is isotropic GGX sampled from the NDF
+/// (Walter et al. 2007).  For `anisotropy > 0` anisotropic GGX is used, sampled
+/// from the Visible Normal Distribution Function (VNDF, Heitz 2018), which gives
+/// shorter highlight streaks aligned with the tangent frame.
 ///
 /// Parameters:
 /// - `albedo`: base colour — diffuse tint for dielectrics, F0 for metals.
-/// - `roughness`: 0 = perfect mirror, 1 = fully diffuse specular.  The actual
-///   α used internally is `roughness²` (perceptual remapping).
-/// - `metallic`: 0 = dielectric (F0 ≈ 0.04 gray, tinted diffuse), 1 = conductor
-///   (F0 = albedo, no diffuse).
+/// - `roughness`: 0 = perfect mirror, 1 = fully diffuse specular (α = roughness²).
+/// - `metallic`: 0 = dielectric (F0 ≈ 0.04, tinted diffuse), 1 = conductor (no diffuse).
+/// - `anisotropy`: 0 = isotropic, 1 = maximum elongation (brushed-metal look).
+/// - `anisotropy_angle`: rotates the highlight direction in the tangent plane (radians).
 pub struct PbrMaterial {
-    pub albedo:    Color,
-    pub roughness: f32,
-    pub metallic:  f32,
+    pub albedo:           Color,
+    pub roughness:        f32,
+    pub metallic:         f32,
+    pub anisotropy:       f32,
+    pub anisotropy_angle: f32,
 }
 
 impl Material for PbrMaterial {
@@ -301,29 +345,60 @@ impl Material for PbrMaterial {
         };
 
         if rng.gen::<f32>() < p_spec {
-            // ── GGX specular ──────────────────────────────────────────────────
-            let (t, b) = make_onb(n);
             let xi1: f32 = rng.gen();
             let xi2: f32 = rng.gen();
 
-            // Sample half-vector from GGX NDF (Walter et al. 2007 inverse CDF)
-            let cos_th = ((1.0 - xi2) / (xi2 * (alpha * alpha - 1.0) + 1.0)).max(0.0).sqrt();
-            let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
-            let phi    = 2.0 * PI * xi1;
-            let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
+            let (wi, weight) = if self.anisotropy > 1e-3 {
+                // ── Anisotropic GGX via VNDF (Heitz 2018) ────────────────────
+                // Disney parameterisation: aspect = sqrt(1 − 0.9·aniso)
+                // α_x < α   → smooth along tangent   → elongated highlight in t
+                // α_y > α   → rough along bitangent
+                let aspect = (1.0 - 0.9 * self.anisotropy).max(0.001_f32).sqrt();
+                let ax = alpha * aspect;
+                let ay = alpha / aspect;
 
-            let vo_h = wo.dot(h).max(0.0);
-            let wi   = (2.0 * vo_h * h - wo).unit();   // reflect wo about h
-            let cos_i = wi.dot(n);
-            if cos_i <= 0.0 { return None; }
+                // Tangent frame, optionally rotated by anisotropy_angle
+                let (t0, b0) = make_onb(n);
+                let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
+                let t = t0 * ca + b0 * sa;
+                let b = b0 * ca - t0 * sa;
 
-            let cos_h = h.dot(n).max(1e-6);
-            let g2    = smith_g1(cos_o, alpha) * smith_g1(cos_i, alpha);
-            let f     = schlick_color(vo_h, f0);
+                // Sample microfacet normal from the VNDF in tangent space
+                let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+                let m_ts  = vndf_sample_aniso(wo_ts, ax, ay, xi1, xi2);
+                let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
 
-            // Weight from PDF cancellation: F·G·(vo·h) / (cos_o · cos_h)
-            // Divide by p_spec to correct for Russian-roulette sampling.
-            let weight = f * (g2 * vo_h / (cos_o.max(1e-6) * cos_h));
+                let vo_h  = wo.dot(m).max(0.0);
+                let wi    = (2.0 * vo_h * m - wo).unit();
+                let cos_i = wi.dot(n);
+                if cos_i <= 0.0 { return None; }
+
+                // VNDF weight = F · G₁(wᵢ)  [with uncorrelated Smith G₂]
+                let wi_ts  = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
+                let g1_wi  = smith_g1_aniso(wi_ts.z, wi_ts.x, wi_ts.y, ax, ay);
+                let f      = schlick_color(vo_h, f0);
+                (wi, f * g1_wi)
+            } else {
+                // ── Isotropic GGX via NDF sampling (Walter et al. 2007) ──────
+                let (t, b) = make_onb(n);
+
+                let cos_th = ((1.0 - xi2) / (xi2 * (alpha * alpha - 1.0) + 1.0)).max(0.0).sqrt();
+                let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
+                let phi    = 2.0 * PI * xi1;
+                let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
+
+                let vo_h  = wo.dot(h).max(0.0);
+                let wi    = (2.0 * vo_h * h - wo).unit();
+                let cos_i = wi.dot(n);
+                if cos_i <= 0.0 { return None; }
+
+                let cos_h = h.dot(n).max(1e-6);
+                let g2    = smith_g1(cos_o, alpha) * smith_g1(cos_i, alpha);
+                let f     = schlick_color(vo_h, f0);
+                // Weight: F·G·(vo·h) / (cos_o · cos_h)
+                (wi, f * (g2 * vo_h / (cos_o.max(1e-6) * cos_h)))
+            };
+
             Some(ScatterRecord {
                 attenuation: weight / p_spec,
                 ray: Ray::scatter_from(rec.p, wi, r_in),

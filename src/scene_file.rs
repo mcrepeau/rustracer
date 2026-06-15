@@ -175,6 +175,10 @@ pub enum MaterialConfig {
         metallic:  f32,
         #[serde(default = "default_roughness")]
         roughness: f32,
+        #[serde(default)]
+        anisotropy: f32,
+        #[serde(default)]
+        anisotropy_angle: f32,
     },
     Pearl {
         #[serde(default = "default_pearl_color")]
@@ -401,8 +405,8 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
         MaterialConfig::DiffuseLight { color } =>
             Arc::new(DiffuseLight { emit: Texture::from(col(color)) }),
 
-        MaterialConfig::Pbr { albedo, metallic, roughness } =>
-            Arc::new(PbrMaterial { albedo: col(albedo), metallic, roughness }),
+        MaterialConfig::Pbr { albedo, metallic, roughness, anisotropy, anisotropy_angle } =>
+            Arc::new(PbrMaterial { albedo: col(albedo), metallic, roughness, anisotropy, anisotropy_angle }),
 
         MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale } =>
             Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale }),
