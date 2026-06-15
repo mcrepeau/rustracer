@@ -48,41 +48,41 @@ pub fn build_random_scene() -> SceneData {
     let diamond: Arc<dyn Hittable> = Arc::new(diamond_obj);
     let static_objects: Vec<Arc<dyn Hittable>> = vec![ground, diamond];
 
-    let mut dynamic: Vec<DynamicSphere> = Vec::new();
-
-    dynamic.push(DynamicSphere {
-        center: Point3::new( 0.0, 1.0, 0.0),
-        velocity: Vec3::default(),
-        radius: 1.0, mat: Arc::new(Dielectric { ir: 1.5 }),
-        restitution: 0.65, is_static: true,
-    });
-    dynamic.push(DynamicSphere {
-        center: Point3::new(-4.0, 1.0, 0.0),
-        velocity: Vec3::default(),
-        radius: 1.0,
-        mat: Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, metallic: 0.0 }),
-        restitution: 0.35, is_static: true,
-    });
-    dynamic.push(DynamicSphere {
-        center: Point3::new( 4.0, 1.0, 0.0),
-        velocity: Vec3::default(),
-        radius: 1.0,
-        mat: Arc::new(PbrMaterial { albedo: Color::new(0.7, 0.6, 0.5), roughness: 0.0, metallic: 1.0 }),
-        restitution: 0.80, is_static: true,
-    });
-    dynamic.push(DynamicSphere {
-        center: Point3::new(-2.0, 1.0, -2.0),
-        velocity: Vec3::default(),
-        radius: 1.0,
-        mat: Arc::new(PearlMaterial {
-            base_color:      Color::new(0.98, 0.93, 0.88),
-            ior:             1.56,
-            film_thickness:  450.0,
-            orient_strength: 0.30,
-            film_scale:      5.0,
-        }),
-        restitution: 0.50, is_static: true,
-    });
+    let mut dynamic: Vec<DynamicSphere> = vec![
+        DynamicSphere {
+            center: Point3::new( 0.0, 1.0, 0.0),
+            velocity: Vec3::default(),
+            radius: 1.0, mat: Arc::new(Dielectric { ir: 1.5 }),
+            restitution: 0.65, is_static: true,
+        },
+        DynamicSphere {
+            center: Point3::new(-4.0, 1.0, 0.0),
+            velocity: Vec3::default(),
+            radius: 1.0,
+            mat: Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, metallic: 0.0 }),
+            restitution: 0.35, is_static: true,
+        },
+        DynamicSphere {
+            center: Point3::new( 4.0, 1.0, 0.0),
+            velocity: Vec3::default(),
+            radius: 1.0,
+            mat: Arc::new(PbrMaterial { albedo: Color::new(0.7, 0.6, 0.5), roughness: 0.0, metallic: 1.0 }),
+            restitution: 0.80, is_static: true,
+        },
+        DynamicSphere {
+            center: Point3::new(-2.0, 1.0, -2.0),
+            velocity: Vec3::default(),
+            radius: 1.0,
+            mat: Arc::new(PearlMaterial {
+                base_color:      Color::new(0.98, 0.93, 0.88),
+                ior:             1.56,
+                film_thickness:  450.0,
+                orient_strength: 0.30,
+                film_scale:      5.0,
+            }),
+            restitution: 0.50, is_static: true,
+        },
+    ];
 
     // Glass marbles â€” small glass spheres falling near the diamond.
     // Two flavours:
