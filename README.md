@@ -1,6 +1,6 @@
 # rustracer
 
-A physically-based path tracer with interactive camera controls. Built with Rust, featuring an 8-wide QBVH accelerator (AVX2), SIMD intersection tests, importance sampling, and adaptive rendering.
+A physically-based path tracer with interactive camera controls. Built with Rust, featuring an 8-wide QBVH accelerator (AVX2), explicit next-event estimation with shadow rays, and adaptive rendering.
 
 ## Build & Run
 
@@ -51,11 +51,12 @@ Press **N** in-app to toggle denoising. The denoiser runs in a background thread
 
 ## Features
 
-- Path tracing with full global illumination
+- Unidirectional path tracing with full global illumination
+- Explicit next-event estimation (NEE): a shadow ray is cast toward area lights at every diffuse bounce via a fast `any_hit()` BVH traversal, giving correct direct lighting from the first sample — no accumulation required
+- Indirect illumination via cosine-weighted hemisphere sampling
 - QBVH accelerator: 8-wide with AVX2, 4-wide with SSE2/NEON — compile-time selected
 - Parallelised rendering, accumulation, and tone-mapping via Rayon
 - Depth of field and motion blur
-- Importance sampling: cosine-weighted diffuse + area light NEE
 - Adaptive sampling with perceptual variance threshold
 - Optional OIDN denoising with adjustable blend (`--features denoise`)
 - Physics simulation with sphere collisions and uniform-grid broad-phase
@@ -78,6 +79,8 @@ Custom scenes can be loaded from TOML files; see `scenes/` for examples.
 
 - Release builds use `target-cpu=native`, fat LTO, and single codegen unit
 - The QBVH node width (8 vs 4) is selected at compile time via `#[cfg(target_feature = "avx2")]`
+- `any_hit()` BVH traversal skips child sorting and exits at the first leaf hit — used exclusively for shadow occlusion queries where the closest intersection is irrelevant
+- Direct and indirect lighting are computed with separate rays per diffuse bounce; `emitted()` is only accumulated on camera rays and after specular bounces to avoid double-counting with NEE
 - BVH rebuilds automatically each tick when physics are active; static geometry is cached
 - Adaptive sampling uses relative luminance variance per tile for consistent quality
 - The denoiser runs on a background thread and blends with the raw accumulation buffer
