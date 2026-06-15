@@ -382,8 +382,8 @@ fn main() {
                                     window.request_redraw();
                                 }
                                 VirtualKeyCode::Return => {
-                                    let pausing = !scenes[scene_idx].paused;
-                                    scenes[scene_idx].paused = pausing;
+                                    let pausing = !scenes[scene_idx].physics.paused;
+                                    scenes[scene_idx].physics.paused = pausing;
                                     if pausing {
                                         scenes[scene_idx].rebuild();
                                         reset_accum!();
@@ -443,7 +443,7 @@ fn main() {
                     if pressed.contains(&VirtualKeyCode::Space)  { cam_state.pos.y += spd;       moved = true; }
                     if pressed.contains(&VirtualKeyCode::LShift) { cam_state.pos.y -= spd;       moved = true; }
                     if moved {
-                        for bbox in &scenes[scene_idx].colliders {
+                        for bbox in &scenes[scene_idx].physics.colliders {
                             resolve_camera_aabb(&mut cam_state.pos, CAM_RADIUS, bbox);
                         }
                         cam_dirty = true;
@@ -477,12 +477,12 @@ fn main() {
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
                     let scene    = &scenes[scene_idx];
                     let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
-                    let motion_hint = if scene.gravity > 0.0 {
-                        if scene.settled     { "  settled — [R] restart" }
-                        else if scene.paused { "  PAUSED — [Enter] resume  [R] restart" }
-                        else                 { "  [Enter] pause  [R] restart" }
-                    } else if !scene.dynamic.is_empty() {
-                        if scene.paused { "  PAUSED — [Enter] resume" } else { "  [Enter] pause" }
+                    let motion_hint = if scene.physics.gravity > 0.0 {
+                        if scene.physics.settled     { "  settled — [R] restart" }
+                        else if scene.physics.paused { "  PAUSED — [Enter] resume  [R] restart" }
+                        else                         { "  [Enter] pause  [R] restart" }
+                    } else if !scene.physics.dynamic.is_empty() {
+                        if scene.physics.paused { "  PAUSED — [Enter] resume" } else { "  [Enter] pause" }
                     } else { "" };
                     #[cfg(feature = "denoise")]
                     let oidn_hint = if oidn_on {

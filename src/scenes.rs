@@ -7,7 +7,7 @@ use crate::material::{Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Meta
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
-use crate::scene::{DynamicSphere, SceneData};
+use crate::scene::{DynamicSphere, PhysicsState, SceneData};
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::diamond::Diamond;
@@ -186,20 +186,22 @@ pub fn build_random_scene() -> SceneData {
             pos: Point3::new(13.0, 2.0, 3.0), lookat: Point3::new(0.0, 0.0, 0.0),
             vfov: 20.0, aperture: 0.1, focus_dist: 10.0, move_speed: 0.3,
         },
-        static_objects,
-        dynamic,
-        bounds:         None,
-        colliders:         vec![],
-        convex_colliders:  vec![diamond_planes],
-        gravity:           0.03,
-        settled:        false,
-        paused:         false,
         max_samples:    2000,
         enable_caustics:       true,
         caustic_quad:          None,
         caustic_gather_radius: 0.15,
         photon_map:            None,
-        cached_static:         None,
+        physics: PhysicsState {
+            static_objects,
+            dynamic,
+            bounds:           None,
+            colliders:        vec![],
+            convex_colliders: vec![diamond_planes],
+            gravity:          0.03,
+            settled:          false,
+            paused:           false,
+            cached_static:    None,
+        },
     }
 }
 
@@ -265,20 +267,22 @@ pub fn build_cornell_box() -> SceneData {
             pos: Point3::new(278.0, 278.0, -800.0), lookat: Point3::new(278.0, 278.0, 0.0),
             vfov: 40.0, aperture: 0.0, focus_dist: 10.0, move_speed: 8.0,
         },
-        static_objects,
-        dynamic,
-        bounds:            Some(bounds),
-        colliders:         vec![tall_bbox, short_bbox],
-        convex_colliders:  vec![],
-        gravity:           0.0,
-        settled:        false,
-        paused:         false,
         max_samples:    2000,
         enable_caustics:       false,
         caustic_quad:          None,
         caustic_gather_radius: 0.15,
         photon_map:            None,
-        cached_static:         None,
+        physics: PhysicsState {
+            static_objects,
+            dynamic,
+            bounds:           Some(bounds),
+            colliders:        vec![tall_bbox, short_bbox],
+            convex_colliders: vec![],
+            gravity:          0.0,
+            settled:          false,
+            paused:           false,
+            cached_static:    None,
+        },
     }
 }
 
@@ -423,20 +427,22 @@ pub fn build_nextweek_scene() -> SceneData {
             focus_dist: 10.0,
             move_speed: 8.0,
         },
-        static_objects:   vec![],
-        dynamic:          vec![],
-        bounds:           None,
-        colliders:        vec![],
-        convex_colliders: vec![],
-        gravity:          0.0,
-        settled:        false,
-        paused:         false,
         max_samples:    2000,
         enable_caustics:       true,
         caustic_quad:          Some(caustic_quad),
         caustic_gather_radius: 10.0,
         photon_map:            None,
-        cached_static:         None,
+        physics: PhysicsState {
+            static_objects:   vec![],
+            dynamic:          vec![],
+            bounds:           None,
+            colliders:        vec![],
+            convex_colliders: vec![],
+            gravity:          0.0,
+            settled:          false,
+            paused:           false,
+            cached_static:    None,
+        },
     };
     // Static scene: rebuild() is never called from tick(), so build the
     // photon map once here at construction time.

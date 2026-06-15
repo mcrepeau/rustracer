@@ -17,22 +17,33 @@ pub struct DynamicSphere {
     pub is_static:   bool,
 }
 
+// ── Physics ───────────────────────────────────────────────────────────────────
+
+/// All simulation state for a physics-driven scene.
+pub struct PhysicsState {
+    pub static_objects:   Vec<Arc<dyn Hittable>>,
+    pub dynamic:          Vec<DynamicSphere>,
+    pub bounds:           Option<Aabb>,
+    pub colliders:        Vec<Aabb>,
+    /// Convex polyhedra as lists of half-planes (outward normal, offset).
+    /// Spheres are kept outside via `bounce_sphere_off_convex`.
+    pub convex_colliders: Vec<Vec<(Vec3, f32)>>,
+    pub gravity:          f32,
+    pub settled:          bool,
+    pub paused:           bool,
+    /// BVH over `static_objects` and `is_static` dynamic spheres, built once
+    /// on the first `build_world` call and reused on every subsequent tick.
+    pub(crate) cached_static: Option<Arc<dyn Hittable>>,
+}
+
+// ── Scene ─────────────────────────────────────────────────────────────────────
+
 pub struct SceneData {
     pub world:          Arc<dyn Hittable>,
     pub lights:         HittableList,
     pub background:     Background,
     pub name:           &'static str,
     pub cam_init:       SceneCameraParams,
-    pub static_objects: Vec<Arc<dyn Hittable>>,
-    pub dynamic:        Vec<DynamicSphere>,
-    pub bounds:         Option<Aabb>,
-    pub colliders:         Vec<Aabb>,
-    /// Convex polyhedra as lists of half-planes (outward normal, offset).
-    /// Spheres are kept outside via `bounce_sphere_off_convex`.
-    pub convex_colliders:  Vec<Vec<(Vec3, f32)>>,
-    pub gravity:        f32,
-    pub settled:        bool,
-    pub paused:         bool,
     pub max_samples:    u32,
     /// Enable caustic photon mapping for this scene.
     pub enable_caustics: bool,
@@ -44,10 +55,10 @@ pub struct SceneData {
     pub caustic_gather_radius: f32,
     /// Caustic photon map, rebuilt after every `rebuild()` when enabled.
     pub photon_map:      Option<Arc<PhotonMap>>,
-    /// BVH over `static_objects`, built once on the first `rebuild()` call and
-    /// reused every subsequent tick so static geometry is never re-partitioned.
-    pub(crate) cached_static: Option<Arc<dyn Hittable>>,
+    pub physics:         PhysicsState,
 }
+
+// ── Collision helpers ─────────────────────────────────────────────────────────
 
 /// Sphere-vs-AABB collision: push the sphere out along the axis of minimum
 /// penetration and reflect its velocity away from the box face.
@@ -134,8 +145,12 @@ pub fn resolve_camera_aabb(pos: &mut Point3, radius: f32, bbox: &Aabb) {
     }
 }
 
-impl SceneData {
-    pub fn tick(&mut self) -> bool {
+// ── PhysicsState impl ─────────────────────────────────────────────────────────
+
+impl PhysicsState {
+    /// Advance the simulation by one tick.  Returns `true` when a step
+    /// executed and the world geometry may have changed.
+    pub fn step(&mut self) -> bool {
         if self.dynamic.is_empty() || self.paused { return false; }
         if self.settled { return false; }
 
@@ -221,8 +236,6 @@ impl SceneData {
             }
         }
 
-        self.rebuild_world();
-
         if self.gravity > 0.0 {
             let at_rest = self.dynamic.iter().all(|ds| {
                 ds.is_static || ds.velocity.length_squared() < 1e-4
@@ -233,8 +246,12 @@ impl SceneData {
         true
     }
 
-    fn rebuild_world(&mut self) {
-        if self.static_objects.is_empty() && self.dynamic.is_empty() { return; }
+    /// Build the world BVH from current state.  Returns `None` when both
+    /// `static_objects` and `dynamic` are empty (caller should leave the world
+    /// BVH it already has — the scene was built externally and never needs a
+    /// physics-driven rebuild).
+    fn build_world(&mut self) -> Option<Arc<dyn Hittable>> {
+        if self.static_objects.is_empty() && self.dynamic.is_empty() { return None; }
 
         // Build the static BVH once and reuse it on every subsequent tick.
         // is_static dynamic spheres never move, so they are included here too.
@@ -251,8 +268,7 @@ impl SceneData {
 
         // All spheres are static: world = cached_static, no outer wrap needed.
         if self.dynamic.iter().all(|ds| ds.is_static) {
-            if let Some(s) = &self.cached_static { self.world = Arc::clone(s); }
-            return;
+            return self.cached_static.as_ref().map(Arc::clone);
         }
 
         let mut list = HittableList::new();
@@ -260,16 +276,26 @@ impl SceneData {
         for ds in &self.dynamic {
             if !ds.is_static { list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat))); }
         }
-        self.world = Arc::new(BvhTree::from_list(list));
+        Some(Arc::new(BvhTree::from_list(list)))
+    }
+}
+
+// ── SceneData impl ────────────────────────────────────────────────────────────
+
+impl SceneData {
+    pub fn tick(&mut self) -> bool {
+        if !self.physics.step() { return false; }
+        if let Some(w) = self.physics.build_world() { self.world = w; }
+        true
     }
 
     pub fn rebuild(&mut self) {
-        self.rebuild_world();
+        if let Some(w) = self.physics.build_world() { self.world = w; }
         self.rebuild_caustics();
     }
 
     /// Rebuild only the photon map, reusing the current world BVH.
-    /// Call this after sun-direction changes as well as after physics ticks.
+    /// Call this after sun-direction changes as well as after explicit rebuilds.
     pub fn rebuild_caustics(&mut self) {
         if !self.enable_caustics { return; }
         let r     = self.caustic_gather_radius;

@@ -14,7 +14,7 @@ use crate::disk::Disk;
 use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
 use crate::renderer::Background;
-use crate::scene::SceneData;
+use crate::scene::{PhysicsState, SceneData};
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::vec3::{Color, Point3, Vec3};
@@ -269,20 +269,22 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         background,
         name,
         cam_init,
-        static_objects,
-        dynamic:       Vec::new(),
-        bounds:        None,
-        colliders:     Vec::new(),
-        convex_colliders: Vec::new(),
-        gravity:       0.0,
-        settled:       false,
-        paused:        false,
         max_samples:   file.max_samples,
         enable_caustics,
         caustic_quad:          None,
         caustic_gather_radius,
         photon_map:    None,
-        cached_static: None,
+        physics: PhysicsState {
+            static_objects,
+            dynamic:          Vec::new(),
+            bounds:           None,
+            colliders:        Vec::new(),
+            convex_colliders: Vec::new(),
+            gravity:          0.0,
+            settled:          false,
+            paused:           false,
+            cached_static:    None,
+        },
     };
     scene.rebuild();
     Ok(scene)
