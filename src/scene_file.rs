@@ -18,6 +18,7 @@ use crate::scene::{PhysicsState, SceneData};
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::vec3::{Color, Point3, Vec3};
+use crate::volume::{ConstantMedium, NoiseMedium};
 
 // ── Serde types ───────────────────────────────────────────────────────────────
 
@@ -84,15 +85,17 @@ fn default_turbidity()     -> f32 {  3.0 }
 #[derive(Deserialize)]
 pub struct ObjectConfig {
     pub shape:    ShapeConfig,
-    pub material: MaterialConfig,
+    /// Required for surface shapes; omit (or leave out entirely) for volume shapes.
+    #[serde(default)]
+    pub material: Option<MaterialConfig>,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ShapeConfig {
-    Sphere   { center: [f32; 3], radius: f32 },
-    Quad     { corner: [f32; 3], u: [f32; 3], v: [f32; 3] },
-    Box      { p_min:  [f32; 3], p_max: [f32; 3] },
+    Sphere        { center: [f32; 3], radius: f32 },
+    Quad          { corner: [f32; 3], u: [f32; 3], v: [f32; 3] },
+    Box           { p_min:  [f32; 3], p_max: [f32; 3] },
     Cylinder      { center: [f32; 3], radius: f32, height: f32 },
     Cone          { center: [f32; 3], radius: f32, height: f32 },
     Disk          { center: [f32; 3], normal: [f32; 3], radius: f32 },
@@ -103,6 +106,47 @@ pub enum ShapeConfig {
         wave_amplitude: f32,
         #[serde(default = "default_wave_scale")]
         wave_scale: f32,
+    },
+    // ── Volume shapes — `material` field is ignored; color+density are inline ──
+    /// Uniform-density participating medium enclosed in a sphere.
+    /// `g`: Henyey-Greenstein asymmetry (0 = isotropic, 0.85 = cloud droplets).
+    ConstantVolumeSphere {
+        center: [f32; 3], radius: f32, density: f32, color: [f32; 3],
+        #[serde(default)] g: f32,
+    },
+    /// Uniform-density participating medium enclosed in an axis-aligned box.
+    ConstantVolumeBox {
+        p_min: [f32; 3], p_max: [f32; 3], density: f32, color: [f32; 3],
+        #[serde(default)] g: f32,
+    },
+    /// Perlin-noise–driven heterogeneous medium enclosed in a sphere.
+    /// `noise_scale` controls feature size (larger = smaller features).
+    /// `threshold` [0, 1) clips the noise: 0 = full volume, 0.5 = patchy clouds.
+    /// `g`: Henyey-Greenstein asymmetry (0 = isotropic, 0.85 = cloud droplets).
+    NoiseVolumeSphere {
+        center:  [f32; 3],
+        radius:  f32,
+        density: f32,
+        color:   [f32; 3],
+        #[serde(default = "default_noise_scale")]
+        noise_scale: f32,
+        #[serde(default)]
+        threshold:   f32,
+        #[serde(default)]
+        g:           f32,
+    },
+    /// Perlin-noise–driven heterogeneous medium enclosed in an axis-aligned box.
+    NoiseVolumeBox {
+        p_min:   [f32; 3],
+        p_max:   [f32; 3],
+        density: f32,
+        color:   [f32; 3],
+        #[serde(default = "default_noise_scale")]
+        noise_scale: f32,
+        #[serde(default)]
+        threshold:   f32,
+        #[serde(default)]
+        g:           f32,
     },
 }
 
@@ -173,6 +217,7 @@ pub struct CausticsConfig {
 fn default_true()          -> bool { true  }
 fn default_gather_radius() -> f32  { 0.15  }
 fn default_wave_scale()    -> f32  { 1.0   }
+fn default_noise_scale()   -> f32  { 1.0   }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -224,24 +269,55 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     // ── Static objects ────────────────────────────────────────────────────────
     let mut static_objects: Vec<Arc<dyn Hittable>> = Vec::new();
 
+    // A throwaway Lambertian is used as the boundary-shape material for volume
+    // types; it is never actually sampled — the HG phase function inside the
+    // medium is what scatters photons.
+    let dummy_mat = || -> Arc<dyn Material> {
+        Arc::new(Lambertian { texture: Texture::from(Color::new(0.5, 0.5, 0.5)) })
+    };
+
     for (i, obj) in file.objects.into_iter().enumerate() {
-        let mat = build_material(obj.material)
-            .map_err(|e| format!("objects[{i}].material: {e}"))?;
         let hittable: Arc<dyn Hittable> = match obj.shape {
-            ShapeConfig::Sphere { center, radius } =>
-                Arc::new(Sphere::new(p3(center), radius, mat)),
-            ShapeConfig::Quad { corner, u, v } =>
-                Arc::new(Quad::new(p3(corner), v3(u), v3(v), mat)),
-            ShapeConfig::Box { p_min, p_max } =>
-                Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), mat))),
-            ShapeConfig::Cylinder { center, radius, height } =>
-                Arc::new(Cylinder { center: p3(center), radius, height, mat }),
-            ShapeConfig::Cone { center, radius, height } =>
-                Arc::new(Cone { center: p3(center), radius, height, mat }),
-            ShapeConfig::Disk { center, normal, radius } =>
-                Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
-            ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
-                Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
+            // ── Volume shapes (material field is ignored) ──────────────────
+            ShapeConfig::ConstantVolumeSphere { center, radius, density, color, g } => {
+                let boundary = Arc::new(Sphere::new(p3(center), radius, dummy_mat()));
+                Arc::new(ConstantMedium::new(boundary, density, col(color), g))
+            }
+            ShapeConfig::ConstantVolumeBox { p_min, p_max, density, color, g } => {
+                let boundary = Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), dummy_mat())));
+                Arc::new(ConstantMedium::new(boundary, density, col(color), g))
+            }
+            ShapeConfig::NoiseVolumeSphere { center, radius, density, color, noise_scale, threshold, g } => {
+                let boundary = Arc::new(Sphere::new(p3(center), radius, dummy_mat()));
+                Arc::new(NoiseMedium::new(boundary, col(color), density, noise_scale, threshold, g))
+            }
+            ShapeConfig::NoiseVolumeBox { p_min, p_max, density, color, noise_scale, threshold, g } => {
+                let boundary = Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), dummy_mat())));
+                Arc::new(NoiseMedium::new(boundary, col(color), density, noise_scale, threshold, g))
+            }
+            // ── Surface shapes (material field required) ───────────────────
+            shape => {
+                let mat = build_material(
+                    obj.material.ok_or_else(|| format!("objects[{i}]: material is required for this shape type"))?
+                ).map_err(|e| format!("objects[{i}].material: {e}"))?;
+                match shape {
+                    ShapeConfig::Sphere { center, radius } =>
+                        Arc::new(Sphere::new(p3(center), radius, mat)),
+                    ShapeConfig::Quad { corner, u, v } =>
+                        Arc::new(Quad::new(p3(corner), v3(u), v3(v), mat)),
+                    ShapeConfig::Box { p_min, p_max } =>
+                        Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), mat))),
+                    ShapeConfig::Cylinder { center, radius, height } =>
+                        Arc::new(Cylinder { center: p3(center), radius, height, mat }),
+                    ShapeConfig::Cone { center, radius, height } =>
+                        Arc::new(Cone { center: p3(center), radius, height, mat }),
+                    ShapeConfig::Disk { center, normal, radius } =>
+                        Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
+                    ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
+                        Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
+                    _ => unreachable!(), // volume variants handled above
+                }
+            }
         };
         static_objects.push(hittable);
     }

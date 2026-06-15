@@ -13,7 +13,7 @@ use crate::texture::Texture;
 use crate::diamond::Diamond;
 use crate::transform::{Rotate, Translate};
 use crate::vec3::{Color, Point3, Vec3};
-use crate::volume::ConstantMedium;
+use crate::volume::{ConstantMedium, NoiseMedium};
 use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -46,7 +46,17 @@ pub fn build_random_scene() -> SceneData {
     );
     let diamond_planes = diamond_obj.planes().to_vec();
     let diamond: Arc<dyn Hittable> = Arc::new(diamond_obj);
-    let static_objects: Vec<Arc<dyn Hittable>> = vec![ground, diamond];
+    // Noise-driven cloud — sits right among the main spheres, unmissable.
+    // turb()*0.5 ∈ [0, 0.34], median 0.063; threshold=0.05 keeps the top ~43%.
+    // density=8 → avg σ≈0.28, mean free path ~3.6 units, ~1.9 expected scatters across diameter.
+    let cloud_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
+        Point3::new(0.0, 1.5, 0.0), 3.5,
+        Arc::new(Lambertian { texture: Texture::from(Color::new(0.5, 0.5, 0.5)) }),
+    ));
+    let cloud: Arc<dyn Hittable> =
+        Arc::new(NoiseMedium::new(cloud_boundary, Color::new(1.0, 0.97, 0.90), 8.0, 0.6, 0.05, 0.85));
+
+    let static_objects: Vec<Arc<dyn Hittable>> = vec![ground, diamond, cloud];
 
     let mut dynamic: Vec<DynamicSphere> = vec![
         DynamicSphere {
@@ -341,13 +351,17 @@ pub fn build_nextweek_scene() -> SceneData {
         Arc::new(Dielectric { ir: 1.5 }),
     ));
     list.objects.push(Arc::clone(&fog_boundary));
-    list.add(ConstantMedium::new(fog_boundary, 0.2, Color::new(0.2, 0.4, 0.9)));
+    // Noise-driven volume: patchy blue cloud inside the glass sphere.
+    // turb()*0.5 is empirically distributed in [0, 0.34] with median 0.063.
+    // threshold=0.07 ≈ median → roughly half the sphere is empty (clear glass), half is blue cloud.
+    // density=3.0 puts the mean effective density around 0.12, giving ~12 expected scatters/ray.
+    list.add(NoiseMedium::new(fog_boundary, Color::new(0.2, 0.4, 0.9), 3.0, 0.05, 0.07, 0.7));
 
     let mist_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
         Point3::new(0.0, 0.0, 0.0), 5000.0,
         Arc::new(Dielectric { ir: 1.5 }),
     ));
-    list.add(ConstantMedium::new(mist_boundary, 0.0001, Color::new(1.0, 1.0, 1.0)));
+    list.add(ConstantMedium::new(mist_boundary, 0.0001, Color::new(1.0, 1.0, 1.0), 0.0));
 
     // Diamond â€” large gem floating directly below the area light.
     // Radius 100 fills the space between the ceiling and the scene objects.
