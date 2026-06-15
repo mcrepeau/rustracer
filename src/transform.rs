@@ -83,15 +83,6 @@ impl Rotate {
         Self { object, fwd, bbox }
     }
 
-    pub fn around_x(object: Arc<dyn Hittable>, angle_deg: f32) -> Self {
-        let (s, c) = angle_deg.to_radians().sin_cos();
-        Self::with_matrix(object, [
-            [1.0, 0.0, 0.0],
-            [0.0,   c,  -s],
-            [0.0,   s,   c],
-        ])
-    }
-
     pub fn around_y(object: Arc<dyn Hittable>, angle_deg: f32) -> Self {
         let (s, c) = angle_deg.to_radians().sin_cos();
         Self::with_matrix(object, [
@@ -121,60 +112,3 @@ impl Hittable for Rotate {
     fn bounding_box(&self) -> Option<Aabb> { self.bbox }
 }
 
-// ── Scale ─────────────────────────────────────────────────────────────────────
-
-/// Non-uniform scale transform.  Turns a sphere into an ellipsoid.
-/// Ray parameterisation t is preserved through the transform, so t_min/t_max
-/// need no adjustment.  Normal is transformed by the inverse-transpose of the
-/// scale matrix (= element-wise divide by scale, then normalise).
-pub struct Scale {
-    object:    Arc<dyn Hittable>,
-    scale:     Vec3,
-    inv_scale: Vec3,
-    bbox:      Option<Aabb>,
-}
-
-impl Scale {
-    pub fn new(object: Arc<dyn Hittable>, scale: Vec3) -> Self {
-        let inv = Vec3::new(1.0 / scale.x, 1.0 / scale.y, 1.0 / scale.z);
-        let bbox = object.bounding_box().map(|bb| {
-            let mut mn = Point3::new( f32::INFINITY,  f32::INFINITY,  f32::INFINITY);
-            let mut mx = Point3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-            for i in 0..2usize {
-                for j in 0..2usize {
-                    for k in 0..2usize {
-                        let cx = (if i == 0 { bb.min.x } else { bb.max.x }) * scale.x;
-                        let cy = (if j == 0 { bb.min.y } else { bb.max.y }) * scale.y;
-                        let cz = (if k == 0 { bb.min.z } else { bb.max.z }) * scale.z;
-                        mn.x = mn.x.min(cx); mx.x = mx.x.max(cx);
-                        mn.y = mn.y.min(cy); mx.y = mx.y.max(cy);
-                        mn.z = mn.z.min(cz); mx.z = mx.z.max(cz);
-                    }
-                }
-            }
-            Aabb::new(mn, mx)
-        });
-        Self { object, scale, inv_scale: inv, bbox }
-    }
-}
-
-impl Hittable for Scale {
-    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
-        // Transform ray to local (object) space by dividing both origin and direction
-        // element-wise by the scale.  The t parameter is the same in both spaces.
-        let local = Ray::new_at_time(
-            Point3::new(r.origin.x    * self.inv_scale.x, r.origin.y    * self.inv_scale.y, r.origin.z    * self.inv_scale.z),
-            Vec3::new(  r.direction.x * self.inv_scale.x, r.direction.y * self.inv_scale.y, r.direction.z * self.inv_scale.z),
-            r.time,
-        );
-        let mut rec = self.object.hit(&local, t_min, t_max)?;
-        // Transform hit point back to world space.
-        rec.p = Point3::new(rec.p.x * self.scale.x, rec.p.y * self.scale.y, rec.p.z * self.scale.z);
-        // Transform normal by inverse-transpose (= element-wise divide by scale).
-        let n = Vec3::new(rec.normal.x * self.inv_scale.x, rec.normal.y * self.inv_scale.y, rec.normal.z * self.inv_scale.z);
-        rec.normal = n.unit();
-        Some(rec)
-    }
-
-    fn bounding_box(&self) -> Option<Aabb> { self.bbox }
-}

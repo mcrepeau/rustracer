@@ -346,52 +346,6 @@ impl Material for PbrMaterial {
     fn can_receive_caustics(&self) -> bool { self.metallic < 0.999 }
 }
 
-/// Wraps any material and perturbs the surface normal with Perlin turbulence
-/// before delegating scatter/PDF, creating a rough/lumpy appearance without
-/// changing the underlying geometry.
-pub struct BumpMaterial {
-    pub inner:    Arc<dyn Material>,
-    pub perlin:   Arc<Perlin>,
-    /// Spatial frequency of bumps — higher values produce finer detail.
-    pub scale:    f32,
-    /// Controls how strongly the normal is deflected (0 = smooth, 1 = very rough).
-    pub strength: f32,
-}
-
-impl BumpMaterial {
-    fn perturb<'a>(&self, rec: &HitRecord<'a>) -> HitRecord<'a> {
-        let s = self.scale;
-        let p = rec.p;
-        // Three turbulence samples at permuted coordinates give an independent
-        // pseudo-gradient vector for each spatial dimension.
-        let t1 = self.perlin.turb(Point3::new(p.x * s, p.y * s, p.z * s), 4) - 0.5;
-        let t2 = self.perlin.turb(Point3::new(p.z * s, p.x * s, p.y * s), 4) - 0.5;
-        let t3 = self.perlin.turb(Point3::new(p.y * s, p.z * s, p.x * s), 4) - 0.5;
-        let normal = (rec.normal + Vec3::new(t1, t2, t3) * self.strength).unit();
-        HitRecord { p, normal, mat: rec.mat, t: rec.t, u: rec.u, v: rec.v, front_face: rec.front_face }
-    }
-}
-
-impl Material for BumpMaterial {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let bumped = self.perturb(rec);
-        self.inner.scatter(r_in, &bumped, rng)
-    }
-
-    fn scattering_pdf(&self, r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
-        let bumped = self.perturb(rec);
-        self.inner.scattering_pdf(r_in, &bumped, scattered)
-    }
-
-    fn emitted(&self, u: f32, v: f32, p: Point3) -> Color {
-        self.inner.emitted(u, v, p)
-    }
-    fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color {
-        self.inner.albedo_hint(u, v, p)
-    }
-    fn can_receive_caustics(&self) -> bool { self.inner.can_receive_caustics() }
-}
-
 // ── Pearl sun-direction context ───────────────────────────────────────────────
 // The renderer sets this once per frame (before the parallel tile pass) so that
 // PearlMaterial::scatter can compute nacre_color from the sun's incident angle

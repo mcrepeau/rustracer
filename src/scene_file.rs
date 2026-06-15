@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -71,8 +70,6 @@ pub enum BackgroundConfig {
     },
     /// Uniform colour background.
     Solid { color: [f32; 3] },
-    /// Procedural star field.
-    Stars,
 }
 
 fn default_sun_elevation() -> f32 { 30.0 }
@@ -213,7 +210,6 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
             }
         }
         BackgroundConfig::Solid { color } => Background::Solid(col(color)),
-        BackgroundConfig::Stars            => Background::Stars,
     };
 
     // ── Static objects ────────────────────────────────────────────────────────
@@ -282,8 +278,6 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         settled:       false,
         paused:        false,
         max_samples:   file.max_samples,
-        named_bodies:  Vec::new(),
-        physics_dt:    Duration::from_millis(16),
         enable_caustics,
         caustic_quad:          None,
         caustic_gather_radius,

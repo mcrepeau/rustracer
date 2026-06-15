@@ -1,34 +1,12 @@
 use std::sync::Arc;
-use std::time::Duration;
 use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
 use crate::photon::PhotonMap;
 use crate::renderer::Background;
-use crate::ring::Ring;
 use crate::sphere::Sphere;
-use crate::transform::{Rotate, Scale, Translate};
 use crate::vec3::{Color, Point3, Vec3};
-
-pub struct Orbit {
-    pub parent_idx:  Option<usize>, // None = orbit the fixed origin
-    pub radius:      f32,
-    pub speed:       f32,           // radians per tick
-    pub angle:       f32,           // current true-anomaly angle
-    pub inclination: f32,           // orbital-plane tilt from XZ (radians)
-    /// Longitude of ascending node (radians): direction in XZ where orbit
-    /// crosses the reference plane going "upward".  Distributes each planet's
-    /// tilt in a unique direction so the planes don't all look co-planar.
-    pub asc_node:    f32,
-}
-
-pub struct RingData {
-    pub inner_r: f32,
-    pub outer_r: f32,
-    pub normal:  Vec3,
-    pub mat:     Arc<dyn Material>,
-}
 
 pub struct DynamicSphere {
     pub center:      Point3,
@@ -37,20 +15,6 @@ pub struct DynamicSphere {
     pub mat:         Arc<dyn Material>,
     pub restitution: f32,
     pub is_static:   bool,
-    pub orbit:       Option<Orbit>,
-    /// Rotation around the Y axis, accumulated each tick (radians).
-    pub axial_angle: f32,
-    /// Rotation speed in radians per physics tick (0 = no rotation).
-    pub axial_speed: f32,
-    /// Tilt of the spin axis from world Y toward world +Z (radians).
-    /// Applied as Rotate::around_x after the Y spin so the pole appears at
-    /// (0, cos(tilt), sin(tilt)) in world space.
-    pub axial_tilt:  f32,
-    /// Optional flat ring (e.g. Saturn's rings) centred on this body.
-    pub ring:        Option<RingData>,
-    /// Non-uniform scale applied before rotation and translation.
-    /// (1,1,1) = sphere; other values produce an ellipsoid.
-    pub stretch:     Vec3,
 }
 
 pub struct SceneData {
@@ -70,13 +34,6 @@ pub struct SceneData {
     pub settled:        bool,
     pub paused:         bool,
     pub max_samples:    u32,
-    /// Bodies available for camera follow mode: (index into `dynamic`, display name).
-    /// Empty for scenes that don't use follow mode.
-    pub named_bodies:   Vec<(usize, &'static str)>,
-    /// How much wall time must elapse between physics ticks.
-    /// Use a larger value for slow-moving scenes (solar system) so the path
-    /// tracer can accumulate more samples before each position reset.
-    pub physics_dt:     Duration,
     /// Enable caustic photon mapping for this scene.
     pub enable_caustics: bool,
     /// Area-light emitter for the photon map when `Background` is not
@@ -199,54 +156,8 @@ impl SceneData {
                 }
             }
         } else {
-            // Pass 1: bodies orbiting the fixed origin (planets around the sun).
-            // Full Keplerian circular-orbit formula with inclination i and
-            // longitude of ascending node Ω:
-            //   x = r (cos θ cos Ω  −  sin θ sin Ω cos i)
-            //   y = r  sin θ sin i
-            //   z = r (cos θ sin Ω  +  sin θ cos Ω cos i)
             for ds in &mut self.dynamic {
-                if ds.is_static { continue; }
-                match &mut ds.orbit {
-                    Some(orbit) if orbit.parent_idx.is_none() => {
-                        orbit.angle += orbit.speed;
-                        let (sa, ca) = orbit.angle.sin_cos();
-                        let (si, ci) = orbit.inclination.sin_cos();
-                        let (sn, cn) = orbit.asc_node.sin_cos();
-                        let r = orbit.radius;
-                        ds.center = Point3::new(
-                            r * (ca * cn - sa * sn * ci),
-                            r *  sa * si,
-                            r * (ca * sn + sa * cn * ci),
-                        );
-                    }
-                    None => ds.center += ds.velocity,
-                    _ => {}
-                }
-            }
-            // Pass 2: moons orbit a moving parent — snapshot after pass 1.
-            let centers: Vec<Point3> = self.dynamic.iter().map(|ds| ds.center).collect();
-            for ds in &mut self.dynamic {
-                if ds.is_static { continue; }
-                if let Some(orbit) = &mut ds.orbit {
-                    if let Some(pidx) = orbit.parent_idx {
-                        orbit.angle += orbit.speed;
-                        let (sa, ca) = orbit.angle.sin_cos();
-                        let (si, ci) = orbit.inclination.sin_cos();
-                        let (sn, cn) = orbit.asc_node.sin_cos();
-                        let p = centers[pidx];
-                        let r = orbit.radius;
-                        ds.center = Point3::new(
-                            p.x + r * (ca * cn - sa * sn * ci),
-                            p.y + r *  sa * si,
-                            p.z + r * (ca * sn + sa * cn * ci),
-                        );
-                    }
-                }
-            }
-            // Advance axial rotation for all bodies.
-            for ds in &mut self.dynamic {
-                if !ds.is_static { ds.axial_angle += ds.axial_speed; }
+                if !ds.is_static { ds.center += ds.velocity; }
             }
         }
 
@@ -335,35 +246,7 @@ impl SceneData {
         let mut list = HittableList::new();
         if let Some(s) = &self.cached_static { list.objects.push(Arc::clone(s)); }
         for ds in &self.dynamic {
-            let has_stretch = ds.stretch.x != 1.0 || ds.stretch.y != 1.0 || ds.stretch.z != 1.0;
-            if ds.axial_speed != 0.0 || ds.axial_tilt != 0.0 || has_stretch {
-                // Build sphere at origin, scale into ellipsoid, spin around Y,
-                // tilt around X, then translate to world position.
-                let sphere: Arc<dyn Hittable> = Arc::new(
-                    Sphere::new(Point3::new(0.0, 0.0, 0.0), ds.radius, Arc::clone(&ds.mat))
-                );
-                let obj: Arc<dyn Hittable> = if has_stretch {
-                    Arc::new(Scale::new(sphere, ds.stretch))
-                } else {
-                    sphere
-                };
-                let obj: Arc<dyn Hittable> = if ds.axial_speed != 0.0 {
-                    Arc::new(Rotate::around_y(obj, ds.axial_angle.to_degrees()))
-                } else {
-                    obj
-                };
-                let obj: Arc<dyn Hittable> = if ds.axial_tilt != 0.0 {
-                    Arc::new(Rotate::around_x(obj, ds.axial_tilt.to_degrees()))
-                } else {
-                    obj
-                };
-                list.objects.push(Arc::new(Translate::new(obj, ds.center)));
-            } else {
-                list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
-            }
-            if let Some(rd) = &ds.ring {
-                list.add(Ring::new(ds.center, rd.inner_r, rd.outer_r, rd.normal, Arc::clone(&rd.mat)));
-            }
+            list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
         }
         self.world = Arc::new(BvhTree::from_list(list));
         self.rebuild_caustics();

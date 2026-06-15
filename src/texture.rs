@@ -10,15 +10,6 @@ pub enum Texture {
     Image(Arc<RgbImage>),
     /// Marble-like Perlin noise: 0.5*(1 + sin(scale·p.z + 10·turb(p)))
     Noise { perlin: Arc<Perlin>, scale: f32 },
-    /// Turbulence-based two-color blend for stellar surface granulation.
-    SolarNoise { perlin: Arc<Perlin>, scale: f32, hot: Color, cool: Color },
-    /// Step-function radial bands keyed on the UV `u` coordinate [0, 1].
-    /// Each entry is `(u_threshold, color)`; the first entry whose threshold
-    /// >= u wins.  Used for planetary ring systems (u = radial position).
-    RingBands(Arc<Vec<(f32, Color)>>),
-    /// Sinusoidal latitude bands for gas giants, distorted by Perlin noise.
-    /// `band_freq` half-cycles from south to north pole; `scale` sets noise input scale.
-    PlanetBands { perlin: Arc<Perlin>, scale: f32, band_freq: f32, hot: Color, cool: Color },
 }
 
 impl Texture {
@@ -48,25 +39,6 @@ impl Texture {
             Texture::Noise { perlin, scale } => {
                 Color::new(0.5, 0.5, 0.5)
                     * (1.0 + (scale * p.z + 10.0 * perlin.turb(p, 7)).sin())
-            }
-            Texture::SolarNoise { perlin, scale, hot, cool } => {
-                let t = 0.5 * (1.0 + (10.0 * perlin.turb(
-                    Point3::new(p.x * scale, p.y * scale, p.z * scale), 7,
-                )).sin());
-                *hot * t + *cool * (1.0 - t)
-            }
-            Texture::RingBands(bands) => {
-                for &(threshold, color) in bands.as_slice() {
-                    if u <= threshold { return color; }
-                }
-                bands.last().map(|&(_, c)| c).unwrap_or_default()
-            }
-            Texture::PlanetBands { perlin, scale, band_freq, hot, cool } => {
-                let noise = perlin.turb(
-                    Point3::new(p.x * scale, p.y * scale, p.z * scale), 4,
-                );
-                let t = 0.5 * (1.0 + (v * band_freq * std::f32::consts::PI + noise * 0.5).sin());
-                *hot * t + *cool * (1.0 - t)
             }
         }
     }
