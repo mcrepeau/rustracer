@@ -511,7 +511,9 @@ fn main() {
                     let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
                     #[cfg(feature = "denoise")]
                     let oidn_hint = if oidn_on {
-                        let state = if denoise_running.load(Ordering::Relaxed) { "running…" } else { "on" };
+                        let state = if adaptive_on { "paused" }
+                                    else if denoise_running.load(Ordering::Relaxed) { "running…" }
+                                    else { "on" };
                         format!("  OIDN {state} blend:{:.0}% [JK] [N] off", denoise_blend * 100.0)
                     } else {
                         "  [N] denoise".to_string()
@@ -597,8 +599,11 @@ fn main() {
                         aux_normal = nrm;
                     }
 
+                    // Do not fire the denoiser while adaptive sampling is active:
+                    // converged pixels have pixel_samples[i] < samples, so scaling
+                    // the accumulator by 1/samples would produce incorrectly dim input.
                     #[cfg(feature = "denoise")]
-                    if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
+                    if oidn_on && !adaptive_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
                         spawn_denoiser(win_w, win_h, &accumulator, samples,
                             &aux_albedo, &aux_normal,
                             &denoised, &denoise_running, &denoise_epoch);
