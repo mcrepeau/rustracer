@@ -12,6 +12,8 @@ use rayon::prelude::*;
 
 const MAX_DEPTH:     i32 = 50;
 const MAX_LUMINANCE: f32 = 10.0;
+/// True solar angular radius ≈ 0.265° → cos(0.265° * π/180) ≈ 0.9999892.
+const COS_SUN_MAX:   f32 = 0.9999892;
 
 // ── Background ────────────────────────────────────────────────────────────────
 
@@ -82,8 +84,10 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
              - 0.2155*t + 2.4192).max(0.0);
 
     // Solar disc: rays within ~1.3° of sun and above horizon get a bright warm-white return
-    if cos_gamma > 0.9997 && sun.y > 0.0 && d.y > 0.0 {
-        let disc = yz * 80.0 * 0.05;
+    if cos_gamma > COS_SUN_MAX && sun.y > 0.0 && d.y > 0.0 {
+        // Brightness scaled proportionally to the smaller solid angle so total
+        // solar irradiance is preserved: old_Ω/new_Ω = 0.0003/0.0000108 ≈ 27.8.
+        let disc = yz * 111.0;
         return Color::new(disc, disc * 0.95, disc * 0.85);
     }
 
@@ -142,7 +146,6 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
 /// The disc half-angle matches the `cos_gamma > 0.9997` threshold in preetham_sky.
 fn sun_pdf_value(dir: Vec3, background: Background) -> f32 {
     use std::f32::consts::PI;
-    const COS_SUN_MAX: f32 = 0.9997;
     if let Background::Physical { sun_dir, .. } = background {
         if sun_dir.y > 0.0 && dir.unit().dot(sun_dir.unit()) > COS_SUN_MAX {
             return 1.0 / (2.0 * PI * (1.0 - COS_SUN_MAX));
@@ -169,20 +172,26 @@ fn sample_sun_cone(axis: Vec3, cos_theta_max: f32, rng: &mut impl Rng) -> Vec3 {
 
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
 pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, photon_map: Option<&PhotonMap>, rng: &mut impl Rng) -> Color {
-    let mut throughput      = Color::new(1.0, 1.0, 1.0);
-    let mut color           = Color::default();
-    let mut ray             = *r;
-    let mut prev_specular   = true; // camera ray: always add full emission on first hit
-    let mut prev_mis_w_brdf = 1.0f32; // MIS weight for emission from the previous BRDF sample
+    let mut throughput           = Color::new(1.0, 1.0, 1.0);
+    let mut color                = Color::default();
+    let mut ray                  = *r;
+    let mut prev_specular        = true;  // camera ray: always add full emission on first hit
+    let mut prev_mis_w_brdf      = 1.0f32; // MIS weight for diffuse-bounce emission
+    let mut prev_spec_sun_weight = 1.0f32; // MIS weight for specular-bounce sun disc hit
 
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
             None => {
-                // Apply MIS weight when a BRDF sample lands on the solar disc:
-                // the sun is also sampled via direct NEE, so we need the balance
-                // weight w_brdf = p_brdf / (p_brdf + p_sun) to avoid double-counting.
+                // MIS weight for the background:
+                // - Not hitting sun disc (sun_pdf == 0): always full weight.
+                // - After a diffuse bounce (prev_specular = false): use prev_mis_w_brdf
+                //   (accounts for both area-light and sun NEE done on that bounce).
+                // - After a specular bounce (prev_specular = true): use prev_spec_sun_weight
+                //   (1.0 if no specular sun NEE was done, else p_vndf/(p_vndf+p_sun)).
                 let sun_pdf = sun_pdf_value(ray.direction, background);
-                let emit_w  = if prev_specular || sun_pdf == 0.0 { 1.0 } else { prev_mis_w_brdf };
+                let emit_w  = if sun_pdf == 0.0   { 1.0 }
+                              else if prev_specular { prev_spec_sun_weight }
+                              else                  { prev_mis_w_brdf };
                 color += throughput * background.eval(ray.direction) * bg_scale * emit_w;
                 break;
             }
@@ -203,6 +212,34 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                 let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
 
                 if sr.skip_pdf {
+                    // ── Specular sun NEE ─────────────────────────────────────────
+                    // For smooth specular surfaces the BRDF-sampled ray almost never
+                    // hits the tiny solar disc.  We importance-sample the sun directly,
+                    // evaluate the specular BRDF in that direction, and MIS-weight both
+                    // the NEE contribution and the continuing BRDF-sample path.
+                    prev_spec_sun_weight = 1.0; // reset; updated below if NEE fires
+                    if let Background::Physical { sun_dir, .. } = background {
+                        if sun_dir.y > 0.0 {
+                            use std::f32::consts::PI;
+                            let p_sun      = 1.0 / (2.0 * PI * (1.0 - COS_SUN_MAX));
+                            let sun_u      = sun_dir.unit();
+                            let sun_sample = sample_sun_cone(sun_u, COS_SUN_MAX, rng);
+                            let sun_shadow = Ray::new_at_time(rec.p, sun_sample, ray.time);
+                            if !world.any_hit(&sun_shadow, 0.001, f32::INFINITY) {
+                                let brdf_cos = rec.mat.specular_brdf_cos(&ray, &rec, sun_sample);
+                                if brdf_cos.x > 0.0 || brdf_cos.y > 0.0 || brdf_cos.z > 0.0 {
+                                    let p_mat     = rec.mat.specular_sampling_pdf(&ray, &rec, sun_sample);
+                                    let sun_color = background.eval(sun_sample);
+                                    color += throughput * brdf_cos * sun_color / (p_sun + p_mat);
+                                }
+                            }
+                            // MIS weight for the BRDF-sampled ray that might hit the sun disc.
+                            let p_mat_brdf = rec.mat.specular_sampling_pdf(&ray, &rec, sr.ray.direction);
+                            if p_mat_brdf > 0.0 {
+                                prev_spec_sun_weight = p_mat_brdf / (p_mat_brdf + p_sun);
+                            }
+                        }
+                    }
                     throughput      *= sr.attenuation;
                     ray              = sr.ray;
                     prev_specular    = true;
@@ -246,7 +283,6 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     if let Background::Physical { sun_dir, .. } = background {
                         if sun_dir.y > 0.0 {
                             use std::f32::consts::PI;
-                            const COS_SUN_MAX: f32 = 0.9997;
                             let sun_u      = sun_dir.unit();
                             let sun_sample = sample_sun_cone(sun_u, COS_SUN_MAX, rng);
                             let sun_shadow = Ray::new_at_time(rec.p, sun_sample, ray.time);
@@ -404,7 +440,7 @@ pub fn render_tiles(
             // Stratified pixel sampling: map sample_idx into a strata×strata grid.
             // A per-pixel cyclic offset (Fibonacci hash) ensures neighboring pixels
             // visit strata in different orders, avoiding spatial correlation.
-            let (u_jitter, v_jitter) = if strata2 > 0 && sample_idx < strata2 {
+            let (u_jitter, v_jitter) = if strata2 > 0 {
                 let offset = (i as u32).wrapping_mul(0x9E3779B9) % strata2;
                 let s  = (sample_idx + offset) % strata2;
                 let sx = s % strata;

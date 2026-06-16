@@ -89,15 +89,17 @@ pub fn build_random_scene() -> SceneData {
     // SSS marbles near the diamond — volumetric multiple scattering, soft coloured glow.
     // Per-scatter albedos: bright channel ≈ 1, others < 1 so absorption builds
     // colour over ~2 scatters per diameter traversal.
+    // Max channel capped at 0.97 so Russian roulette can terminate scatter paths.
+    // A channel of 1.0 gives survive probability = 1.0 forever → unbounded depth.
     let sss_colors: &[Color] = &[
-        Color::new(0.60, 1.00, 0.60),  // jade green
-        Color::new(0.40, 0.55, 1.00),  // cobalt blue
-        Color::new(1.00, 0.70, 0.15),  // amber
-        Color::new(1.00, 0.30, 0.20),  // ruby red
-        Color::new(0.55, 0.20, 1.00),  // violet
-        Color::new(1.00, 0.85, 0.30),  // gold
-        Color::new(0.20, 1.00, 0.85),  // teal
-        Color::new(1.00, 0.35, 0.70),  // rose
+        Color::new(0.55, 0.97, 0.55),  // jade green
+        Color::new(0.38, 0.52, 0.97),  // cobalt blue
+        Color::new(0.97, 0.68, 0.14),  // amber
+        Color::new(0.97, 0.28, 0.18),  // ruby red
+        Color::new(0.52, 0.18, 0.97),  // violet
+        Color::new(0.97, 0.82, 0.28),  // gold
+        Color::new(0.18, 0.97, 0.82),  // teal
+        Color::new(0.97, 0.33, 0.68),  // rose
     ];
     // Dedicated SSS marbles clustered around the diamond on the ground.
     let dedicated_marbles: &[(usize, Point3)] = &[

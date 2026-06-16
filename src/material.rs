@@ -124,6 +124,21 @@ fn make_onb(n: Vec3) -> (Vec3, Vec3) {
     (t, b)
 }
 
+/// Isotropic GGX NDF: D(cos_h, α) = α² / (π · (1 + cos²_h · (α²−1))²).
+#[inline]
+fn ggx_ndf(cos_h: f32, alpha: f32) -> f32 {
+    let a2 = alpha * alpha;
+    let denom = 1.0 + cos_h * cos_h * (a2 - 1.0);
+    a2 / (PI * denom * denom).max(1e-12)
+}
+
+/// Anisotropic GGX NDF in tangent space.
+#[inline]
+fn ggx_ndf_aniso(h_ts: Vec3, ax: f32, ay: f32) -> f32 {
+    let d = (h_ts.x / ax).powi(2) + (h_ts.y / ay).powi(2) + h_ts.z * h_ts.z;
+    1.0 / (PI * ax * ay * d * d).max(1e-12)
+}
+
 pub struct Dielectric {
     pub ir: f32,
 }
@@ -288,8 +303,12 @@ impl Material for PbrMaterial {
                   + self.albedo * self.metallic;
 
         // Clearcoat lobe: dielectric IOR 1.5 (F0 = 0.04), scaled by clearcoat weight.
+        // The Fresnel at normal incidence is only ~4%, making the clearcoat very rarely
+        // sampled and the individual contributions very bright — high variance.  We clamp
+        // the sampling probability to a minimum of 12% × clearcoat while dividing the
+        // weight by the same clamped value, so the mean is exactly preserved.
         let p_coat = if self.clearcoat > 1e-3 {
-            schlick(cos_o, 1.0 / 1.5_f32) * self.clearcoat
+            (schlick(cos_o, 1.0 / 1.5_f32) * self.clearcoat).max(0.12 * self.clearcoat)
         } else {
             0.0
         };
@@ -342,9 +361,10 @@ impl Material for PbrMaterial {
                 let xi2: f32 = rng.gen();
 
                 // Unified VNDF: ax = ay = α at anisotropy=0 is identical to isotropic GGX.
+                // Disney convention: ax (tangent) = α/aspect (stretched), ay (bitangent) = α*aspect.
                 let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
-                let ax = alpha * aspect;
-                let ay = alpha / aspect;
+                let ax = alpha / aspect;
+                let ay = alpha * aspect;
 
                 let (t0, b0) = make_onb(n);
                 let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
@@ -385,6 +405,110 @@ impl Material for PbrMaterial {
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
         let cosine = rec.normal.dot(scattered.direction.unit());
         (cosine / PI).max(0.0)
+    }
+
+    fn specular_brdf_cos(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> Color {
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
+        let cos_o = wo.dot(n);
+        let cos_i = wi.dot(n);
+        if cos_o <= 0.0 || cos_i <= 0.0 { return Color::default(); }
+
+        let h    = (wo + wi).unit();
+        let wo_h = wo.dot(h).max(0.0);
+        let h_n  = h.dot(n).max(0.0);
+        let f0   = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
+                 + self.albedo * self.metallic;
+
+        let mut result = Color::default();
+
+        // Clearcoat lobe: film · D · F_coat · G1(wo) · G1(wi) / (4 · cos_o)
+        if self.clearcoat > 1e-3 {
+            let alpha_coat = (self.clearcoat_roughness * self.clearcoat_roughness).max(1e-4);
+            let d     = ggx_ndf(h_n, alpha_coat);
+            let g1_o  = smith_g1(cos_o, alpha_coat);
+            let g1_i  = smith_g1(cos_i, alpha_coat);
+            let f_c   = schlick(wo_h, 1.0 / 1.5_f32) * self.clearcoat;
+            let film  = if self.film_thickness > 0.0 {
+                nacre_color(wo_h, self.film_ior, self.film_thickness)
+            } else {
+                Color::new(1.0, 1.0, 1.0)
+            };
+            result += film * (d * f_c * g1_o * g1_i / (4.0 * cos_o));
+        }
+
+        // Base specular lobe: F · D · G1(wo) · G1(wi) / (4 · cos_o)
+        {
+            let alpha  = (self.roughness * self.roughness).max(1e-4_f32);
+            let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
+            let ax     = alpha / aspect;
+            let ay     = alpha * aspect;
+            let (t0, b0) = make_onb(n);
+            let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
+            let t = t0 * ca + b0 * sa;
+            let b = b0 * ca - t0 * sa;
+            let h_ts  = Vec3::new(h.dot(t),  h.dot(b),  h_n);
+            let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+            let wi_ts = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
+            let d     = ggx_ndf_aniso(h_ts, ax, ay);
+            let g1_o  = smith_g1_aniso(cos_o, wo_ts.x, wo_ts.y, ax, ay);
+            let g1_i  = smith_g1_aniso(cos_i, wi_ts.x, wi_ts.y, ax, ay);
+            let f     = schlick_color(wo_h, f0);
+            result += f * (d * g1_o * g1_i / (4.0 * cos_o));
+        }
+
+        result
+    }
+
+    fn specular_sampling_pdf(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> f32 {
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
+        let cos_o = wo.dot(n);
+        let cos_i = wi.dot(n);
+        if cos_o <= 0.0 || cos_i <= 0.0 { return 0.0; }
+
+        let h   = (wo + wi).unit();
+        let h_n = h.dot(n).max(0.0);
+        let f0  = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
+                + self.albedo * self.metallic;
+
+        let p_coat = if self.clearcoat > 1e-3 {
+            (schlick(cos_o, 1.0 / 1.5_f32) * self.clearcoat).max(0.12 * self.clearcoat)
+        } else { 0.0 };
+        let f_approx = schlick_color(cos_o, f0);
+        let p_spec   = if self.metallic > 0.999 { 1.0_f32 } else {
+            (0.2126 * f_approx.x + 0.7152 * f_approx.y + 0.0722 * f_approx.z)
+                .clamp(0.04, 0.9)
+        };
+
+        let mut pdf = 0.0;
+
+        // Clearcoat VNDF pdf: p_coat · D · G1(wo) / (4 · cos_o)
+        if self.clearcoat > 1e-3 {
+            let alpha_coat = (self.clearcoat_roughness * self.clearcoat_roughness).max(1e-4);
+            let d    = ggx_ndf(h_n, alpha_coat);
+            let g1_o = smith_g1(cos_o, alpha_coat);
+            pdf += p_coat * d * g1_o / (4.0 * cos_o);
+        }
+
+        // Base specular VNDF pdf: (1−p_coat)·p_spec · D · G1(wo) / (4 · cos_o)
+        if (1.0 - p_coat) * p_spec > 1e-6 {
+            let alpha  = (self.roughness * self.roughness).max(1e-4_f32);
+            let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
+            let ax     = alpha / aspect;
+            let ay     = alpha * aspect;
+            let (t0, b0) = make_onb(n);
+            let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
+            let t  = t0 * ca + b0 * sa;
+            let b  = b0 * ca - t0 * sa;
+            let h_ts  = Vec3::new(h.dot(t),  h.dot(b),  h_n);
+            let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+            let d     = ggx_ndf_aniso(h_ts, ax, ay);
+            let g1_o  = smith_g1_aniso(cos_o, wo_ts.x, wo_ts.y, ax, ay);
+            pdf += (1.0 - p_coat) * p_spec * d * g1_o / (4.0 * cos_o);
+        }
+
+        pdf
     }
 
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
@@ -527,7 +651,10 @@ impl Material for PearlMaterial {
         let cos_theta = wo.dot(n).clamp(0.0, 1.0);
 
         let varied = self.film_thickness + oil_noise(rec.p * self.film_scale) * 150.0;
-        let f      = schlick(cos_theta, 1.0 / self.ior);
+        // Boost the luster sampling probability to a minimum of 10% to reduce the
+        // variance caused by near-zero Fresnel at normal incidence (~5% for IOR 1.56).
+        // The weight (f_h / f) adjusts inversely, so the mean is exactly preserved.
+        let f = schlick(cos_theta, 1.0 / self.ior).max(0.10_f32);
 
         // Illumination angle: governs the nacre glow on the diffuse path.
         // OPD is set when light enters the aragonite platelet stack, so this
@@ -572,7 +699,9 @@ impl Material for PearlMaterial {
             let s      = self.orient_strength;
             let tinted = self.base_color * (orient * s + Color::new(1.0, 1.0, 1.0) * (1.0 - s));
             Some(ScatterRecord {
-                attenuation: tinted,
+                // Divide by (1−f): the diffuse path is selected with probability (1−f),
+                // so we must weight up to compensate for Russian roulette.
+                attenuation: tinted * (1.0 / (1.0 - f)),
                 ray:         Ray::scatter_from(rec.p, n, r_in),
                 skip_pdf:    false,
             })
@@ -581,6 +710,42 @@ impl Material for PearlMaterial {
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
         (rec.normal.dot(scattered.direction.unit()) / PI).max(0.0)
+    }
+
+    fn specular_brdf_cos(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> Color {
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
+        let cos_o = wo.dot(n).clamp(0.0, 1.0);
+        let cos_i = wi.dot(n);
+        if cos_i <= 0.0 { return Color::default(); }
+
+        let h     = (wo + wi).unit();
+        let wo_h  = wo.dot(h).max(0.0);
+        let h_n   = h.dot(n).max(0.0);
+        let alpha = (self.luster_roughness * self.luster_roughness).max(1e-4);
+        let d     = ggx_ndf(h_n, alpha);
+        let g1_o  = smith_g1(cos_o, alpha);
+        let g1_i  = smith_g1(cos_i, alpha);
+        let f_h   = schlick(wo_h, 1.0 / self.ior);
+        let varied = self.film_thickness + oil_noise(rec.p * self.film_scale) * 150.0;
+        let orient = nacre_color(wo_h, self.ior, varied);
+        orient * (d * f_h * g1_o * g1_i / (4.0 * cos_o))
+    }
+
+    fn specular_sampling_pdf(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> f32 {
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
+        let cos_o = wo.dot(n).clamp(0.0, 1.0);
+        let cos_i = wi.dot(n);
+        if cos_i <= 0.0 { return 0.0; }
+
+        let h     = (wo + wi).unit();
+        let h_n   = h.dot(n).max(0.0);
+        let f     = schlick(cos_o, 1.0 / self.ior).max(0.10_f32); // boosted, matches scatter()
+        let alpha = (self.luster_roughness * self.luster_roughness).max(1e-4);
+        let d     = ggx_ndf(h_n, alpha);
+        let g1_o  = smith_g1(cos_o, alpha);
+        f * d * g1_o / (4.0 * cos_o)
     }
 
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.base_color }

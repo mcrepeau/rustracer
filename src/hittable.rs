@@ -29,6 +29,18 @@ pub trait Material: Send + Sync {
     /// True if this material produces spectrally-boosted (3× single-channel)
     /// attenuation that can spike photon power inside a refractive object.
     fn is_spectral(&self) -> bool { false }
+
+    /// Evaluate the full specular BRDF × cos(θ_i) for outgoing direction `wi`.
+    /// Returns a non-zero Color only for materials that implement specular NEE.
+    fn specular_brdf_cos(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _wi: Vec3) -> Color {
+        Color::default()
+    }
+
+    /// Sampling PDF of scatter() for direction `wi` (specular lobes only, weighted
+    /// by Russian-roulette probabilities).  Used for MIS with direct sun sampling.
+    fn specular_sampling_pdf(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _wi: Vec3) -> f32 {
+        0.0
+    }
 }
 
 pub struct HitRecord<'a> {
