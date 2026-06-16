@@ -236,7 +236,7 @@ pub fn build_cornell_box() -> SceneData {
     list.add(Sphere::new(Point3::new(400.0, 80.0, 150.0), 80.0,
         Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold, 0.0))));
 
-    SceneData {
+    let mut scene = SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights,
         background: Background::Solid(Color::default()),
@@ -247,11 +247,18 @@ pub fn build_cornell_box() -> SceneData {
             aperture_blades: 0,
         },
         max_samples:    2000,
-        enable_caustics:       false,
-        caustic_quad:          None,
-        caustic_gather_radius: 0.15,
+        enable_caustics:       true,
+        caustic_quad:          Some((
+            Point3::new(343.0, 554.0, 332.0),
+            Vec3::new(-130.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, -105.0),
+            Color::new(15.0, 15.0, 15.0),
+        )),
+        caustic_gather_radius: 20.0,
         photon_map:            None,
-    }
+    };
+    scene.rebuild_caustics();
+    scene
 }
 
 
