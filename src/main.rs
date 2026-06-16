@@ -35,7 +35,7 @@ use camera::CameraState;
 use renderer::{Background, render_tiles};
 #[cfg(feature = "denoise")]
 use renderer::{Background, render_tiles, render_aux_pass};
-use scene::{SceneData, resolve_camera_aabb};
+use scene::SceneData;
 use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene};
 use output::{to_rgb_u32, save_png};
 
@@ -57,7 +57,6 @@ const WIDTH:  u32 = 1200;
 const HEIGHT: u32 = 800;
 const MOUSE_SENS:  f32 = 0.002;
 const TITLE_INTERVAL: Duration = Duration::from_millis(200);
-const CAM_RADIUS: f32 = 0.25;
 
 // ── Bench ─────────────────────────────────────────────────────────────────────
 
@@ -225,8 +224,6 @@ fn main() {
     let mut cam_dirty         = false;
     let mut pending_autofocus = false;
     let mut last_title_update = Instant::now();
-    let mut last_frame_time   = Instant::now();
-    let mut physics_accum     = Duration::ZERO;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -250,7 +247,6 @@ fn main() {
                 scene_idx        = i;
                 cam_state        = CameraState::from_params(&scenes[i].cam_init);
                 strata           = (scenes[i].max_samples as f32).sqrt() as u32;
-                physics_accum    = Duration::ZERO;
                 reset_accum!();
                 cam_dirty        = true;
                 pending_autofocus = true;
@@ -407,18 +403,9 @@ fn main() {
                                     denoise_blend = (denoise_blend + 0.1).min(1.0);
                                     window.request_redraw();
                                 }
-                                VirtualKeyCode::Return => {
-                                    let pausing = !scenes[scene_idx].physics.paused;
-                                    scenes[scene_idx].physics.paused = pausing;
-                                    if pausing {
-                                        scenes[scene_idx].rebuild();
-                                        reset_accum!();
-                                    }
-                                }
                                 VirtualKeyCode::R if scene_idx == 0 => {
                                     scenes[0] = build_random_scene();
                                     strata = (scenes[0].max_samples as f32).sqrt() as u32;
-                                    physics_accum = Duration::ZERO;
                                     reset_accum!();
                                     cam_dirty = true;
                                     pending_autofocus = true;
@@ -469,9 +456,6 @@ fn main() {
                     if pressed.contains(&VirtualKeyCode::Space)  { cam_state.pos.y += spd;       moved = true; }
                     if pressed.contains(&VirtualKeyCode::LShift) { cam_state.pos.y -= spd;       moved = true; }
                     if moved {
-                        for bbox in &scenes[scene_idx].physics.colliders {
-                            resolve_camera_aabb(&mut cam_state.pos, CAM_RADIUS, bbox);
-                        }
                         cam_dirty = true;
                         pending_autofocus = true;
                     }
@@ -487,29 +471,9 @@ fn main() {
                     cam_dirty = false;
                 }
 
-                let now = Instant::now();
-                let frame_dt = now.duration_since(last_frame_time);
-                physics_accum += frame_dt.min(Duration::from_millis(100));
-                last_frame_time = now;
-                let mut physics_ticked = false;
-                while physics_accum >= Duration::from_millis(16) {
-                    physics_ticked |= scenes[scene_idx].tick();
-                    physics_accum -= Duration::from_millis(16);
-                }
-                if physics_ticked {
-                    reset_accum!();
-                }
-
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
                     let scene    = &scenes[scene_idx];
                     let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
-                    let motion_hint = if scene.physics.gravity > 0.0 {
-                        if scene.physics.settled     { "  settled — [R] restart" }
-                        else if scene.physics.paused { "  PAUSED — [Enter] resume  [R] restart" }
-                        else                         { "  [Enter] pause  [R] restart" }
-                    } else if !scene.physics.dynamic.is_empty() {
-                        if scene.physics.paused { "  PAUSED — [Enter] resume" } else { "  [Enter] pause" }
-                    } else { "" };
                     #[cfg(feature = "denoise")]
                     let oidn_hint = if oidn_on {
                         let state = if denoise_running.load(Ordering::Relaxed) { "running…" } else { "on" };
@@ -524,10 +488,10 @@ fn main() {
                         format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
+                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}",
                         scene.name, spp_label, cam_hint,
                         cam_state.aperture, cam_state.vfov, exposure,
-                        sun_hint, oidn_hint, motion_hint,
+                        sun_hint, oidn_hint,
                     ));
                     last_title_update = Instant::now();
                 }

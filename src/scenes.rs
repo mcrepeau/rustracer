@@ -1,5 +1,4 @@
 ﻿use std::sync::Arc;
-use crate::aabb::Aabb;
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
@@ -7,7 +6,7 @@ use crate::material::{Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Meta
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
-use crate::scene::{DynamicSphere, PhysicsState, SceneData};
+use crate::scene::SceneData;
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::diamond::Diamond;
@@ -44,7 +43,6 @@ pub fn build_random_scene() -> SceneData {
         diamond_r,
         Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
     );
-    let diamond_planes = diamond_obj.planes().to_vec();
     let diamond: Arc<dyn Hittable> = Arc::new(diamond_obj);
     // Noise-driven cloud — sits right among the main spheres, unmissable.
     // turb()*0.5 ∈ [0, 0.34], median 0.063; threshold=0.05 keeps the top ~43%.
@@ -56,67 +54,42 @@ pub fn build_random_scene() -> SceneData {
     let cloud: Arc<dyn Hittable> =
         Arc::new(NoiseMedium::new(cloud_boundary, Color::new(1.0, 0.97, 0.90), 8.0, 0.6, 0.05, 0.85));
 
-    let static_objects: Vec<Arc<dyn Hittable>> = vec![ground, diamond, cloud];
+    let mut list = HittableList::new();
+    list.objects.push(ground);
+    list.objects.push(diamond);
+    list.objects.push(cloud);
 
-    let mut dynamic: Vec<DynamicSphere> = vec![
-        DynamicSphere {
-            center: Point3::new( 0.0, 1.0, 0.0),
-            velocity: Vec3::default(),
-            radius: 1.0, mat: Arc::new(Dielectric { ir: 1.5 }),
-            restitution: 0.65, is_static: true,
-        },
-        DynamicSphere {
-            center: Point3::new(-4.0, 1.0, 0.0),
-            velocity: Vec3::default(),
-            radius: 1.0,
-            mat: Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() }),
-            restitution: 0.35, is_static: true,
-        },
-        DynamicSphere {
-            center: Point3::new( 4.0, 1.0, 0.0),
-            velocity: Vec3::default(),
-            radius: 1.0,
-            mat: Arc::new(PbrMaterial { albedo: Color::new(0.85, 0.65, 0.25), roughness: 0.25, metallic: 1.0, anisotropy: 0.85, ..Default::default() }),
-            restitution: 0.80, is_static: true,
-        },
-        DynamicSphere {
-            center: Point3::new(-2.0, 1.0, -2.0),
-            velocity: Vec3::default(),
-            radius: 1.0,
-            mat: Arc::new(PearlMaterial {
-                base_color:       Color::new(0.98, 0.93, 0.88),
-                ior:              1.56,
-                film_thickness:   450.0,
-                orient_strength:  0.30,
-                film_scale:       5.0,
-                luster_roughness: 0.05,
-            }),
-            restitution: 0.50, is_static: true,
-        },
-        // Iridescent clearcoat: near-black base under a thin-film dielectric coat.
-        // Orbit the camera to watch the rainbow cycle across the surface.
-        DynamicSphere {
-            center: Point3::new(2.0, 1.0, 2.0),
-            velocity: Vec3::default(),
-            radius: 1.0,
-            mat: Arc::new(PbrMaterial {
-                albedo: Color::new(0.02, 0.01, 0.03),
-                roughness: 0.6,
-                clearcoat: 0.9,
-                film_thickness: 480.0,
-                film_ior: 1.45,
-                ..Default::default()
-            }),
-            restitution: 0.50, is_static: true,
-        },
-    ];
+    // Hero spheres
+    list.add(Sphere::new(Point3::new( 0.0, 1.0,  0.0), 1.0, Arc::new(Dielectric { ir: 1.5 })));
+    list.add(Sphere::new(Point3::new(-4.0, 1.0,  0.0), 1.0,
+        Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() })));
+    list.add(Sphere::new(Point3::new( 4.0, 1.0,  0.0), 1.0,
+        Arc::new(PbrMaterial { albedo: Color::new(0.85, 0.65, 0.25), roughness: 0.25, metallic: 1.0, anisotropy: 0.85, ..Default::default() })));
+    list.add(Sphere::new(Point3::new(-2.0, 1.0, -2.0), 1.0,
+        Arc::new(PearlMaterial {
+            base_color:       Color::new(0.98, 0.93, 0.88),
+            ior:              1.56,
+            film_thickness:   450.0,
+            orient_strength:  0.30,
+            film_scale:       5.0,
+            luster_roughness: 0.05,
+        })));
+    // Iridescent clearcoat: near-black base under a thin-film dielectric coat.
+    // Orbit the camera to watch the rainbow cycle across the surface.
+    list.add(Sphere::new(Point3::new(2.0, 1.0, 2.0), 1.0,
+        Arc::new(PbrMaterial {
+            albedo: Color::new(0.02, 0.01, 0.03),
+            roughness: 0.6,
+            clearcoat: 0.9,
+            film_thickness: 480.0,
+            film_ior: 1.45,
+            ..Default::default()
+        })));
 
-    // Glass marbles â€” small glass spheres falling near the diamond.
+    // Glass marbles near the diamond.
     // Two flavours:
-    //   MarbleMaterial  â€” Perlin swirl pattern visible through the glass (colour
-    //                     applied once at the exit surface).
-    //   SSSMaterial     â€” volumetric multiple scattering: light diffuses over ~2
-    //                     mean-free-paths inside and exits as a soft coloured glow.
+    //   MarbleMaterial  — Perlin swirl pattern visible through the glass.
+    //   SSSMaterial     — volumetric multiple scattering: soft coloured glow.
     let marble_perlin = Arc::new(Perlin::new(&mut rng));
     // Palette for MarbleMaterial swirl spheres (color1 = ribbon, color2 = clear base).
     let marble_palette: &[(Color, Color)] = &[
@@ -151,19 +124,12 @@ pub fn build_random_scene() -> SceneData {
         (4, Point3::new(2.0,  9.0, -0.8)),
     ];
     for &(idx, center) in dedicated_marbles {
-        dynamic.push(DynamicSphere {
-            center,
-            velocity:    Vec3::default(),
-            radius:      0.15,
-            mat:         Arc::new(SSSMaterial {
-                albedo:  sss_colors[idx],
-                ior:     1.5,
-                density: 7.0,   // Ïƒ_t â‰ˆ 7 â†’ mean free path 0.14 â‰ˆ marble radius
-                g:       0.30,  // slightly forward-scattering glass inclusions
-            }),
-            restitution: 0.60,
-            is_static:   false,
-        });
+        list.add(Sphere::new(center, 0.15, Arc::new(SSSMaterial {
+            albedo:  sss_colors[idx],
+            ior:     1.5,
+            density: 7.0,
+            g:       0.30,
+        })));
     }
 
     for a in -15i32..15 {
@@ -175,36 +141,30 @@ pub fn build_random_scene() -> SceneData {
             if (ground_pos - Point3::new( 0.0, 0.2, 0.0)).length() < 1.2 { continue; }
             if (ground_pos - Point3::new(-4.0, 0.2, 0.0)).length() < 1.2 { continue; }
             let choose: f32 = rng.gen();
-            let (mat, restitution): (Arc<dyn Material>, f32) = if choose < 0.40 {
-                // Perlin swirl marble
+            let mat: Arc<dyn Material> = if choose < 0.40 {
                 let (color1, color2) = marble_palette[rng.gen_range(0..marble_palette.len())];
-                (Arc::new(MarbleMaterial { ir: 1.5, color1, color2, scale: 8.0, perlin: Arc::clone(&marble_perlin) }), 0.60)
+                Arc::new(MarbleMaterial { ir: 1.5, color1, color2, scale: 8.0, perlin: Arc::clone(&marble_perlin) })
             } else if choose < 0.60 {
-                // SSS translucent marble â€” organic coloured glow
                 let albedo  = sss_colors[rng.gen_range(0..sss_colors.len())];
                 let density = rng.gen_range(5.0_f32..9.0);
-                (Arc::new(SSSMaterial { albedo, ior: 1.5, density, g: 0.30 }), 0.60)
+                Arc::new(SSSMaterial { albedo, ior: 1.5, density, g: 0.30 })
             } else if choose < 0.75 {
                 let albedo = Color::random(&mut rng) * Color::random(&mut rng);
                 let roughness: f32 = rng.gen_range(0.5..1.0);
-                (Arc::new(PbrMaterial { albedo, roughness, ..Default::default() }), 0.35)
+                Arc::new(PbrMaterial { albedo, roughness, ..Default::default() })
             } else if choose < 0.92 {
-                let albedo   = Color::random_range(0.5, 1.0, &mut rng);
+                let albedo    = Color::random_range(0.5, 1.0, &mut rng);
                 let roughness: f32 = rng.gen_range(0.0..0.5);
-                (Arc::new(PbrMaterial { albedo, roughness, metallic: 1.0, ..Default::default() }), 0.5 + (1.0 - roughness) * 0.35)
+                Arc::new(PbrMaterial { albedo, roughness, metallic: 1.0, ..Default::default() })
             } else {
-                (Arc::new(Dielectric { ir: 1.5 }), 0.65)
+                Arc::new(Dielectric { ir: 1.5 })
             };
-            let center = Point3::new(cx, 0.2 + rng.gen_range(3.0..12.0), cz);
-            dynamic.push(DynamicSphere { center, velocity: Vec3::default(), radius: 0.2, mat, restitution, is_static: false });
+            let center = Point3::new(cx, 0.2, cz);
+            list.add(Sphere::new(center, 0.2, mat));
         }
     }
 
-    let mut list = HittableList::new();
-    for obj in &static_objects { list.objects.push(Arc::clone(obj)); }
-    for ds in &dynamic { list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat))); }
-
-    SceneData {
+    let mut scene = SceneData {
         world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights:         HittableList::new(),
         background:     Background::Physical { sun_dir: Vec3::new(-0.4, 0.9, -0.3).unit(), turbidity: 3.0 },
@@ -219,18 +179,9 @@ pub fn build_random_scene() -> SceneData {
         caustic_quad:          None,
         caustic_gather_radius: 0.15,
         photon_map:            None,
-        physics: PhysicsState {
-            static_objects,
-            dynamic,
-            bounds:           None,
-            colliders:        vec![],
-            convex_colliders: vec![diamond_planes],
-            gravity:          0.03,
-            settled:          false,
-            paused:           false,
-            cached_static:    None,
-        },
-    }
+    };
+    scene.rebuild_caustics();
+    scene
 }
 
 pub fn build_cornell_box() -> SceneData {
@@ -258,33 +209,14 @@ pub fn build_cornell_box() -> SceneData {
     let tall = Arc::new(make_box(Point3::new(0.0,0.0,0.0), Point3::new(165.0,330.0,165.0), Arc::clone(&white))) as Arc<dyn Hittable>;
     let tall = Arc::new(Rotate::around_y(tall,  15.0)) as Arc<dyn Hittable>;
     let tall = Arc::new(Translate::new(tall, Vec3::new(265.0, 0.0, 295.0))) as Arc<dyn Hittable>;
-    let tall_bbox = tall.bounding_box().unwrap();
     list.objects.push(tall);
 
     let short = Arc::new(make_box(Point3::new(0.0,0.0,0.0), Point3::new(165.0,165.0,165.0), white)) as Arc<dyn Hittable>;
     let short = Arc::new(Rotate::around_y(short, -18.0)) as Arc<dyn Hittable>;
     let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
-    let short_bbox = short.bounding_box().unwrap();
     list.objects.push(short);
 
-    let static_objects = list.objects.clone();
-
-    let dynamic = vec![DynamicSphere {
-        center:      Point3::new(190.0, 100.0, 190.0),
-        velocity:    Vec3::new(3.0, 5.0, 2.0),
-        radius:      80.0,
-        mat:         Arc::new(Dielectric { ir: 1.5 }),
-        restitution: 1.0,
-        is_static:   false,
-    }];
-    let bounds = Aabb::new(
-        Point3::new(1.0, 1.0, 1.0),
-        Point3::new(554.0, 554.0, 554.0),
-    );
-
-    for ds in &dynamic {
-        list.add(Sphere::new(ds.center, ds.radius, Arc::clone(&ds.mat)));
-    }
+    list.add(Sphere::new(Point3::new(190.0, 90.0, 190.0), 80.0, Arc::new(Dielectric { ir: 1.5 })));
 
     SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
@@ -301,17 +233,6 @@ pub fn build_cornell_box() -> SceneData {
         caustic_quad:          None,
         caustic_gather_radius: 0.15,
         photon_map:            None,
-        physics: PhysicsState {
-            static_objects,
-            dynamic,
-            bounds:           Some(bounds),
-            colliders:        vec![tall_bbox, short_bbox],
-            convex_colliders: vec![],
-            gravity:          0.0,
-            settled:          false,
-            paused:           false,
-            cached_static:    None,
-        },
     }
 }
 
@@ -467,17 +388,6 @@ pub fn build_nextweek_scene() -> SceneData {
         caustic_quad:          Some(caustic_quad),
         caustic_gather_radius: 10.0,
         photon_map:            None,
-        physics: PhysicsState {
-            static_objects:   vec![],
-            dynamic:          vec![],
-            bounds:           None,
-            colliders:        vec![],
-            convex_colliders: vec![],
-            gravity:          0.0,
-            settled:          false,
-            paused:           false,
-            cached_static:    None,
-        },
     };
     // Static scene: rebuild() is never called from tick(), so build the
     // photon map once here at construction time.

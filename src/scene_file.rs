@@ -14,7 +14,7 @@ use crate::disk::Disk;
 use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
 use crate::renderer::Background;
-use crate::scene::{PhysicsState, SceneData};
+use crate::scene::SceneData;
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::vec3::{Color, Point3, Vec3};
@@ -365,8 +365,12 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     // bytes per reload, negligible over the life of the process.
     let name: &'static str = Box::leak(file.name.into_boxed_str());
 
+    let mut world_list = HittableList::new();
+    for obj in static_objects { world_list.objects.push(obj); }
+    let world: Arc<dyn Hittable> = Arc::new(BvhTree::from_list(world_list));
+
     let mut scene = SceneData {
-        world:         Arc::new(HittableList::new()),
+        world,
         lights,
         background,
         name,
@@ -376,19 +380,8 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         caustic_quad:          None,
         caustic_gather_radius,
         photon_map:    None,
-        physics: PhysicsState {
-            static_objects,
-            dynamic:          Vec::new(),
-            bounds:           None,
-            colliders:        Vec::new(),
-            convex_colliders: Vec::new(),
-            gravity:          0.0,
-            settled:          false,
-            paused:           false,
-            cached_static:    None,
-        },
     };
-    scene.rebuild();
+    scene.rebuild_caustics();
     Ok(scene)
 }
 
