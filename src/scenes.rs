@@ -44,20 +44,10 @@ pub fn build_random_scene() -> SceneData {
         Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
     );
     let diamond: Arc<dyn Hittable> = Arc::new(diamond_obj);
-    // Noise-driven cloud — sits right among the main spheres, unmissable.
-    // turb()*0.5 ∈ [0, 0.34], median 0.063; threshold=0.05 keeps the top ~43%.
-    // density=8 → avg σ≈0.28, mean free path ~3.6 units, ~1.9 expected scatters across diameter.
-    let cloud_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
-        Point3::new(0.0, 1.5, 0.0), 3.5,
-        Arc::new(Lambertian { texture: Texture::from(Color::new(0.5, 0.5, 0.5)) }),
-    ));
-    let cloud: Arc<dyn Hittable> =
-        Arc::new(NoiseMedium::new(cloud_boundary, Color::new(1.0, 0.97, 0.90), 8.0, 0.6, 0.05, 0.85));
 
     let mut list = HittableList::new();
     list.objects.push(ground);
     list.objects.push(diamond);
-    list.objects.push(cloud);
 
     // Hero spheres
     list.add(Sphere::new(Point3::new( 0.0, 1.0,  0.0), 1.0, Arc::new(Dielectric { ir: 1.5 })));

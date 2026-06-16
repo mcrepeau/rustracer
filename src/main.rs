@@ -37,7 +37,7 @@ use renderer::{Background, render_tiles};
 use renderer::{Background, render_tiles, render_aux_pass};
 use scene::SceneData;
 use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene};
-use output::{to_rgb_u32, save_png};
+use output::{to_rgb_u32, save_png, ToneMapper};
 
 use winit::{
     dpi::PhysicalSize,
@@ -117,19 +117,19 @@ fn run_bench() {
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, exposure: f32) {
+fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, exposure: f32, tm: ToneMapper) {
     buf.par_iter_mut()
         .zip(accumulator.par_iter())
-        .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
+        .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure, tm));
 }
 
 /// Adaptive-sampling display: each pixel uses its own sample count.
-fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples: &[u32], exposure: f32) {
+fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples: &[u32], exposure: f32, tm: ToneMapper) {
     buf.par_iter_mut()
         .zip(accumulator.par_iter())
         .zip(pixel_samples.par_iter())
         .for_each(|((dst, &acc), &n)| {
-            *dst = to_rgb_u32(acc, exposure / n.max(1) as f32);
+            *dst = to_rgb_u32(acc, exposure / n.max(1) as f32, tm);
         });
 }
 
@@ -235,6 +235,7 @@ fn main() {
     let mut samples       = 0u32;
     let mut strata = (scenes[scene_idx].max_samples as f32).sqrt() as u32;
     // Adaptive sampling state
+    let mut tonemapper     = ToneMapper::AgX;
     let mut adaptive_on   = false;
     let n_px              = (win_w * win_h) as usize;
     let mut pixel_samples = vec![0u32;  n_px];  // per-pixel sample count
@@ -351,13 +352,17 @@ fn main() {
                                             let blended: Vec<Color> = accumulator.iter().zip(denoised_guard.iter())
                                                 .map(|(acc, den)| *den * denoise_blend + *acc * sc * (1.0 - denoise_blend))
                                                 .collect();
-                                            save_png(&blended, 1, scenes[scene_idx].name, win_w, win_h, exposure);
+                                            save_png(&blended, 1, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper);
                                         } else {
-                                            save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h, exposure);
+                                            let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                                            save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper);
                                         }
                                     }
                                     #[cfg(not(feature = "denoise"))]
-                                    save_png(&accumulator, samples, scenes[scene_idx].name, win_w, win_h, exposure);
+                                    {
+                                        let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                                        save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper);
+                                    }
                                 }
                                 VirtualKeyCode::LBracket => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
@@ -439,6 +444,10 @@ fn main() {
                                     reset_accum!();
                                     cam_dirty = true;
                                     pending_autofocus = true;
+                                }
+                                VirtualKeyCode::T => {
+                                    tonemapper = if tonemapper == ToneMapper::AgX { ToneMapper::Aces } else { ToneMapper::AgX };
+                                    window.request_redraw();
                                 }
                                 VirtualKeyCode::V => {
                                     adaptive_on = !adaptive_on;
@@ -530,11 +539,12 @@ fn main() {
                     } else {
                         "  [V] adaptive".to_string()
                     };
+                    let tm_hint = if tonemapper == ToneMapper::AgX { "  [T] AgX" } else { "  [T] ACES" };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
+                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}{}",
                         scene.name, spp_label, cam_hint,
                         cam_state.aperture, cam_state.vfov, exposure,
-                        sun_hint, oidn_hint, adaptive_hint,
+                        sun_hint, oidn_hint, adaptive_hint, tm_hint,
                     ));
                     last_title_update = Instant::now();
                 }
@@ -620,7 +630,7 @@ fn main() {
                 let sc = 1.0 / samples.max(1) as f32;
                 let buf: &mut [u32] = &mut buffer;
                 if adaptive_on {
-                    write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure);
+                    write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure, tonemapper);
                 } else {
                     #[cfg(feature = "denoise")]
                     {
@@ -632,14 +642,14 @@ fn main() {
                                 .zip(denoised_guard.par_iter())
                                 .for_each(|((dst, &acc), &den)| {
                                     let raw = acc * sc;
-                                    *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure);
+                                    *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
                                 });
                         } else {
-                            write_tonemap(buf, &accumulator, sc, exposure);
+                            write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
                         }
                     }
                     #[cfg(not(feature = "denoise"))]
-                    write_tonemap(buf, &accumulator, sc, exposure);
+                    write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
                 }
                 buffer.present().unwrap();
             }
