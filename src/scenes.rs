@@ -134,9 +134,15 @@ pub fn build_random_scene() -> SceneData {
             let cx = a as f32 + 0.9 * rng.gen::<f32>();
             let cz = b as f32 + 0.9 * rng.gen::<f32>();
             let ground_pos = Point3::new(cx, 0.2, cz);
-            if (ground_pos - Point3::new( 4.0, 0.2, 0.0)).length() < 1.2 { continue; }
-            if (ground_pos - Point3::new( 0.0, 0.2, 0.0)).length() < 1.2 { continue; }
-            if (ground_pos - Point3::new(-4.0, 0.2, 0.0)).length() < 1.2 { continue; }
+            // Keep small balls from spawning inside any hero object.
+            if (ground_pos - Point3::new( 4.0, 0.2,  0.0)).length() < 1.2 { continue; } // gold
+            if (ground_pos - Point3::new( 4.0, 0.2, -3.0)).length() < 1.2 { continue; } // copper
+            if (ground_pos - Point3::new( 4.0, 0.2,  3.0)).length() < 1.2 { continue; } // silver
+            if (ground_pos - Point3::new( 0.0, 0.2,  0.0)).length() < 1.2 { continue; } // glass
+            if (ground_pos - Point3::new(-4.0, 0.2,  0.0)).length() < 1.2 { continue; } // PBR
+            if (ground_pos - Point3::new(-2.0, 0.2, -2.0)).length() < 1.2 { continue; } // pearl
+            if (ground_pos - Point3::new( 2.0, 0.2,  2.0)).length() < 1.2 { continue; } // iridescent
+            if (ground_pos - Point3::new( 2.0, 0.2, -1.5)).length() < 1.2 { continue; } // diamond
             let choose: f32 = rng.gen();
             let mat: Arc<dyn Material> = if choose < 0.60 {
                 let idx     = rng.gen_range(0..sss_colors.len());
