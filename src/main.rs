@@ -265,84 +265,84 @@ fn run_render(args: RenderArgs) {
 
     let t0 = Instant::now();
 
-    let (actual_spp, pixel_samples_opt): (u32, Option<Vec<u32>>) = if args.adaptive {
-        let mut pixel_samples = vec![0u32; n_px];
-        let mut var_m2_lum    = vec![0.0f32; n_px];
-        let mut adap_conv     = vec![false; n_px];
-        let mut n_converged   = 0usize;
-        let lum = |c: Color| c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
+    let mut pixel_samples = vec![0u32;   n_px];
+    let mut var_m2_lum    = vec![0.0f32; n_px];
+    let mut adap_conv     = vec![false;  n_px];
+    let mut n_converged   = 0usize;
+    let lum = |c: Color| c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
+    let adaptive = args.adaptive;
 
-        let mut s = 0u32;
-        while s < samples_max {
-            render_tiles(&mut scratch, Some(adap_conv.as_slice()), s, strata,
-                         args.width, args.height, &camera,
-                         scene.world.as_ref(), scene.background,
-                         &scene.lights, 1.0, scene.photon_map.as_deref());
+    let mut s = 0u32;
+    while s < samples_max {
+        render_tiles(&mut scratch,
+                     if adaptive { Some(adap_conv.as_slice()) } else { None },
+                     s, strata, args.width, args.height, &camera,
+                     scene.world.as_ref(), scene.background,
+                     &scene.lights, 1.0, scene.photon_map.as_deref());
 
-            accumulator.par_iter_mut()
-                .zip(scratch.par_iter())
-                .zip(var_m2_lum.par_iter_mut())
-                .zip(pixel_samples.par_iter_mut())
-                .zip(adap_conv.par_iter())
-                .for_each(|((((a, &sc), m2), n), &conv)| {
-                    if conv { return; }
-                    let s_lum    = lum(sc);
-                    let old_n    = *n;
-                    let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
-                    *a  += sc;
-                    *n  += 1;
-                    let new_mean = lum(*a) / *n as f32;
-                    *m2 += (s_lum - old_mean) * (s_lum - new_mean);
+        accumulator.par_iter_mut()
+            .zip(scratch.par_iter())
+            .zip(var_m2_lum.par_iter_mut())
+            .zip(pixel_samples.par_iter_mut())
+            .zip(adap_conv.par_iter())
+            .for_each(|((((a, &sc), m2), n), &conv)| {
+                if adaptive && conv { return; }
+                let old_n    = *n;
+                let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
+                // Relative firefly clamp: suppress samples far above the running mean.
+                let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
+                    let sc_lum = lum(sc);
+                    let ratio  = sc_lum / old_mean;
+                    if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
+                } else { sc };
+                *a  += sc;
+                *n  += 1;
+                let s_lum    = lum(sc);
+                let new_mean = lum(*a) / *n as f32;
+                *m2 += (s_lum - old_mean) * (s_lum - new_mean);
+            });
+        s += 1;
+
+        if adaptive && s >= MIN_ADAPTIVE_SAMPLES {
+            adap_conv.par_iter_mut()
+                .zip(pixel_samples.par_iter())
+                .zip(var_m2_lum.par_iter())
+                .zip(accumulator.par_iter())
+                .for_each(|(((conv, &n), &m2), &acc)| {
+                    if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
+                    let mean_lum = lum(acc) / n as f32;
+                    if mean_lum < 1e-4 { *conv = true; return; }
+                    let variance = m2 / (n - 1).max(1) as f32;
+                    let std_err  = (variance / n as f32).sqrt();
+                    if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
                 });
-            s += 1;
-
-            if s >= MIN_ADAPTIVE_SAMPLES {
-                adap_conv.par_iter_mut()
-                    .zip(pixel_samples.par_iter())
-                    .zip(var_m2_lum.par_iter())
-                    .zip(accumulator.par_iter())
-                    .for_each(|(((conv, &n), &m2), &acc)| {
-                        if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
-                        let mean_lum = lum(acc) / n as f32;
-                        if mean_lum < 1e-4 { *conv = true; return; }
-                        let variance = m2 / (n - 1).max(1) as f32;
-                        let std_err  = (variance / n as f32).sqrt();
-                        if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
-                    });
-                n_converged = adap_conv.iter().filter(|&&c| c).count();
-            }
-
-            if s.is_multiple_of(5) || s == samples_max || n_converged == n_px {
-                let pct     = n_converged * 100 / n_px.max(1);
-                let elapsed = t0.elapsed().as_secs_f64();
-                print!("\r  {s:>5}/{samples_max} spp  {pct:>3}% converged  {elapsed:5.0}s  ");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-            }
-            if n_converged == n_px { break; }
+            n_converged = adap_conv.iter().filter(|&&c| c).count();
         }
-        (s, Some(pixel_samples))
-    } else {
-        for s in 0..samples_max {
-            render_tiles(&mut scratch, None, s, strata,
-                         args.width, args.height, &camera,
-                         scene.world.as_ref(), scene.background,
-                         &scene.lights, 1.0, scene.photon_map.as_deref());
 
-            accumulator.par_iter_mut().zip(scratch.par_iter()).for_each(|(a, &c)| *a += c);
-
-            if s % 5 == 4 || s == samples_max - 1 {
-                let done    = s + 1;
-                let elapsed = t0.elapsed().as_secs_f64();
-                let eta     = if done < samples_max { elapsed / done as f64 * (samples_max - done) as f64 } else { 0.0 };
+        let print_now = if adaptive {
+            s.is_multiple_of(5) || s == samples_max || n_converged == n_px
+        } else {
+            s % 5 == 4 || s == samples_max - 1
+        };
+        if print_now {
+            let elapsed = t0.elapsed().as_secs_f64();
+            if adaptive {
+                let pct = n_converged * 100 / n_px.max(1);
+                print!("\r  {s:>5}/{samples_max} spp  {pct:>3}% converged  {elapsed:5.0}s  ");
+            } else {
+                let done   = s;
+                let eta    = if done < samples_max { elapsed / done as f64 * (samples_max - done) as f64 } else { 0.0 };
                 const BAR: usize = 32;
                 let filled = (done as usize * BAR / samples_max as usize).min(BAR);
                 let bar    = format!("{}{}", "█".repeat(filled), "░".repeat(BAR - filled));
                 print!("\r  {done:>5}/{samples_max}  [{bar}]  {elapsed:5.0}s elapsed  ETA {eta:4.0}s  ");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
             }
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
-        (samples_max, None)
-    };
+        if adaptive && n_converged == n_px { break; }
+    }
+    let actual_spp        = s;
+    let pixel_samples_opt = if adaptive { Some(pixel_samples) } else { None };
 
     let elapsed = t0.elapsed();
     println!("\n\nRendered in {:.2}s  ({:.1} ms/spp)\n",
@@ -409,6 +409,13 @@ fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples:
 const MIN_ADAPTIVE_SAMPLES: u32 = 16;
 /// Maximum relative standard error (σ/μ) to consider a pixel converged.
 const ADAPTIVE_THRESHOLD:   f32 = 0.05;
+/// Per-sample firefly clamp: a new sample whose luminance exceeds this multiple
+/// of the running pixel mean is scaled down to this ratio × mean.  Adapts to
+/// local brightness so genuinely bright pixels (all samples bright) are not
+/// biased, while rare spikes in otherwise dark pixels are suppressed.
+/// Applied only after FIREFLY_MIN_SAMPLES are accumulated.
+const FIREFLY_CLAMP:        f32 = 8.0;
+const FIREFLY_MIN_SAMPLES:  u32 = 4;
 
 #[cfg(feature = "denoise")]
 fn spawn_denoiser(
@@ -849,11 +856,17 @@ fn main() {
                         .zip(adap_conv.par_iter())
                         .for_each(|((((a, &s), m2), n), &conv)| {
                             if adaptive_on && conv { return; }
-                            let s_lum   = lum(s);
-                            let old_n   = *n;
+                            let old_n    = *n;
                             let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
+                            // Relative firefly clamp.
+                            let s = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
+                                let s_lum = lum(s);
+                                let ratio = s_lum / old_mean;
+                                if ratio > FIREFLY_CLAMP { s * (FIREFLY_CLAMP / ratio) } else { s }
+                            } else { s };
                             *a += s;
                             *n += 1;
+                            let s_lum    = lum(s);
                             let new_mean = lum(*a) / *n as f32;
                             *m2 += (s_lum - old_mean) * (s_lum - new_mean);
                         });

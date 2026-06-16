@@ -11,12 +11,9 @@ use rand::SeedableRng;
 use rayon::prelude::*;
 
 
-const MAX_DEPTH:     i32 = 50;
-/// Pre-clamp radiance to suppress fireflies while still letting the sun disc
-/// (~77 nits) through for ACES to compress.  ACES maps 100 → ~0.998 white.
-const MAX_LUMINANCE: f32 = 100.0;
+const MAX_DEPTH:   i32 = 50;
 /// True solar angular radius ≈ 0.265° → cos(0.265° * π/180) ≈ 0.9999892.
-const COS_SUN_MAX:   f32 = 0.9999892;
+const COS_SUN_MAX: f32 = 0.9999892;
 
 // ── Background ────────────────────────────────────────────────────────────────
 
@@ -337,8 +334,6 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
         }
     }
 
-    let lum = color.x * 0.2126 + color.y * 0.7152 + color.z * 0.0722;
-    if lum > MAX_LUMINANCE { color *= MAX_LUMINANCE / lum; }
     color
 }
 
