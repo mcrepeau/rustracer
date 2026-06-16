@@ -51,6 +51,18 @@ impl Hittable for Quad {
         Some(rec)
     }
 
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        let denom = self.normal.dot(r.direction);
+        if denom.abs() < 1e-8 { return false; }
+        let t = (self.d - self.normal.dot(r.origin)) / denom;
+        if t < t_min || t > t_max { return false; }
+        let p      = r.at(t);
+        let planar = p - self.q;
+        let alpha  = self.w.dot(planar.cross(self.v));
+        let beta   = self.w.dot(self.u.cross(planar));
+        (0.0..=1.0).contains(&alpha) && (0.0..=1.0).contains(&beta)
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         let corners = [self.q, self.q + self.u, self.q + self.v, self.q + self.u + self.v];
         let mut min = corners[0];

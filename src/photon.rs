@@ -156,8 +156,7 @@ impl PhotonMap {
         acc * self.norm
     }
 
-    #[allow(dead_code)]
-    pub fn stored_count(&self) -> usize { self.photons.len() }
+
 }
 
 /// Trace one photon from `origin` in `dir`.

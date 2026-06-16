@@ -169,13 +169,6 @@ fn vndf_sample_aniso(wo_ts: Vec3, ax: f32, ay: f32, xi1: f32, xi2: f32) -> Vec3 
     Vec3::new(ax * nh.x, ay * nh.y, nh.z.max(0.0)).unit()
 }
 
-/// Build a tangent + bitangent pair perpendicular to `n`.
-fn make_onb(n: Vec3) -> (Vec3, Vec3) {
-    let up = if n.x.abs() < 0.999 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
-    let t = n.cross(up).unit();
-    let b = n.cross(t);
-    (t, b)
-}
 
 /// Isotropic GGX NDF: D(cos_h, α) = α² / (π · (1 + cos²_h · (α²−1))²).
 #[inline]
@@ -402,7 +395,7 @@ impl Material for PbrMaterial {
         if rng.gen::<f32>() < p_coat {
             // ── Clearcoat specular (isotropic VNDF) ──────────────────────────
             let alpha_coat = (self.clearcoat_roughness * self.clearcoat_roughness).max(1e-4);
-            let (t, b) = make_onb(n);
+            let (t, b) = n.onb();
             let xi1: f32 = rng.gen();
             let xi2: f32 = rng.gen();
 
@@ -443,7 +436,7 @@ impl Material for PbrMaterial {
                 let ax = alpha / aspect;
                 let ay = alpha * aspect;
 
-                let (t0, b0) = make_onb(n);
+                let (t0, b0) = n.onb();
                 let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
                 let t = t0 * ca + b0 * sa;
                 let b = b0 * ca - t0 * sa;
@@ -520,7 +513,7 @@ impl Material for PbrMaterial {
             let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
             let ax     = alpha / aspect;
             let ay     = alpha * aspect;
-            let (t0, b0) = make_onb(n);
+            let (t0, b0) = n.onb();
             let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
             let t = t0 * ca + b0 * sa;
             let b = b0 * ca - t0 * sa;
@@ -574,7 +567,7 @@ impl Material for PbrMaterial {
             let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
             let ax     = alpha / aspect;
             let ay     = alpha * aspect;
-            let (t0, b0) = make_onb(n);
+            let (t0, b0) = n.onb();
             let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
             let t  = t0 * ca + b0 * sa;
             let b  = b0 * ca - t0 * sa;
@@ -743,7 +736,7 @@ impl Material for PearlMaterial {
 
         if rng.gen::<f32>() < f {
             // ── GGX luster: view-dependent thin-film iridescence (VNDF) ──────
-            let (t, b)    = make_onb(n);
+            let (t, b)    = n.onb();
             let alpha_l   = (self.luster_roughness * self.luster_roughness).max(1e-4);
             let xi1: f32  = rng.gen();
             let xi2: f32  = rng.gen();

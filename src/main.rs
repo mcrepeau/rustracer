@@ -58,6 +58,8 @@ const HEIGHT: u32 = 800;
 const MOUSE_SENS:  f32 = 0.002;
 const TITLE_INTERVAL: Duration = Duration::from_millis(200);
 
+fn compute_strata(samples: u32) -> u32 { (samples as f32).sqrt() as u32 }
+
 // ── Bench ─────────────────────────────────────────────────────────────────────
 
 fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Duration {
@@ -69,7 +71,7 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     let bg     = scene.background;
     scratch.resize((WIDTH * HEIGHT) as usize, Color::default());
 
-    let strata = (samples as f32).sqrt() as u32;
+    let strata = compute_strata(samples);
     let t0 = Instant::now();
     for s in 0..samples {
         render_tiles(scratch, None, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, 1.0, scene.photon_map.as_deref());
@@ -238,7 +240,7 @@ fn run_render(args: RenderArgs) {
     };
 
     let samples_max = args.samples.unwrap_or(scene.max_samples);
-    let strata      = (samples_max as f32).sqrt() as u32;
+    let strata      = compute_strata(samples_max);
     let n_px        = (args.width * args.height) as usize;
 
     let mut cam = CameraState::from_params(&scene.cam_init);
@@ -512,7 +514,7 @@ fn main() {
     let mut accumulator   = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
     let mut samples       = 0u32;
-    let mut strata = (scenes[scene_idx].max_samples as f32).sqrt() as u32;
+    let mut strata = compute_strata(scenes[scene_idx].max_samples);
     // Adaptive sampling state
     let mut tonemapper     = ToneMapper::AgX;
     let mut adaptive_on   = false;
@@ -552,7 +554,7 @@ fn main() {
                 let i = $idx;
                 scene_idx        = i;
                 cam_state        = CameraState::from_params(&scenes[i].cam_init);
-                strata           = (scenes[i].max_samples as f32).sqrt() as u32;
+                strata           = compute_strata(scenes[i].max_samples);
                 reset_accum!();
                 cam_dirty        = true;
                 pending_autofocus = true;
@@ -720,7 +722,7 @@ fn main() {
                                 }
                                 VirtualKeyCode::R if scene_idx == 0 => {
                                     scenes[0] = build_random_scene();
-                                    strata = (scenes[0].max_samples as f32).sqrt() as u32;
+                                    strata = compute_strata(scenes[0].max_samples);
                                     reset_accum!();
                                     cam_dirty = true;
                                     pending_autofocus = true;
@@ -741,7 +743,7 @@ fn main() {
                                             println!("Reloaded: {}", s.name);
                                             scenes[3] = s;
                                             cam_state = CameraState::from_params(&scenes[3].cam_init);
-                                            strata = (scenes[3].max_samples as f32).sqrt() as u32;
+                                            strata = compute_strata(scenes[3].max_samples);
                                             reset_accum!();
                                             cam_dirty = true;
                                             pending_autofocus = true;
