@@ -2,7 +2,7 @@
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{BlackbodyLight, Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SSSMaterial};
+use crate::material::{BlackbodyLight, Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SpectralMetal, SpectralMetalVariant, SSSMaterial};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -58,8 +58,10 @@ pub fn build_random_scene() -> SceneData {
     list.add(Sphere::new(Point3::new( 0.0, 1.0,  0.0), 1.0, Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375 })));
     list.add(Sphere::new(Point3::new(-4.0, 1.0,  0.0), 1.0,
         Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() })));
-    list.add(Sphere::new(Point3::new( 4.0, 1.0,  0.0), 1.0,
-        Arc::new(PbrMaterial { albedo: Color::new(0.85, 0.65, 0.25), roughness: 0.25, metallic: 1.0, anisotropy: 0.85, ..Default::default() })));
+    // Spectral metals: physically accurate Fresnel from J&C 1972 IOR tables.
+    list.add(Sphere::new(Point3::new( 4.0, 1.0,  0.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold,   0.04))));
+    list.add(Sphere::new(Point3::new( 4.0, 1.0, -3.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Copper, 0.08))));
+    list.add(Sphere::new(Point3::new( 4.0, 1.0,  3.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Silver, 0.02))));
     list.add(Sphere::new(Point3::new(-2.0, 1.0, -2.0), 1.0,
         Arc::new(PearlMaterial {
             base_color:       Color::new(0.98, 0.93, 0.88),
@@ -222,6 +224,11 @@ pub fn build_cornell_box() -> SceneData {
     // producing visible rainbow fringes in the caustic and refraction.
     list.add(Sphere::new(Point3::new(190.0, 245.0, 190.0), 80.0,
         Arc::new(SpectralDielectric { cauchy_b: 1.612, cauchy_c: 0.00950 })));
+
+    // Gold sphere: conductor Fresnel from J&C 1972 IOR tables; warm reflections
+    // under the 6500 K BlackbodyLight reveal the spectral edge ≈ 480–520 nm.
+    list.add(Sphere::new(Point3::new(400.0, 80.0, 150.0), 80.0,
+        Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold, 0.0))));
 
     SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,

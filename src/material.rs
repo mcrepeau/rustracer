@@ -6,7 +6,7 @@ use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord};
 use crate::texture::Texture;
-use crate::spectrum::{cauchy_ior, planck_raw, spectral_to_rgb};
+use crate::spectrum::{cauchy_ior, copper_ior, fresnel_conductor, gold_ior, planck_raw, silver_ior, spectral_to_rgb};
 use crate::volume::hg_sample;
 
 pub struct DiffuseLight {
@@ -238,6 +238,82 @@ impl Material for SpectralDielectric {
     }
 
     fn is_spectral(&self) -> bool { true }
+}
+
+/// Which metal to use for `SpectralMetal`.
+#[derive(Clone, Copy, Debug)]
+pub enum SpectralMetalVariant { Gold, Copper, Silver }
+
+impl SpectralMetalVariant {
+    fn ior_at(self, lambda_nm: f32) -> (f32, f32) {
+        match self {
+            Self::Gold   => gold_ior(lambda_nm),
+            Self::Copper => copper_ior(lambda_nm),
+            Self::Silver => silver_ior(lambda_nm),
+        }
+    }
+}
+
+/// Physically-based conductor using spectral complex IOR (n + ik) sampled at
+/// the hero wavelength.
+///
+/// On the first spectral bounce `spectral_to_rgb(λ)` is folded in (exactly as
+/// `SpectralDielectric` does) so brightness encodes the full spectral Fresnel.
+/// Subsequent bounces scale the RGB triple by the scalar F(λ), which is
+/// equivalent to multiplying spectral power by F at the same wavelength.
+///
+/// Data: Johnson & Christy (1972), 380–680 nm, 25 nm grid.
+pub struct SpectralMetal {
+    pub variant:   SpectralMetalVariant,
+    /// 0 = perfect mirror; higher values add a diffuse-sphere perturbation.
+    pub roughness: f32,
+    avg_color:     Color,  // mean spectral F0 for OIDN albedo hint
+}
+
+impl SpectralMetal {
+    pub fn new(variant: SpectralMetalVariant, roughness: f32) -> Self {
+        let mut acc = Color::default();
+        for i in 0..METAL_SAMPLES {
+            let lam = 380.0 + i as f32 * 25.0;
+            let (n, k) = variant.ior_at(lam);
+            acc += spectral_to_rgb(lam) * fresnel_conductor(1.0, n, k);
+        }
+        Self { variant, roughness, avg_color: acc / METAL_SAMPLES as f32 }
+    }
+}
+
+const METAL_SAMPLES: usize = 13;
+
+impl Material for SpectralMetal {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
+        let n  = rec.normal;
+        let wi = r_in.direction.unit();
+        let reflected = wi.reflect(n);
+        let dir = if self.roughness > 0.0 {
+            (reflected + self.roughness * Vec3::random_in_unit_sphere(rng)).unit()
+        } else {
+            reflected
+        };
+        if dir.dot(n) <= 0.0 { return None; }
+
+        let lambda          = r_in.wavelength;
+        let (ior_n, ior_k)  = self.variant.ior_at(lambda);
+        let cos_theta       = (-wi).dot(n).clamp(0.0, 1.0);
+        let fresnel         = fresnel_conductor(cos_theta, ior_n, ior_k);
+
+        let attenuation = if r_in.spectral_weighted {
+            Color::new(fresnel, fresnel, fresnel)
+        } else {
+            spectral_to_rgb(lambda) * fresnel
+        };
+        let mut scattered = Ray::scatter_from(rec.p, dir, r_in);
+        if !r_in.spectral_weighted { scattered.spectral_weighted = true; }
+
+        Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
+    }
+
+    fn is_spectral(&self)                              -> bool  { true }
+    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
 }
 
 /// Translucent marble: glass boundary with volumetric multiple scattering inside.
