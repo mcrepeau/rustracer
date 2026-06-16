@@ -213,38 +213,60 @@ impl Material for SpectralDielectric {
 /// enters from a wide cone, diffuses over a few scattering lengths, and exits
 /// smoothly from a spread of surface points.
 ///
-/// - `albedo` — per-scatter tint; channels < 1 bleed energy into surviving
-///   wavelengths, naturally creating a coloured glow without explicit `σ_a`.
+/// - `albedo` — per-scatter albedo (single-scatter tint, also the RR survival colour).
+/// - `sigma_a` — Beer-Lambert absorption coefficient (per unit length, per channel).
+///   Applied exponentially to every free path: `T = exp(-σ_a · L)`.  Zero = no
+///   absorption beyond per-scatter tinting.  For r=0.15 marbles a value around 2–4
+///   gives T ≈ 0.4–0.6 over a full diameter, producing rich saturated glass colour.
 /// - `density` — σ_t (events per unit length).  For radius-0.15 marbles,
 ///   `density ≈ 7` gives ≈2 scatters per diameter traversal.
 /// - `g` — anisotropy (0 = isotropic; ~0.3 suits glass inclusions).
 pub struct SSSMaterial {
-    pub albedo:  Color,
-    pub ior:     f32,
-    pub density: f32,
-    pub g:       f32,
+    pub albedo:   Color,
+    pub sigma_a:  Color,
+    pub ior:      f32,
+    pub density:  f32,
+    pub g:        f32,
+}
+
+/// Per-channel Beer-Lambert transmittance over path length `t`.
+#[inline]
+fn beer_lambert(sigma_a: Color, t: f32) -> Color {
+    Color::new(
+        (-sigma_a.x * t).exp(),
+        (-sigma_a.y * t).exp(),
+        (-sigma_a.z * t).exp(),
+    )
 }
 
 impl Material for SSSMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let unit = r_in.direction.unit();
 
-        // Check for a volumetric scatter event before the exit surface.
+        // Inside the medium: check for scatter before the exit surface.
         if !rec.front_face && self.density > 0.0 {
             let path_length = (rec.p - r_in.origin).length();
             let t_scat      = -(rng.gen::<f32>().max(1e-9).ln()) / self.density;
             if t_scat < path_length {
+                // Scatter event: tint by albedo + Beer-Lambert absorption up to scatter point.
                 let p_scat  = r_in.origin + unit * t_scat;
                 let new_dir = hg_sample(unit, self.g, rng);
                 return Some(ScatterRecord {
-                    attenuation: self.albedo,
+                    attenuation: self.albedo * beer_lambert(self.sigma_a, t_scat),
                     ray:         Ray::scatter_from(p_scat, new_dir, r_in),
                     skip_pdf:    true,
                 });
             }
+            // Unscattered exit: apply Beer-Lambert over the full traversed path.
+            let (direction, _) = dielectric_boundary(self.ior, r_in, rec, rng);
+            return Some(ScatterRecord {
+                attenuation: beer_lambert(self.sigma_a, path_length),
+                ray:         Ray::scatter_from(rec.p, direction, r_in),
+                skip_pdf:    true,
+            });
         }
 
-        // Boundary event (entry or unscattered exit): standard Fresnel.
+        // Entry boundary (or density == 0): standard Fresnel, no absorption yet.
         let (direction, _) = dielectric_boundary(self.ior, r_in, rec, rng);
         Some(ScatterRecord {
             attenuation: Color::new(1.0, 1.0, 1.0),

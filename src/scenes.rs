@@ -101,6 +101,19 @@ pub fn build_random_scene() -> SceneData {
         Color::new(0.18, 0.97, 0.82),  // teal
         Color::new(0.97, 0.33, 0.68),  // rose
     ];
+    // Beer-Lambert absorption per channel (per unit length).  Tuned for r=0.15 marbles
+    // (max path ≈ 0.30): sigma_a ≈ 3 → T ≈ 0.41, sigma_a ≈ 0.2 → T ≈ 0.94.
+    // High absorption in the complementary channels deepens the marble's colour.
+    let sss_sigma_a: &[Color] = &[
+        Color::new(3.0, 0.2, 3.0),  // jade:   absorb R+B, pass G
+        Color::new(3.0, 1.5, 0.2),  // cobalt: absorb R, moderate G, pass B
+        Color::new(0.2, 1.5, 4.0),  // amber:  absorb B strongly, moderate G, pass R
+        Color::new(0.2, 4.0, 4.0),  // ruby:   absorb G+B, pass R
+        Color::new(1.0, 4.0, 0.2),  // violet: absorb G, moderate R, pass B
+        Color::new(0.2, 0.5, 3.5),  // gold:   absorb B, pass R+G
+        Color::new(4.0, 0.2, 0.2),  // teal:   absorb R, pass G+B
+        Color::new(0.2, 3.5, 1.5),  // rose:   absorb G, moderate B, pass R
+    ];
     // Dedicated SSS marbles clustered around the diamond on the ground.
     let dedicated_marbles: &[(usize, Point3)] = &[
         (0, Point3::new(1.5,  0.15, -1.0)),
@@ -112,6 +125,7 @@ pub fn build_random_scene() -> SceneData {
     for &(idx, center) in dedicated_marbles {
         list.add(Sphere::new(center, 0.15, Arc::new(SSSMaterial {
             albedo:  sss_colors[idx],
+            sigma_a: sss_sigma_a[idx],
             ior:     1.5,
             density: 7.0,
             g:       0.30,
@@ -128,9 +142,15 @@ pub fn build_random_scene() -> SceneData {
             if (ground_pos - Point3::new(-4.0, 0.2, 0.0)).length() < 1.2 { continue; }
             let choose: f32 = rng.gen();
             let mat: Arc<dyn Material> = if choose < 0.60 {
-                let albedo  = sss_colors[rng.gen_range(0..sss_colors.len())];
+                let idx     = rng.gen_range(0..sss_colors.len());
                 let density = rng.gen_range(3.0_f32..9.0);
-                Arc::new(SSSMaterial { albedo, ior: 1.5, density, g: 0.30 })
+                Arc::new(SSSMaterial {
+                    albedo:  sss_colors[idx],
+                    sigma_a: sss_sigma_a[idx],
+                    ior:     1.5,
+                    density,
+                    g:       0.30,
+                })
             } else if choose < 0.75 {
                 let albedo = Color::random(&mut rng) * Color::random(&mut rng);
                 let roughness: f32 = rng.gen_range(0.5..1.0);
