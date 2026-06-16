@@ -157,7 +157,7 @@ fn print_controls() {
     println!("  Mouse        Look (free cam)       [Shift]  Move down");
     println!("  [,] [.]      Decrease / increase FOV");
     println!("  [-] [=]      Decrease / increase exposure");
-    println!("  [[]  []]     Decrease / increase aperture");
+    println!("  [I]  [O]     Decrease / increase aperture");
     println!("  [Arrows]     Rotate sun");
     println!("  [P]          Save PNG");
     println!("  [Enter]      Pause rendering");
@@ -645,11 +645,11 @@ fn main() {
                                         save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                     }
                                 }
-                                VirtualKeyCode::LBracket => {
+                                VirtualKeyCode::I => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
                                     cam_dirty = true;
                                 }
-                                VirtualKeyCode::RBracket => {
+                                VirtualKeyCode::O => {
                                     cam_state.aperture += 0.025;
                                     cam_dirty = true;
                                 }
