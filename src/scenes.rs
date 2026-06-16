@@ -404,7 +404,7 @@ pub fn build_nextweek_scene() -> SceneData {
         max_samples:    2000,
         enable_caustics:       true,
         caustic_quad:          Some(caustic_quad),
-        caustic_gather_radius: 10.0,
+        caustic_gather_radius: 25.0,
         photon_map:            None,
     };
     // Static scene: rebuild() is never called from tick(), so build the
