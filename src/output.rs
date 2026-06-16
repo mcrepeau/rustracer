@@ -101,6 +101,8 @@ pub fn to_rgb_u32(c: Color, scale: f32, tm: ToneMapper) -> u32 {
 
 /// `pixel_samples`: per-pixel sample counts used when adaptive sampling is active.
 /// Pass `None` to use the uniform `samples` count for every pixel.
+/// `spp_label`: overrides the spp value in the filename (use when the buffer is
+/// pre-normalized and `samples` is passed as 1 for scaling purposes).
 pub fn save_png(
     accumulator:   &[Color],
     samples:       u32,
@@ -110,10 +112,12 @@ pub fn save_png(
     height:        u32,
     exposure:      f32,
     tm:            ToneMapper,
+    spp_label:     Option<u32>,
 ) {
     if samples == 0 { return; }
-    let slug = scene_name.to_lowercase().replace(' ', "_");
-    let path = format!("render_{}_{:04}spp.png", slug, samples);
+    let slug  = scene_name.to_lowercase().replace(' ', "_");
+    let label = spp_label.unwrap_or(samples);
+    let path  = format!("render_{}_{:04}spp.png", slug, label);
     let img = ImageBuffer::from_fn(width, height, |x, y| {
         let i = (y * width + x) as usize;
         let n = pixel_samples.map_or(samples, |ps| ps[i]).max(1);

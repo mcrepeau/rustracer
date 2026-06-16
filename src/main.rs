@@ -144,15 +144,18 @@ fn spawn_denoiser(
     win_h: u32,
     accumulator:     &[Color],
     samples:         u32,
+    pixel_samples:   Option<&[u32]>,
     aux_albedo:      &[f32],
     aux_normal:      &[f32],
     denoised:        &Arc<Mutex<Vec<Color>>>,
     denoise_running: &Arc<AtomicBool>,
     denoise_epoch:   &Arc<AtomicU64>,
 ) {
-    let sc    = 1.0 / samples.max(1) as f32;
-    let input = accumulator.iter()
-        .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
+    let input = accumulator.iter().enumerate()
+        .flat_map(|(i, c)| {
+            let n = pixel_samples.map_or(samples, |ps| ps[i]).max(1) as f32;
+            [c.x / n, c.y / n, c.z / n]
+        })
         .collect::<Vec<f32>>();
     let alb     = aux_albedo.to_vec();
     let nrm     = aux_normal.to_vec();
@@ -352,16 +355,16 @@ fn main() {
                                             let blended: Vec<Color> = accumulator.iter().zip(denoised_guard.iter())
                                                 .map(|(acc, den)| *den * denoise_blend + *acc * sc * (1.0 - denoise_blend))
                                                 .collect();
-                                            save_png(&blended, 1, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper);
+                                            save_png(&blended, 1, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, Some(samples));
                                         } else {
                                             let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                            save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper);
+                                            save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None);
                                         }
                                     }
                                     #[cfg(not(feature = "denoise"))]
                                     {
                                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                        save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper);
+                                        save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None);
                                     }
                                 }
                                 VirtualKeyCode::LBracket => {
@@ -422,7 +425,8 @@ fn main() {
                                 VirtualKeyCode::N => {
                                     oidn_on = !oidn_on;
                                     if oidn_on && samples > 0 && !denoise_running.load(Ordering::Acquire) {
-                                        spawn_denoiser(win_w, win_h, &accumulator, samples,
+                                        let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                                        spawn_denoiser(win_w, win_h, &accumulator, samples, ps,
                                             &aux_albedo, &aux_normal,
                                             &denoised, &denoise_running, &denoise_epoch);
                                     }
@@ -520,8 +524,7 @@ fn main() {
                     let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
                     #[cfg(feature = "denoise")]
                     let oidn_hint = if oidn_on {
-                        let state = if adaptive_on { "paused" }
-                                    else if denoise_running.load(Ordering::Relaxed) { "running…" }
+                        let state = if denoise_running.load(Ordering::Relaxed) { "running…" }
                                     else { "on" };
                         format!("  OIDN {state} blend:{:.0}% [JK] [N] off", denoise_blend * 100.0)
                     } else {
@@ -609,12 +612,10 @@ fn main() {
                         aux_normal = nrm;
                     }
 
-                    // Do not fire the denoiser while adaptive sampling is active:
-                    // converged pixels have pixel_samples[i] < samples, so scaling
-                    // the accumulator by 1/samples would produce incorrectly dim input.
                     #[cfg(feature = "denoise")]
-                    if oidn_on && !adaptive_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
-                        spawn_denoiser(win_w, win_h, &accumulator, samples,
+                    if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
+                        let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                        spawn_denoiser(win_w, win_h, &accumulator, samples, ps,
                             &aux_albedo, &aux_normal,
                             &denoised, &denoise_running, &denoise_epoch);
                     }
@@ -629,26 +630,30 @@ fn main() {
                 let mut buffer = surface.buffer_mut().unwrap();
                 let sc = 1.0 / samples.max(1) as f32;
                 let buf: &mut [u32] = &mut buffer;
+                #[cfg(feature = "denoise")]
+                {
+                    let denoised_guard = denoised.lock().unwrap();
+                    let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
+                    if use_denoised {
+                        buf.par_iter_mut()
+                            .zip(accumulator.par_iter())
+                            .zip(denoised_guard.par_iter())
+                            .zip(pixel_samples.par_iter())
+                            .for_each(|(((dst, &acc), &den), &n)| {
+                                let n_sc = if adaptive_on { n.max(1) as f32 } else { samples.max(1) as f32 };
+                                let raw = acc / n_sc;
+                                *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
+                            });
+                    } else if adaptive_on {
+                        write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure, tonemapper);
+                    } else {
+                        write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
+                    }
+                }
+                #[cfg(not(feature = "denoise"))]
                 if adaptive_on {
                     write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure, tonemapper);
                 } else {
-                    #[cfg(feature = "denoise")]
-                    {
-                        let denoised_guard = denoised.lock().unwrap();
-                        let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
-                        if use_denoised {
-                            buf.par_iter_mut()
-                                .zip(accumulator.par_iter())
-                                .zip(denoised_guard.par_iter())
-                                .for_each(|((dst, &acc), &den)| {
-                                    let raw = acc * sc;
-                                    *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
-                                });
-                        } else {
-                            write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
-                        }
-                    }
-                    #[cfg(not(feature = "denoise"))]
                     write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
                 }
                 buffer.present().unwrap();

@@ -209,7 +209,7 @@ pub fn build_cornell_box() -> SceneData {
     let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
     list.objects.push(short);
 
-    list.add(Sphere::new(Point3::new(190.0, 90.0, 190.0), 80.0, Arc::new(Dielectric { ir: 1.5 })));
+    list.add(Sphere::new(Point3::new(190.0, 245.0, 190.0), 80.0, Arc::new(Dielectric { ir: 1.5 })));
 
     SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
