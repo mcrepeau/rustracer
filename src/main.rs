@@ -115,6 +115,137 @@ fn run_bench() {
     println!("\nDone.");
 }
 
+// ── Headless render ───────────────────────────────────────────────────────────
+
+struct RenderArgs {
+    scene:      String,
+    samples:    Option<u32>,
+    width:      u32,
+    height:     u32,
+    exposure:   f32,
+    output:     Option<String>,
+    tonemapper: ToneMapper,
+}
+
+impl Default for RenderArgs {
+    fn default() -> Self {
+        Self {
+            scene:      "random".to_string(),
+            samples:    None,
+            width:      WIDTH,
+            height:     HEIGHT,
+            exposure:   1.0,
+            output:     None,
+            tonemapper: ToneMapper::AgX,
+        }
+    }
+}
+
+fn print_help() {
+    println!("rustracer — path tracer\n");
+    println!("USAGE:");
+    println!("  rustracer                      Interactive viewer");
+    println!("  rustracer --render [options]   Headless render to PNG");
+    println!("  rustracer --bench              Performance benchmark");
+    println!("  rustracer --help               Show this message\n");
+    println!("RENDER OPTIONS:");
+    println!("  --scene <name>       random|1  cornell|2  nextweek|3  <path.toml>");
+    println!("                       Default: random");
+    println!("  --samples <n>        Samples per pixel (default: scene maximum)");
+    println!("  --width  <n>         Output width  in pixels (default: {WIDTH})");
+    println!("  --height <n>         Output height in pixels (default: {HEIGHT})");
+    println!("  --exposure <f>       Exposure multiplier     (default: 1.0)");
+    println!("  --output <path>      Output PNG path (default: auto-generated)");
+    println!("  --tonemapper <name>  agx or aces             (default: agx)");
+}
+
+fn parse_render_args() -> Result<RenderArgs, String> {
+    let mut r  = RenderArgs::default();
+    let mut it = std::env::args().skip(2); // skip binary + "--render"
+    while let Some(flag) = it.next() {
+        macro_rules! val {
+            () => { it.next().ok_or_else(|| format!("'{flag}' requires a value"))? }
+        }
+        match flag.as_str() {
+            "--scene"      => r.scene    = val!(),
+            "--samples"    => r.samples  = Some(val!().parse::<u32>().map_err(|e| format!("--samples: {e}"))?),
+            "--width"      => r.width    = val!().parse::<u32>().map_err(|e| format!("--width: {e}"))?,
+            "--height"     => r.height   = val!().parse::<u32>().map_err(|e| format!("--height: {e}"))?,
+            "--exposure"   => r.exposure = val!().parse::<f32>().map_err(|e| format!("--exposure: {e}"))?,
+            "--output"     => r.output   = Some(val!()),
+            "--tonemapper" => r.tonemapper = match val!().to_lowercase().as_str() {
+                "agx"  => ToneMapper::AgX,
+                "aces" => ToneMapper::Aces,
+                s      => return Err(format!("Unknown tonemapper '{s}': use agx or aces")),
+            },
+            other => return Err(format!("Unknown flag '{other}'. Run with --help for usage.")),
+        }
+    }
+    Ok(r)
+}
+
+fn run_render(args: RenderArgs) {
+    let scene = {
+        let sl = args.scene.to_lowercase();
+        match sl.as_str() {
+            "random"  | "1" => build_random_scene(),
+            "cornell" | "2" => build_cornell_box(),
+            "nextweek"| "3" => build_nextweek_scene(),
+            _ => match scene_file::load(&args.scene) {
+                Ok(s)  => s,
+                Err(e) => { eprintln!("Failed to load '{}': {e}", args.scene); std::process::exit(1); }
+            },
+        }
+    };
+
+    let samples = args.samples.unwrap_or(scene.max_samples);
+    let strata  = (samples as f32).sqrt() as u32;
+    let n_px    = (args.width * args.height) as usize;
+
+    let mut cam = CameraState::from_params(&scene.cam_init);
+    cam.autofocus(scene.world.as_ref());
+    let camera = cam.to_camera(args.width as f32 / args.height as f32);
+
+    let mut accumulator = vec![Color::default(); n_px];
+    let mut scratch     = vec![Color::default(); n_px];
+
+    let tm_name = if args.tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
+    println!("Scene:      {}", scene.name);
+    println!("Resolution: {}×{}", args.width, args.height);
+    println!("Samples:    {samples}  (strata {strata}×{strata})");
+    println!("Tonemapper: {tm_name}  exposure {:.2}", args.exposure);
+    println!();
+
+    let t0 = Instant::now();
+    for s in 0..samples {
+        render_tiles(&mut scratch, None, s, strata,
+                     args.width, args.height, &camera,
+                     scene.world.as_ref(), scene.background,
+                     &scene.lights, 1.0, scene.photon_map.as_deref());
+
+        accumulator.par_iter_mut().zip(scratch.par_iter()).for_each(|(a, &c)| *a += c);
+
+        if s % 5 == 4 || s == samples - 1 {
+            let done    = s + 1;
+            let elapsed = t0.elapsed().as_secs_f64();
+            let eta     = if done < samples { elapsed / done as f64 * (samples - done) as f64 } else { 0.0 };
+            const BAR: usize = 32;
+            let filled = (done as usize * BAR / samples as usize).min(BAR);
+            let bar    = format!("{}{}", "█".repeat(filled), "░".repeat(BAR - filled));
+            print!("\r  {done:>5}/{samples}  [{bar}]  {elapsed:5.0}s elapsed  ETA {eta:4.0}s  ");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+    }
+
+    let elapsed = t0.elapsed();
+    println!("\n\nRendered in {:.2}s  ({:.1} ms/spp)\n",
+             elapsed.as_secs_f64(), elapsed.as_millis() as f64 / samples as f64);
+
+    let out = args.output.as_deref();
+    save_png(&accumulator, samples, None, scene.name,
+             args.width, args.height, args.exposure, args.tonemapper, None, out);
+}
+
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, exposure: f32, tm: ToneMapper) {
@@ -177,9 +308,17 @@ fn spawn_denoiser(
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 fn main() {
-    if std::env::args().any(|a| a == "--bench") {
-        run_bench();
-        return;
+    match std::env::args().nth(1).as_deref() {
+        Some("--bench")  => { run_bench(); return; }
+        Some("--help") | Some("-h") => { print_help(); return; }
+        Some("--render") => {
+            match parse_render_args() {
+                Ok(args) => run_render(args),
+                Err(e)   => { eprintln!("Error: {e}"); std::process::exit(1); }
+            }
+            return;
+        }
+        _ => {}
     }
 
     println!("Building scenes…");
@@ -355,16 +494,16 @@ fn main() {
                                             let blended: Vec<Color> = accumulator.iter().zip(denoised_guard.iter())
                                                 .map(|(acc, den)| *den * denoise_blend + *acc * sc * (1.0 - denoise_blend))
                                                 .collect();
-                                            save_png(&blended, 1, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, Some(samples));
+                                            save_png(&blended, 1, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, Some(samples), None);
                                         } else {
                                             let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                            save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None);
+                                            save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                         }
                                     }
                                     #[cfg(not(feature = "denoise"))]
                                     {
                                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                        save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None);
+                                        save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                     }
                                 }
                                 VirtualKeyCode::LBracket => {
