@@ -6,7 +6,7 @@ use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
 use crate::material::{
-    Dielectric, DiffuseLight, Lambertian, Metal, PbrMaterial, PearlMaterial, SpectralDielectric,
+    Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric,
 };
 use crate::cone::Cone;
 use crate::cylinder::Cylinder;
@@ -393,7 +393,7 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
             Arc::new(Lambertian { texture: Texture::from(col(color)) }),
 
         MaterialConfig::Metal { color, fuzz } =>
-            Arc::new(Metal { albedo: col(color), fuzz }),
+            Arc::new(PbrMaterial { albedo: col(color), metallic: 1.0, roughness: fuzz, ..Default::default() }),
 
         MaterialConfig::Dielectric { ior } =>
             Arc::new(Dielectric { ir: ior }),

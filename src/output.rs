@@ -7,8 +7,13 @@ fn aces(x: f32) -> f32 {
 }
 
 #[inline]
+fn srgb_encode(x: f32) -> f32 {
+    if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
+}
+
+#[inline]
 pub fn tone_map(c: Color, scale: f32) -> [u8; 3] {
-    let f = |x: f32| (aces(x * scale).sqrt().clamp(0.0, 0.999) * 256.0) as u8;
+    let f = |x: f32| (srgb_encode(aces(x * scale)).clamp(0.0, 0.999) * 256.0) as u8;
     [f(c.x), f(c.y), f(c.z)]
 }
 

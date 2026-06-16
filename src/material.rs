@@ -38,23 +38,6 @@ impl Material for Lambertian {
     fn can_receive_caustics(&self) -> bool { true }
 }
 
-pub struct Metal {
-    pub albedo: Color,
-    pub fuzz: f32,
-}
-
-impl Material for Metal {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let reflected = r_in.direction.unit().reflect(rec.normal);
-        let ray = Ray::scatter_from(rec.p, reflected + self.fuzz * Vec3::random_unit_vector(rng), r_in);
-        if ray.direction.dot(rec.normal) > 0.0 {
-            Some(ScatterRecord { attenuation: self.albedo, ray, skip_pdf: true })
-        } else {
-            None
-        }
-    }
-    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
-}
 
 #[inline]
 fn schlick(cosine: f32, ref_idx: f32) -> f32 {

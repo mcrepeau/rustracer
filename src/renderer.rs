@@ -136,6 +136,35 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
     }
 }
 
+// ── Sun sampling helpers ──────────────────────────────────────────────────────
+
+/// Uniform solid-angle PDF for the solar disc cone; returns 0 outside the disc.
+/// The disc half-angle matches the `cos_gamma > 0.9997` threshold in preetham_sky.
+fn sun_pdf_value(dir: Vec3, background: Background) -> f32 {
+    use std::f32::consts::PI;
+    const COS_SUN_MAX: f32 = 0.9997;
+    if let Background::Physical { sun_dir, .. } = background {
+        if sun_dir.y > 0.0 && dir.unit().dot(sun_dir.unit()) > COS_SUN_MAX {
+            return 1.0 / (2.0 * PI * (1.0 - COS_SUN_MAX));
+        }
+    }
+    0.0
+}
+
+/// Sample a direction uniformly within the solar disc cone around `axis` (unit).
+fn sample_sun_cone(axis: Vec3, cos_theta_max: f32, rng: &mut impl Rng) -> Vec3 {
+    use std::f32::consts::PI;
+    let r1: f32 = rng.gen();
+    let r2: f32 = rng.gen();
+    let cos_theta = 1.0 - r1 * (1.0 - cos_theta_max);
+    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+    let phi = 2.0 * PI * r2;
+    let up = if axis.x.abs() < 0.999 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+    let t  = axis.cross(up).unit();
+    let b  = axis.cross(t);
+    t * (sin_theta * phi.cos()) + b * (sin_theta * phi.sin()) + axis * cos_theta
+}
+
 // ── Path tracer ───────────────────────────────────────────────────────────────
 
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
@@ -149,7 +178,12 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
             None => {
-                color += throughput * background.eval(ray.direction) * bg_scale;
+                // Apply MIS weight when a BRDF sample lands on the solar disc:
+                // the sun is also sampled via direct NEE, so we need the balance
+                // weight w_brdf = p_brdf / (p_brdf + p_sun) to avoid double-counting.
+                let sun_pdf = sun_pdf_value(ray.direction, background);
+                let emit_w  = if prev_specular || sun_pdf == 0.0 { 1.0 } else { prev_mis_w_brdf };
+                color += throughput * background.eval(ray.direction) * bg_scale * emit_w;
                 break;
             }
             Some(rec) => {
@@ -205,6 +239,31 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                         }
                     }
 
+                    // ── Sun NEE: directly sample the solar disc ──────────────────
+                    // Independent of area lights — the sun is a directional source
+                    // at infinity, not part of `lights`.  Shadow test with t_max=∞
+                    // correctly occludes finite geometry between the surface and sky.
+                    if let Background::Physical { sun_dir, .. } = background {
+                        if sun_dir.y > 0.0 {
+                            use std::f32::consts::PI;
+                            const COS_SUN_MAX: f32 = 0.9997;
+                            let sun_u      = sun_dir.unit();
+                            let sun_sample = sample_sun_cone(sun_u, COS_SUN_MAX, rng);
+                            let sun_shadow = Ray::new_at_time(rec.p, sun_sample, ray.time);
+                            if !world.any_hit(&sun_shadow, 0.001, f32::INFINITY) {
+                                let brdf = rec.mat.scattering_pdf(&ray, &rec, &sun_shadow);
+                                if brdf > 0.0 {
+                                    let sun_pdf   = 1.0 / (2.0 * PI * (1.0 - COS_SUN_MAX));
+                                    let sun_color = background.eval(sun_sample);
+                                    let area_pdf  = if lights.objects.is_empty() { 0.0 }
+                                                    else { lights.pdf_value(rec.p, sun_sample, ray.time) };
+                                    let mis_d = sun_pdf + brdf + area_pdf;
+                                    color += throughput * sr.attenuation * brdf * sun_color / mis_d;
+                                }
+                            }
+                        }
+                    }
+
                     // ── Indirect lighting: cosine-weighted BRDF sample ────────────
                     // Also compute the MIS weight for the case where this ray hits a
                     // light next iteration: w_brdf = p_brdf / (p_brdf + p_nee).
@@ -216,8 +275,12 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     let scat_pdf  = rec.mat.scattering_pdf(&ray, &rec, &scattered);
                     if scat_pdf <= 0.0 { break; }
 
-                    let nee_pdf_for_ind = if lights.objects.is_empty() { 0.0 }
-                                         else { lights.pdf_value(rec.p, ind_dir, ray.time) };
+                    let nee_pdf_for_ind = {
+                        let area = if lights.objects.is_empty() { 0.0 }
+                                   else { lights.pdf_value(rec.p, ind_dir, ray.time) };
+                        let sun  = sun_pdf_value(ind_dir, background);
+                        area + sun
+                    };
                     prev_mis_w_brdf = pdf_val / (pdf_val + nee_pdf_for_ind).max(1e-8);
 
                     throughput    *= sr.attenuation * (scat_pdf / pdf_val);

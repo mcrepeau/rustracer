@@ -2,7 +2,7 @@
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{Dielectric, DiffuseLight, Lambertian, Metal, PbrMaterial, PearlMaterial, SpectralDielectric, SSSMaterial};
+use crate::material::{Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SSSMaterial};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -262,7 +262,7 @@ pub fn build_nextweek_scene() -> SceneData {
     ));
     list.add(Sphere::new(
         Point3::new(0.0, 150.0, 145.0), 50.0,
-        Arc::new(Metal { albedo: Color::new(0.8, 0.8, 0.9), fuzz: 1.0 }),
+        Arc::new(PbrMaterial { albedo: Color::new(0.8, 0.8, 0.9), metallic: 1.0, roughness: 0.9, ..Default::default() }),
     ));
 
     let fog_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
