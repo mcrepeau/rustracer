@@ -34,7 +34,7 @@ impl Material for HenyeyGreenstein {
 
 /// Sample a direction from the HG distribution around the incident direction.
 /// Uses the exact analytical inversion of the CDF — no rejection needed.
-fn hg_sample(v_in: Vec3, g: f32, rng: &mut dyn rand::RngCore) -> Vec3 {
+pub(crate) fn hg_sample(v_in: Vec3, g: f32, rng: &mut dyn rand::RngCore) -> Vec3 {
     let xi1 = rng.gen::<f32>();
     let xi2 = rng.gen::<f32>();
 

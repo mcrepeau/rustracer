@@ -8,6 +8,7 @@ use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord};
 use crate::texture::Texture;
 use crate::spectrum::{cauchy_ior, spectral_to_rgb};
+use crate::volume::hg_sample;
 
 pub struct DiffuseLight {
     pub emit: Texture,
@@ -230,23 +231,6 @@ impl Material for MarbleMaterial {
     }
 }
 
-/// Sample a new direction from the Henyey-Greenstein phase function around `wi`.
-/// `g` ∈ (-1, 1): 0 = isotropic, >0 = forward-biased, <0 = back-scattered.
-fn hg_sample(wi: Vec3, g: f32, rng: &mut dyn RngCore) -> Vec3 {
-    let xi1 = rng.gen::<f32>();
-    let xi2 = rng.gen::<f32>();
-    let cos_theta = if g.abs() < 1e-3 {
-        1.0 - 2.0 * xi1
-    } else {
-        let sq = (1.0 - g * g) / (1.0 - g + 2.0 * g * xi1);
-        ((1.0 + g * g - sq * sq) / (2.0 * g)).clamp(-1.0, 1.0)
-    };
-    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-    let phi = 2.0 * PI * xi2;
-    let (t, b) = make_onb(wi);
-    (t * (sin_theta * phi.cos()) + b * (sin_theta * phi.sin()) + wi * cos_theta).unit()
-}
-
 /// Translucent marble: glass boundary with volumetric multiple scattering inside.
 ///
 /// Entering rays refract normally (IOR).  While inside, each path segment samples
@@ -304,10 +288,9 @@ impl Material for SSSMaterial {
 
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
 ///
-/// For `anisotropy == 0` the specular lobe is isotropic GGX sampled from the NDF
-/// (Walter et al. 2007).  For `anisotropy > 0` anisotropic GGX is used, sampled
-/// from the Visible Normal Distribution Function (VNDF, Heitz 2018), which gives
-/// shorter highlight streaks aligned with the tangent frame.
+/// All specular lobes are sampled from the Visible Normal Distribution Function
+/// (VNDF, Heitz 2018).  At `anisotropy == 0`, ax = ay = α, which reduces exactly
+/// to isotropic GGX — no branch needed.
 ///
 /// Parameters:
 /// - `albedo`: base colour — diffuse tint for dielectrics, F0 for metals.
@@ -329,6 +312,22 @@ pub struct PbrMaterial {
     pub clearcoat_roughness: f32,
     pub film_thickness:      f32,
     pub film_ior:            f32,
+}
+
+impl Default for PbrMaterial {
+    fn default() -> Self {
+        Self {
+            albedo:              Color::new(0.8, 0.8, 0.8),
+            roughness:           0.5,
+            metallic:            0.0,
+            anisotropy:          0.0,
+            anisotropy_angle:    0.0,
+            clearcoat:           0.0,
+            clearcoat_roughness: 0.03,
+            film_thickness:      0.0,
+            film_ior:            1.5,
+        }
+    }
 }
 
 impl Material for PbrMaterial {
@@ -359,38 +358,33 @@ impl Material for PbrMaterial {
         };
 
         if rng.gen::<f32>() < p_coat {
-            // ── Clearcoat specular ────────────────────────────────────────────
+            // ── Clearcoat specular (isotropic VNDF) ──────────────────────────
             let alpha_coat = (self.clearcoat_roughness * self.clearcoat_roughness).max(1e-4);
             let (t, b) = make_onb(n);
             let xi1: f32 = rng.gen();
             let xi2: f32 = rng.gen();
 
-            let cos_th = ((1.0 - xi2) / (xi2 * (alpha_coat * alpha_coat - 1.0) + 1.0)).max(0.0).sqrt();
-            let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
-            let phi    = 2.0 * PI * xi1;
-            let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
+            let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+            let m_ts  = vndf_sample_aniso(wo_ts, alpha_coat, alpha_coat, xi1, xi2);
+            let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
 
-            let vo_h  = wo.dot(h).max(0.0);
-            let wi    = (2.0 * vo_h * h - wo).unit();
+            let vo_h  = wo.dot(m).max(0.0);
+            let wi    = (2.0 * vo_h * m - wo).unit();
             let cos_i = wi.dot(n);
             if cos_i <= 0.0 { return None; }
 
-            let cos_h  = h.dot(n).max(1e-6);
             let f_coat = schlick(vo_h, 1.0 / 1.5_f32) * self.clearcoat;
-            let g2     = smith_g1(cos_o, alpha_coat) * smith_g1(cos_i, alpha_coat);
+            let g1_wi  = smith_g1(cos_i, alpha_coat);
 
-            // Thin-film tint: uses half-vector angle → view-dependent rainbow.
-            // nacre_color() performs the full spectral integral (see PearlMaterial).
             let film = if self.film_thickness > 0.0 {
                 nacre_color(vo_h, self.film_ior, self.film_thickness)
             } else {
                 Color::new(1.0, 1.0, 1.0)
             };
 
-            // Weight: F_coat · film · G₂ · (vo·h) / (cos_o · cos_h · p_coat)
-            let weight = f_coat * film * g2 * vo_h / (cos_o.max(1e-6) * cos_h * p_coat);
+            // VNDF weight: F_coat · film · G1(wi) / p_coat
             Some(ScatterRecord {
-                attenuation: weight,
+                attenuation: film * (f_coat * g1_wi / p_coat),
                 ray:         Ray::scatter_from(rec.p, wi, r_in),
                 skip_pdf:    true,
             })
@@ -401,52 +395,31 @@ impl Material for PbrMaterial {
                 let xi1: f32 = rng.gen();
                 let xi2: f32 = rng.gen();
 
-                let (wi, weight) = if self.anisotropy > 1e-3 {
-                    // ── Anisotropic GGX via VNDF (Heitz 2018) ────────────────
-                    let aspect = (1.0 - 0.9 * self.anisotropy).max(0.001_f32).sqrt();
-                    let ax = alpha * aspect;
-                    let ay = alpha / aspect;
+                // Unified VNDF: ax = ay = α at anisotropy=0 is identical to isotropic GGX.
+                let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
+                let ax = alpha * aspect;
+                let ay = alpha / aspect;
 
-                    let (t0, b0) = make_onb(n);
-                    let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
-                    let t = t0 * ca + b0 * sa;
-                    let b = b0 * ca - t0 * sa;
+                let (t0, b0) = make_onb(n);
+                let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
+                let t = t0 * ca + b0 * sa;
+                let b = b0 * ca - t0 * sa;
 
-                    let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
-                    let m_ts  = vndf_sample_aniso(wo_ts, ax, ay, xi1, xi2);
-                    let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
+                let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+                let m_ts  = vndf_sample_aniso(wo_ts, ax, ay, xi1, xi2);
+                let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
 
-                    let vo_h  = wo.dot(m).max(0.0);
-                    let wi    = (2.0 * vo_h * m - wo).unit();
-                    let cos_i = wi.dot(n);
-                    if cos_i <= 0.0 { return None; }
+                let vo_h  = wo.dot(m).max(0.0);
+                let wi    = (2.0 * vo_h * m - wo).unit();
+                let cos_i = wi.dot(n);
+                if cos_i <= 0.0 { return None; }
 
-                    let wi_ts = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
-                    let g1_wi = smith_g1_aniso(wi_ts.z, wi_ts.x, wi_ts.y, ax, ay);
-                    let f     = schlick_color(vo_h, f0);
-                    (wi, f * g1_wi)
-                } else {
-                    // ── Isotropic GGX via NDF sampling (Walter et al. 2007) ──
-                    let (t, b) = make_onb(n);
-
-                    let cos_th = ((1.0 - xi2) / (xi2 * (alpha * alpha - 1.0) + 1.0)).max(0.0).sqrt();
-                    let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
-                    let phi    = 2.0 * PI * xi1;
-                    let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
-
-                    let vo_h  = wo.dot(h).max(0.0);
-                    let wi    = (2.0 * vo_h * h - wo).unit();
-                    let cos_i = wi.dot(n);
-                    if cos_i <= 0.0 { return None; }
-
-                    let cos_h = h.dot(n).max(1e-6);
-                    let g2    = smith_g1(cos_o, alpha) * smith_g1(cos_i, alpha);
-                    let f     = schlick_color(vo_h, f0);
-                    (wi, f * (g2 * vo_h / (cos_o.max(1e-6) * cos_h)))
-                };
+                let wi_ts = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
+                let g1_wi = smith_g1_aniso(wi_ts.z, wi_ts.x, wi_ts.y, ax, ay);
+                let f     = schlick_color(vo_h, f0);
 
                 Some(ScatterRecord {
-                    attenuation: weight / (p_spec * (1.0 - p_coat)),
+                    attenuation: f * g1_wi / (p_spec * (1.0 - p_coat)),
                     ray:         Ray::scatter_from(rec.p, wi, r_in),
                     skip_pdf:    true,
                 })
@@ -488,7 +461,8 @@ pub fn set_pearl_sun_dir(dir: Vec3) {
     PEARL_SUN_X.store(dir.x.to_bits(), Ordering::Relaxed);
     PEARL_SUN_Y.store(dir.y.to_bits(), Ordering::Relaxed);
     PEARL_SUN_Z.store(dir.z.to_bits(), Ordering::Relaxed);
-    PEARL_SUN_ACTIVE.store(true, Ordering::Relaxed);
+    // Release: ensures X/Y/Z writes are visible to any thread that observes ACTIVE=true.
+    PEARL_SUN_ACTIVE.store(true, Ordering::Release);
 }
 
 pub fn clear_pearl_sun_dir() {
@@ -497,7 +471,8 @@ pub fn clear_pearl_sun_dir() {
 
 #[inline]
 fn pearl_sun_dir() -> Option<Vec3> {
-    if PEARL_SUN_ACTIVE.load(Ordering::Relaxed) {
+    // Acquire: pairs with the Release store in set_pearl_sun_dir, guaranteeing X/Y/Z are visible.
+    if PEARL_SUN_ACTIVE.load(Ordering::Acquire) {
         Some(Vec3::new(
             f32::from_bits(PEARL_SUN_X.load(Ordering::Relaxed)),
             f32::from_bits(PEARL_SUN_Y.load(Ordering::Relaxed)),
@@ -599,32 +574,27 @@ impl Material for PearlMaterial {
         };
 
         if rng.gen::<f32>() < f {
-            // ── GGX luster: view-dependent thin-film iridescence ──────────────
-            // nacre_color uses the half-vector angle (vo_h) so the rainbow cycles
-            // as you orbit the camera — the physically correct path for specular
-            // reflection off the nacre film surface.
+            // ── GGX luster: view-dependent thin-film iridescence (VNDF) ──────
             let (t, b)    = make_onb(n);
             let alpha_l   = (self.luster_roughness * self.luster_roughness).max(1e-4);
             let xi1: f32  = rng.gen();
             let xi2: f32  = rng.gen();
 
-            let cos_th = ((1.0 - xi2) / (xi2 * (alpha_l * alpha_l - 1.0) + 1.0)).max(0.0).sqrt();
-            let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
-            let phi    = 2.0 * PI * xi1;
-            let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
+            let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_theta);
+            let m_ts  = vndf_sample_aniso(wo_ts, alpha_l, alpha_l, xi1, xi2);
+            let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
 
-            let vo_h  = wo.dot(h).max(0.0);
-            let wi    = (2.0 * vo_h * h - wo).unit();
+            let vo_h  = wo.dot(m).max(0.0);
+            let wi    = (2.0 * vo_h * m - wo).unit();
             let cos_i = wi.dot(n);
             if cos_i <= 0.0 { return None; }
 
-            let cos_h  = h.dot(n).max(1e-6);
-            let g2     = smith_g1(cos_theta, alpha_l) * smith_g1(cos_i, alpha_l);
             let f_h    = schlick(vo_h, 1.0 / self.ior);
+            let g1_wi  = smith_g1(cos_i, alpha_l);
             let orient = nacre_color(vo_h, self.ior, varied);
 
-            // NDF weight (F·G·vo_h)/(cos_o·cos_h), divided by RR probability f.
-            let attenuation = orient * (f_h * g2 * vo_h / (cos_theta.max(1e-6) * cos_h)) / f;
+            // VNDF weight: orient · F · G1(wi), divided by RR probability f.
+            let attenuation = orient * (f_h * g1_wi / f);
             Some(ScatterRecord {
                 attenuation,
                 ray:      Ray::scatter_from(rec.p, wi, r_in),

@@ -69,14 +69,14 @@ pub fn build_random_scene() -> SceneData {
             center: Point3::new(-4.0, 1.0, 0.0),
             velocity: Vec3::default(),
             radius: 1.0,
-            mat: Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, metallic: 0.0, anisotropy: 0.0, anisotropy_angle: 0.0, clearcoat: 0.0, clearcoat_roughness: 0.03, film_thickness: 0.0, film_ior: 1.5 }),
+            mat: Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() }),
             restitution: 0.35, is_static: true,
         },
         DynamicSphere {
             center: Point3::new( 4.0, 1.0, 0.0),
             velocity: Vec3::default(),
             radius: 1.0,
-            mat: Arc::new(PbrMaterial { albedo: Color::new(0.85, 0.65, 0.25), roughness: 0.25, metallic: 1.0, anisotropy: 0.85, anisotropy_angle: 0.0, clearcoat: 0.0, clearcoat_roughness: 0.03, film_thickness: 0.0, film_ior: 1.5 }),
+            mat: Arc::new(PbrMaterial { albedo: Color::new(0.85, 0.65, 0.25), roughness: 0.25, metallic: 1.0, anisotropy: 0.85, ..Default::default() }),
             restitution: 0.80, is_static: true,
         },
         DynamicSphere {
@@ -100,10 +100,12 @@ pub fn build_random_scene() -> SceneData {
             velocity: Vec3::default(),
             radius: 1.0,
             mat: Arc::new(PbrMaterial {
-                albedo: Color::new(0.02, 0.01, 0.03), roughness: 0.6, metallic: 0.0,
-                anisotropy: 0.0, anisotropy_angle: 0.0,
-                clearcoat: 0.9, clearcoat_roughness: 0.03,
-                film_thickness: 480.0, film_ior: 1.45,
+                albedo: Color::new(0.02, 0.01, 0.03),
+                roughness: 0.6,
+                clearcoat: 0.9,
+                film_thickness: 480.0,
+                film_ior: 1.45,
+                ..Default::default()
             }),
             restitution: 0.50, is_static: true,
         },
@@ -185,11 +187,11 @@ pub fn build_random_scene() -> SceneData {
             } else if choose < 0.75 {
                 let albedo = Color::random(&mut rng) * Color::random(&mut rng);
                 let roughness: f32 = rng.gen_range(0.5..1.0);
-                (Arc::new(PbrMaterial { albedo, roughness, metallic: 0.0, anisotropy: 0.0, anisotropy_angle: 0.0, clearcoat: 0.0, clearcoat_roughness: 0.03, film_thickness: 0.0, film_ior: 1.5 }), 0.35)
+                (Arc::new(PbrMaterial { albedo, roughness, ..Default::default() }), 0.35)
             } else if choose < 0.92 {
                 let albedo   = Color::random_range(0.5, 1.0, &mut rng);
                 let roughness: f32 = rng.gen_range(0.0..0.5);
-                (Arc::new(PbrMaterial { albedo, roughness, metallic: 1.0, anisotropy: 0.0, anisotropy_angle: 0.0, clearcoat: 0.0, clearcoat_roughness: 0.03, film_thickness: 0.0, film_ior: 1.5 }), 0.5 + (1.0 - roughness) * 0.35)
+                (Arc::new(PbrMaterial { albedo, roughness, metallic: 1.0, ..Default::default() }), 0.5 + (1.0 - roughness) * 0.35)
             } else {
                 (Arc::new(Dielectric { ir: 1.5 }), 0.65)
             };
