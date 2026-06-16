@@ -96,7 +96,7 @@ pub fn build_random_scene() -> SceneData {
         // Iridescent clearcoat: near-black base under a thin-film dielectric coat.
         // Orbit the camera to watch the rainbow cycle across the surface.
         DynamicSphere {
-            center: Point3::new(2.0, 1.0, -2.0),
+            center: Point3::new(2.0, 1.0, 2.0),
             velocity: Vec3::default(),
             radius: 1.0,
             mat: Arc::new(PbrMaterial {
