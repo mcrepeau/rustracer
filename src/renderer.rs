@@ -12,7 +12,9 @@ use rayon::prelude::*;
 
 
 const MAX_DEPTH:     i32 = 50;
-const MAX_LUMINANCE: f32 = 10.0;
+/// Pre-clamp radiance to suppress fireflies while still letting the sun disc
+/// (~77 nits) through for ACES to compress.  ACES maps 100 → ~0.998 white.
+const MAX_LUMINANCE: f32 = 100.0;
 /// True solar angular radius ≈ 0.265° → cos(0.265° * π/180) ≈ 0.9999892.
 const COS_SUN_MAX:   f32 = 0.9999892;
 
