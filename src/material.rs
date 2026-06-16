@@ -1,8 +1,6 @@
 use std::f32::consts::PI;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use rand::{Rng, RngCore};
-use crate::perlin::Perlin;
 use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord};
@@ -193,42 +191,6 @@ impl Material for SpectralDielectric {
     }
 
     fn is_spectral(&self) -> bool { true }
-}
-
-/// Glass marble: IOR 1.5 glass exterior with a Perlin-based swirl visible from inside.
-///
-/// The glass surface behaves like a standard dielectric (Fresnel + TIR).  When a
-/// ray travels through the interior and exits (`front_face = false`), the
-/// attenuation is sampled from a sine-wave marble pattern modulated by Perlin
-/// turbulence, producing the characteristic coloured swirl of a cat's-eye marble.
-/// Entry events (`front_face = true`) are unattenuated so the glass shell looks
-/// clear from outside.
-pub struct MarbleMaterial {
-    pub ir:     f32,
-    pub color1: Color,   // swirl / ribbon colour
-    pub color2: Color,   // clear / base colour (typically near white)
-    pub scale:  f32,     // spatial frequency — higher = tighter swirls
-    pub perlin: Arc<Perlin>,
-}
-
-impl Material for MarbleMaterial {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let (direction, _) = dielectric_boundary(self.ir, r_in, rec, rng);
-        // Apply the swirl colour only when the ray is inside the marble (front_face = false).
-        // rec.u is the sphere-local azimuthal angle (0..1 = full wrap), so the band
-        // pattern always spans the sphere regardless of its world-space position.
-        // Perlin turbulence distorts the bands to give organic, marble-like swirls.
-        let attenuation = if !rec.front_face {
-            let noise = self.perlin.turb(rec.p * self.scale, 7);
-            let phi   = rec.u * 2.0 * PI;
-            let arg   = phi * 2.0 + noise * 8.0;
-            let t     = (0.5 * (1.0 + arg.sin())).clamp(0.0, 1.0);
-            self.color1 * t + self.color2 * (1.0 - t)
-        } else {
-            Color::new(1.0, 1.0, 1.0)
-        };
-        Some(ScatterRecord { attenuation, ray: Ray::scatter_from(rec.p, direction, r_in), skip_pdf: true })
-    }
 }
 
 /// Translucent marble: glass boundary with volumetric multiple scattering inside.
