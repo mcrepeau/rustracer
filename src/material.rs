@@ -6,7 +6,7 @@ use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord};
 use crate::texture::Texture;
-use crate::spectrum::{cauchy_ior, spectral_to_rgb};
+use crate::spectrum::{cauchy_ior, planck_raw, spectral_to_rgb};
 use crate::volume::hg_sample;
 
 pub struct DiffuseLight {
@@ -17,6 +17,52 @@ impl Material for DiffuseLight {
     fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
     fn emitted(&self, u: f32, v: f32, p: Point3) -> Color { self.emit.value(u, v, p) }
     fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color { self.emitted(u, v, p) }
+}
+
+/// Area light with a physically-based blackbody spectral power distribution.
+///
+/// Uses the hero-wavelength spectral framework: `emitted_at(λ)` returns
+/// `spectral_to_rgb(λ) × planck_norm(λ, T) × intensity`, where
+/// `planck_norm = planck_raw / mean(planck_raw over [380, 700])`.
+///
+/// For non-dispersive diffuse paths this time-averages to a warm/cool RGB
+/// color matching the color temperature.  For dispersive paths (e.g. through
+/// a glass sphere) the λ-dependent weight biases the rainbow: a 3000 K lamp
+/// produces a warm red-heavy rainbow; 6500 K daylight produces a balanced one.
+///
+/// Common color temperatures: 2700 K = warm tungsten, 3000 K = halogen,
+/// 5500 K ≈ sunlight, 6500 K = D65 daylight.
+pub struct BlackbodyLight {
+    pub temp_k:    f32,
+    pub intensity: f32,
+    norm:          f32,   // 1 / mean(planck_raw over [380, 700])
+    avg_color:     Color, // E_λ[planck_norm(λ,T) × spectral_to_rgb(λ)] × intensity
+}
+
+impl BlackbodyLight {
+    pub fn new(temp_k: f32, intensity: f32) -> Self {
+        const N: usize = 65;
+        let raw: [f32; N] = std::array::from_fn(|i| planck_raw(380.0 + i as f32 * 5.0, temp_k));
+        let mean = raw.iter().sum::<f32>() / N as f32;
+        let norm = 1.0 / mean.max(1e-30);
+        let avg_color = {
+            let mut acc = Color::default();
+            for i in 0..N {
+                acc += spectral_to_rgb(380.0 + i as f32 * 5.0) * (raw[i] * norm);
+            }
+            acc / N as f32 * intensity
+        };
+        Self { temp_k, intensity, norm, avg_color }
+    }
+}
+
+impl Material for BlackbodyLight {
+    fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
+    fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
+    fn emitted_at(&self, _u: f32, _v: f32, _p: Point3, lambda: f32) -> Color {
+        spectral_to_rgb(lambda) * (planck_raw(lambda, self.temp_k) * self.norm * self.intensity)
+    }
+    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
 }
 
 pub struct Lambertian {

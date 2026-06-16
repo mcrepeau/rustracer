@@ -125,6 +125,9 @@ struct RenderArgs {
     exposure:   f32,
     output:     Option<String>,
     tonemapper: ToneMapper,
+    adaptive:   bool,
+    #[cfg(feature = "denoise")]
+    denoise:    bool,
 }
 
 impl Default for RenderArgs {
@@ -137,6 +140,9 @@ impl Default for RenderArgs {
             exposure:   1.0,
             output:     None,
             tonemapper: ToneMapper::AgX,
+            adaptive:   false,
+            #[cfg(feature = "denoise")]
+            denoise:    false,
         }
     }
 }
@@ -174,12 +180,15 @@ fn print_help() {
     println!("RENDER OPTIONS:");
     println!("  --scene <name>       random|1  cornell|2  nextweek|3  <path.toml>");
     println!("                       Default: random");
-    println!("  --samples <n>        Samples per pixel (default: scene maximum)");
+    println!("  --samples <n>        Samples per pixel / adaptive max (default: scene maximum)");
     println!("  --width  <n>         Output width  in pixels (default: {WIDTH})");
     println!("  --height <n>         Output height in pixels (default: {HEIGHT})");
     println!("  --exposure <f>       Exposure multiplier     (default: 1.0)");
     println!("  --output <path>      Output PNG path (default: auto-generated)");
     println!("  --tonemapper <name>  agx or aces             (default: agx)");
+    println!("  --adaptive           Adaptive sampling: stop per-pixel when converged");
+    #[cfg(feature = "denoise")]
+    println!("  --denoise            Run OIDN after render and save denoised PNG");
 }
 
 fn parse_render_args() -> Result<RenderArgs, String> {
@@ -201,6 +210,13 @@ fn parse_render_args() -> Result<RenderArgs, String> {
                 "aces" => ToneMapper::Aces,
                 s      => return Err(format!("Unknown tonemapper '{s}': use agx or aces")),
             },
+            "--adaptive"   => r.adaptive = true,
+            "--denoise"    => {
+                #[cfg(feature = "denoise")]
+                { r.denoise = true; }
+                #[cfg(not(feature = "denoise"))]
+                return Err("--denoise requires the 'denoise' feature (rebuild with: cargo run --features denoise)".to_string());
+            }
             other => return Err(format!("Unknown flag '{other}'. Run with --help for usage.")),
         }
     }
@@ -221,9 +237,9 @@ fn run_render(args: RenderArgs) {
         }
     };
 
-    let samples = args.samples.unwrap_or(scene.max_samples);
-    let strata  = (samples as f32).sqrt() as u32;
-    let n_px    = (args.width * args.height) as usize;
+    let samples_max = args.samples.unwrap_or(scene.max_samples);
+    let strata      = (samples_max as f32).sqrt() as u32;
+    let n_px        = (args.width * args.height) as usize;
 
     let mut cam = CameraState::from_params(&scene.cam_init);
     cam.autofocus(scene.world.as_ref());
@@ -235,38 +251,138 @@ fn run_render(args: RenderArgs) {
     let tm_name = if args.tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
     println!("Scene:      {}", scene.name);
     println!("Resolution: {}×{}", args.width, args.height);
-    println!("Samples:    {samples}  (strata {strata}×{strata})");
+    if args.adaptive {
+        println!("Samples:    adaptive  (max {samples_max} spp)");
+    } else {
+        println!("Samples:    {samples_max}  (strata {strata}×{strata})");
+    }
     println!("Tonemapper: {tm_name}  exposure {:.2}", args.exposure);
+    #[cfg(feature = "denoise")]
+    if args.denoise { println!("Denoiser:   OIDN"); }
     println!();
 
     let t0 = Instant::now();
-    for s in 0..samples {
-        render_tiles(&mut scratch, None, s, strata,
-                     args.width, args.height, &camera,
-                     scene.world.as_ref(), scene.background,
-                     &scene.lights, 1.0, scene.photon_map.as_deref());
 
-        accumulator.par_iter_mut().zip(scratch.par_iter()).for_each(|(a, &c)| *a += c);
+    let (actual_spp, pixel_samples_opt): (u32, Option<Vec<u32>>) = if args.adaptive {
+        let mut pixel_samples = vec![0u32; n_px];
+        let mut var_m2_lum    = vec![0.0f32; n_px];
+        let mut adap_conv     = vec![false; n_px];
+        let mut n_converged   = 0usize;
+        let lum = |c: Color| c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
 
-        if s % 5 == 4 || s == samples - 1 {
-            let done    = s + 1;
-            let elapsed = t0.elapsed().as_secs_f64();
-            let eta     = if done < samples { elapsed / done as f64 * (samples - done) as f64 } else { 0.0 };
-            const BAR: usize = 32;
-            let filled = (done as usize * BAR / samples as usize).min(BAR);
-            let bar    = format!("{}{}", "█".repeat(filled), "░".repeat(BAR - filled));
-            print!("\r  {done:>5}/{samples}  [{bar}]  {elapsed:5.0}s elapsed  ETA {eta:4.0}s  ");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut s = 0u32;
+        while s < samples_max {
+            render_tiles(&mut scratch, Some(adap_conv.as_slice()), s, strata,
+                         args.width, args.height, &camera,
+                         scene.world.as_ref(), scene.background,
+                         &scene.lights, 1.0, scene.photon_map.as_deref());
+
+            accumulator.par_iter_mut()
+                .zip(scratch.par_iter())
+                .zip(var_m2_lum.par_iter_mut())
+                .zip(pixel_samples.par_iter_mut())
+                .zip(adap_conv.par_iter())
+                .for_each(|((((a, &sc), m2), n), &conv)| {
+                    if conv { return; }
+                    let s_lum    = lum(sc);
+                    let old_n    = *n;
+                    let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
+                    *a  += sc;
+                    *n  += 1;
+                    let new_mean = lum(*a) / *n as f32;
+                    *m2 += (s_lum - old_mean) * (s_lum - new_mean);
+                });
+            s += 1;
+
+            if s >= MIN_ADAPTIVE_SAMPLES {
+                adap_conv.par_iter_mut()
+                    .zip(pixel_samples.par_iter())
+                    .zip(var_m2_lum.par_iter())
+                    .zip(accumulator.par_iter())
+                    .for_each(|(((conv, &n), &m2), &acc)| {
+                        if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
+                        let mean_lum = lum(acc) / n as f32;
+                        if mean_lum < 1e-4 { *conv = true; return; }
+                        let variance = m2 / (n - 1).max(1) as f32;
+                        let std_err  = (variance / n as f32).sqrt();
+                        if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
+                    });
+                n_converged = adap_conv.iter().filter(|&&c| c).count();
+            }
+
+            if s % 5 == 0 || s == samples_max || n_converged == n_px {
+                let pct     = n_converged * 100 / n_px.max(1);
+                let elapsed = t0.elapsed().as_secs_f64();
+                print!("\r  {s:>5}/{samples_max} spp  {pct:>3}% converged  {elapsed:5.0}s  ");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            if n_converged == n_px { break; }
         }
-    }
+        (s, Some(pixel_samples))
+    } else {
+        for s in 0..samples_max {
+            render_tiles(&mut scratch, None, s, strata,
+                         args.width, args.height, &camera,
+                         scene.world.as_ref(), scene.background,
+                         &scene.lights, 1.0, scene.photon_map.as_deref());
+
+            accumulator.par_iter_mut().zip(scratch.par_iter()).for_each(|(a, &c)| *a += c);
+
+            if s % 5 == 4 || s == samples_max - 1 {
+                let done    = s + 1;
+                let elapsed = t0.elapsed().as_secs_f64();
+                let eta     = if done < samples_max { elapsed / done as f64 * (samples_max - done) as f64 } else { 0.0 };
+                const BAR: usize = 32;
+                let filled = (done as usize * BAR / samples_max as usize).min(BAR);
+                let bar    = format!("{}{}", "█".repeat(filled), "░".repeat(BAR - filled));
+                print!("\r  {done:>5}/{samples_max}  [{bar}]  {elapsed:5.0}s elapsed  ETA {eta:4.0}s  ");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+        }
+        (samples_max, None)
+    };
 
     let elapsed = t0.elapsed();
     println!("\n\nRendered in {:.2}s  ({:.1} ms/spp)\n",
-             elapsed.as_secs_f64(), elapsed.as_millis() as f64 / samples as f64);
+             elapsed.as_secs_f64(), elapsed.as_millis() as f64 / actual_spp.max(1) as f64);
 
-    let out = args.output.as_deref();
-    save_png(&accumulator, samples, None, scene.name,
-             args.width, args.height, args.exposure, args.tonemapper, None, out);
+    // ── OIDN denoising ────────────────────────────────────────────────────────
+    #[cfg(feature = "denoise")]
+    if args.denoise {
+        let color: Vec<f32> = accumulator.iter().enumerate()
+            .flat_map(|(i, c)| {
+                let n = pixel_samples_opt.as_ref().map_or(actual_spp, |ps| ps[i]).max(1) as f32;
+                [c.x / n, c.y / n, c.z / n]
+            })
+            .collect();
+        print!("Denoising with OIDN…  ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let (alb, nrm) = render_aux_pass(args.width, args.height, &camera,
+                                         scene.world.as_ref(), scene.background);
+        let spp_label = pixel_samples_opt.as_ref().map(|_| samples_max).unwrap_or(actual_spp);
+        match denoise::denoise_rgb(args.width, args.height, color, alb, nrm) {
+            Some(denoised) => {
+                let denoised_path = args.output.clone().unwrap_or_else(|| {
+                    let slug = scene.name.to_lowercase().replace(' ', "_");
+                    format!("render_{}_{:04}spp_denoised.png", slug, spp_label)
+                });
+                // denoised buffer is already per-pixel-normalized; pass samples=1 so save_png
+                // applies exposure directly without a second division
+                save_png(&denoised, 1, None, scene.name,
+                         args.width, args.height, args.exposure, args.tonemapper,
+                         Some(spp_label), Some(&denoised_path));
+            }
+            None => eprintln!("OIDN denoising failed."),
+        }
+        return;
+    }
+
+    // ── Raw PNG save ──────────────────────────────────────────────────────────
+    let ps    = pixel_samples_opt.as_deref();
+    let label = pixel_samples_opt.as_ref().map(|_| samples_max);
+    save_png(&accumulator, actual_spp, ps, scene.name,
+             args.width, args.height, args.exposure, args.tonemapper,
+             label, args.output.as_deref());
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────

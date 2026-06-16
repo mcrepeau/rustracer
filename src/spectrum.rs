@@ -111,6 +111,21 @@ pub fn spectral_to_rgb(lambda: f32) -> Color {
     Color::new(r * n[0], g * n[1], b * n[2])
 }
 
+/// Planck spectral radiance, un-normalised.
+///
+/// Returns a relative power value proportional to B(λ, T).  To get a
+/// normalised weight (mean = 1 over [380, 700 nm]) divide by the mean
+/// of this function over that range — `BlackbodyLight::new` does this
+/// once at construction time and stores the reciprocal as a `norm` field.
+///
+/// `lambda_nm` in nanometres, `temp_k` in Kelvin.
+#[inline]
+pub fn planck_raw(lambda_nm: f32, temp_k: f32) -> f32 {
+    const HC_OVER_K: f32 = 14_388_000.0; // hc/k in nm·K
+    let x = HC_OVER_K / (lambda_nm * temp_k);
+    1.0 / (lambda_nm.powi(5) * (x.exp() - 1.0).max(1e-30))
+}
+
 /// Cauchy dispersion equation: n(λ) = B + C/λ² (λ in **micrometres**).
 ///
 /// Pass `lambda_nm` in nanometres; the function converts internally.

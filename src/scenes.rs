@@ -2,7 +2,7 @@
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SSSMaterial};
+use crate::material::{BlackbodyLight, Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SSSMaterial};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -17,9 +17,13 @@ use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-/// Creates a matched (world quad, light-sampler quad) pair with identical geometry.
+/// Creates a matched (world quad, light-sampler quad) pair with a DiffuseLight.
 fn emissive_quad(q: Point3, u: Vec3, v: Vec3, emit: Color) -> (Quad, Quad) {
-    let mat: Arc<dyn Material> = Arc::new(DiffuseLight { emit: emit.into() });
+    emissive_quad_mat(q, u, v, Arc::new(DiffuseLight { emit: emit.into() }))
+}
+
+/// Creates a matched (world quad, light-sampler quad) pair with an arbitrary material.
+fn emissive_quad_mat(q: Point3, u: Vec3, v: Vec3, mat: Arc<dyn Material>) -> (Quad, Quad) {
     let world   = Quad::new(q, u, v, Arc::clone(&mat));
     let sampler = Quad::new(q, u, v, mat);
     (world, sampler)
@@ -50,7 +54,8 @@ pub fn build_random_scene() -> SceneData {
     list.objects.push(diamond);
 
     // Hero spheres
-    list.add(Sphere::new(Point3::new( 0.0, 1.0,  0.0), 1.0, Arc::new(Dielectric { ir: 1.5 })));
+    // Crown glass — dispersive under the physical sky; shows subtle spectral fringes.
+    list.add(Sphere::new(Point3::new( 0.0, 1.0,  0.0), 1.0, Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375 })));
     list.add(Sphere::new(Point3::new(-4.0, 1.0,  0.0), 1.0,
         Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() })));
     list.add(Sphere::new(Point3::new( 4.0, 1.0,  0.0), 1.0,
@@ -183,11 +188,14 @@ pub fn build_cornell_box() -> SceneData {
     let white: Arc<dyn Material> = Arc::new(Lambertian { texture: Color::new(0.73, 0.73, 0.73).into() });
     let green: Arc<dyn Material> = Arc::new(Lambertian { texture: Color::new(0.12, 0.45, 0.15).into() });
 
-    let (world_light, sampler_light) = emissive_quad(
+    let (world_light, sampler_light) = emissive_quad_mat(
         Point3::new(343.0, 554.0, 332.0),
         Vec3::new(-130.0, 0.0, 0.0),
         Vec3::new(0.0, 0.0, -105.0),
-        Color::new(15.0, 15.0, 15.0),
+        // 6500 K (D65 daylight) — close to neutral white; spectral path tracer
+        // uses the Planck weight at each hero wavelength so the glass sphere
+        // produces a physically correct rainbow under this illuminant.
+        Arc::new(BlackbodyLight::new(6500.0, 15.0)),
     );
     let mut lights = HittableList::new();
     lights.add(sampler_light);
@@ -209,7 +217,11 @@ pub fn build_cornell_box() -> SceneData {
     let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
     list.objects.push(short);
 
-    list.add(Sphere::new(Point3::new(190.0, 245.0, 190.0), 80.0, Arc::new(Dielectric { ir: 1.5 })));
+    // Dense flint glass (B=1.612, C=0.00950 μm²): IOR ranges 1.620–1.678
+    // across the visible spectrum — high dispersion like an optical prism,
+    // producing visible rainbow fringes in the caustic and refraction.
+    list.add(Sphere::new(Point3::new(190.0, 245.0, 190.0), 80.0,
+        Arc::new(SpectralDielectric { cauchy_b: 1.612, cauchy_c: 0.00950 })));
 
     SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
