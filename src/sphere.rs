@@ -63,6 +63,21 @@ impl Hittable for Sphere {
         Some(rec)
     }
 
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        let center = self.center_at(r.time);
+        let oc     = r.origin - center;
+        let a      = r.direction.length_squared();
+        let half_b = oc.dot(r.direction);
+        let c      = oc.length_squared() - self.radius * self.radius;
+        let disc   = half_b * half_b - a * c;
+        if disc < 0.0 { return false; }
+        let sqrtd = disc.sqrt();
+        let t1 = (-half_b - sqrtd) / a;
+        if t1 >= t_min && t1 <= t_max { return true; }
+        let t2 = (-half_b + sqrtd) / a;
+        t2 >= t_min && t2 <= t_max
+    }
+
     fn pdf_value(&self, origin: Point3, _dir: Vec3, time: f32) -> f32 {
         let to_center = self.center_at(time) - origin;
         let dist_sq   = to_center.length_squared();

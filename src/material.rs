@@ -41,8 +41,10 @@ impl Material for Lambertian {
 
 #[inline]
 fn schlick(cosine: f32, ref_idx: f32) -> f32 {
-    let r0 = ((1.0 - ref_idx) / (1.0 + ref_idx)).powi(2);
-    r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
+    let b  = (1.0 - ref_idx) / (1.0 + ref_idx);
+    let r0 = b * b;
+    let u  = 1.0 - cosine;
+    r0 + (1.0 - r0) * (u * u * u * u * u)
 }
 
 /// Dielectric boundary scatter shared by all glass-like materials.
@@ -62,12 +64,15 @@ fn dielectric_boundary(ior: f32, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn 
 // ── GGX / PBR helpers ─────────────────────────────────────────────────────────
 
 /// Schlick Fresnel with a colored F0 (supports metal tints).
+#[inline]
 fn schlick_color(cos_theta: f32, f0: Color) -> Color {
-    let t = (1.0 - cos_theta).max(0.0).powi(5);
+    let u = (1.0 - cos_theta).max(0.0);
+    let t = u * u * u * u * u;
     f0 + (Color::new(1.0, 1.0, 1.0) - f0) * t
 }
 
 /// Smith G1 term for isotropic GGX.
+#[inline]
 fn smith_g1(cos_theta: f32, alpha: f32) -> f32 {
     let a2 = alpha * alpha;
     let c2 = cos_theta * cos_theta;
@@ -76,6 +81,7 @@ fn smith_g1(cos_theta: f32, alpha: f32) -> f32 {
 
 /// Smith G1 for anisotropic GGX.
 /// `tx` / `ty` are dot(v, tangent) / dot(v, bitangent); `cos_theta` = dot(v, normal).
+#[inline]
 fn smith_g1_aniso(cos_theta: f32, tx: f32, ty: f32, ax: f32, ay: f32) -> f32 {
     let denom = cos_theta + (cos_theta*cos_theta + ax*ax*tx*tx + ay*ay*ty*ty).sqrt();
     (2.0 * cos_theta / denom.max(1e-6)).clamp(0.0, 1.0)
@@ -84,6 +90,7 @@ fn smith_g1_aniso(cos_theta: f32, tx: f32, ty: f32, ax: f32, ay: f32) -> f32 {
 /// Sample a microfacet normal from the anisotropic GGX VNDF (Heitz 2018).
 /// `wo_ts` is the outgoing direction in tangent space (z = dot(wo, n) > 0).
 /// Returns the microfacet normal in tangent space.
+#[inline]
 fn vndf_sample_aniso(wo_ts: Vec3, ax: f32, ay: f32, xi1: f32, xi2: f32) -> Vec3 {
     // Stretch wo into an isotropic hemisphere
     let wh = Vec3::new(ax * wo_ts.x, ay * wo_ts.y, wo_ts.z).unit();
@@ -135,7 +142,9 @@ fn ggx_ndf(cos_h: f32, alpha: f32) -> f32 {
 /// Anisotropic GGX NDF in tangent space.
 #[inline]
 fn ggx_ndf_aniso(h_ts: Vec3, ax: f32, ay: f32) -> f32 {
-    let d = (h_ts.x / ax).powi(2) + (h_ts.y / ay).powi(2) + h_ts.z * h_ts.z;
+    let hx = h_ts.x / ax;
+    let hy = h_ts.y / ay;
+    let d  = hx * hx + hy * hy + h_ts.z * h_ts.z;
     1.0 / (PI * ax * ay * d * d).max(1e-12)
 }
 
