@@ -183,7 +183,7 @@ pub fn build_random_scene() -> SceneData {
         max_samples:    2000,
         enable_caustics:       true,
         caustic_quad:          None,
-        caustic_gather_radius: 0.15,
+        caustic_gather_radius: 0.5,
         photon_map:            None,
     };
     scene.rebuild_caustics();
