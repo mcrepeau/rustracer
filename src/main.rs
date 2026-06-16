@@ -72,7 +72,7 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     let strata = (samples as f32).sqrt() as u32;
     let t0 = Instant::now();
     for s in 0..samples {
-        render_tiles(scratch, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, 1.0, scene.photon_map.as_deref());
+        render_tiles(scratch, None, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, 1.0, scene.photon_map.as_deref());
     }
     t0.elapsed()
 }
@@ -122,6 +122,21 @@ fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, exposure: f32)
         .zip(accumulator.par_iter())
         .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
 }
+
+/// Adaptive-sampling display: each pixel uses its own sample count.
+fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples: &[u32], exposure: f32) {
+    buf.par_iter_mut()
+        .zip(accumulator.par_iter())
+        .zip(pixel_samples.par_iter())
+        .for_each(|((dst, &acc), &n)| {
+            *dst = to_rgb_u32(acc, exposure / n.max(1) as f32);
+        });
+}
+
+/// Minimum samples before a pixel can be declared converged.
+const MIN_ADAPTIVE_SAMPLES: u32 = 16;
+/// Maximum relative standard error (σ/μ) to consider a pixel converged.
+const ADAPTIVE_THRESHOLD:   f32 = 0.05;
 
 #[cfg(feature = "denoise")]
 fn spawn_denoiser(
@@ -219,6 +234,13 @@ fn main() {
     let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
     let mut samples       = 0u32;
     let mut strata = (scenes[scene_idx].max_samples as f32).sqrt() as u32;
+    // Adaptive sampling state
+    let mut adaptive_on   = false;
+    let n_px              = (win_w * win_h) as usize;
+    let mut pixel_samples = vec![0u32;  n_px];  // per-pixel sample count
+    let mut var_m2_lum    = vec![0.0f32; n_px]; // Welford M2 for luminance
+    let mut adap_conv     = vec![false;  n_px]; // convergence mask
+    let mut n_converged   = 0usize;
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut exposure          = 1.0f32;
     let mut cam_dirty         = false;
@@ -231,6 +253,10 @@ fn main() {
         macro_rules! reset_accum {
             () => {
                 accumulator.fill(Color::default());
+                pixel_samples.fill(0);
+                var_m2_lum.fill(0.0);
+                adap_conv.fill(false);
+                n_converged = 0;
                 samples = 0;
                 #[cfg(feature = "denoise")]
                 {
@@ -265,8 +291,12 @@ fn main() {
                         win_h = new_h;
                         surface.resize(NonZeroU32::new(win_w).unwrap(), NonZeroU32::new(win_h).unwrap()).unwrap();
                         let n = (win_w * win_h) as usize;
-                        accumulator.clear(); accumulator.resize(n, Color::default());
-                        scratch.clear();     scratch.resize(n, Color::default());
+                        accumulator.clear();  accumulator.resize(n, Color::default());
+                        scratch.clear();      scratch.resize(n, Color::default());
+                        pixel_samples.clear(); pixel_samples.resize(n, 0);
+                        var_m2_lum.clear();    var_m2_lum.resize(n, 0.0);
+                        adap_conv.clear();     adap_conv.resize(n, false);
+                        n_converged = 0;
                         samples = 0;
                         cam_dirty = true;
                     }
@@ -410,6 +440,11 @@ fn main() {
                                     cam_dirty = true;
                                     pending_autofocus = true;
                                 }
+                                VirtualKeyCode::V => {
+                                    adaptive_on = !adaptive_on;
+                                    reset_accum!();
+                                    window.request_redraw();
+                                }
                                 VirtualKeyCode::R if scene_idx == 3 => {
                                     match scene_file::load("scene.toml") {
                                         Ok(s) => {
@@ -487,28 +522,68 @@ fn main() {
                     let sun_hint = if let Background::Physical { sun_dir, .. } = scene.background {
                         format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
+                    let adaptive_hint = if adaptive_on {
+                        let pct = n_converged * 100 / adap_conv.len().max(1);
+                        format!("  [V] adaptive {pct}% conv")
+                    } else {
+                        "  [V] adaptive".to_string()
+                    };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}",
+                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
                         scene.name, spp_label, cam_hint,
                         cam_state.aperture, cam_state.vfov, exposure,
-                        sun_hint, oidn_hint,
+                        sun_hint, oidn_hint, adaptive_hint,
                     ));
                     last_title_update = Instant::now();
                 }
 
-                if samples < scenes[scene_idx].max_samples {
+                let all_conv = adaptive_on && n_converged == adap_conv.len();
+                if samples < scenes[scene_idx].max_samples && !all_conv {
                     let scene = &scenes[scene_idx];
                     let bg    = scene.background;
 
                     let bg_scale = 1.0;
-                    render_tiles(&mut scratch, samples, strata, win_w, win_h, &camera,
+                    let conv_mask = if adaptive_on { Some(adap_conv.as_slice()) } else { None };
+                    render_tiles(&mut scratch, conv_mask, samples, strata, win_w, win_h, &camera,
                                  scene.world.as_ref(), bg, &scene.lights, bg_scale,
                                  scene.photon_map.as_deref());
 
+                    // Accumulate samples and update per-pixel Welford statistics.
+                    // Converged pixels are skipped (scratch[i] == black, flag checked).
+                    let lum = |c: Color| c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
                     accumulator.par_iter_mut()
                         .zip(scratch.par_iter())
-                        .for_each(|(a, s)| *a += *s);
+                        .zip(var_m2_lum.par_iter_mut())
+                        .zip(pixel_samples.par_iter_mut())
+                        .zip(adap_conv.par_iter())
+                        .for_each(|((((a, &s), m2), n), &conv)| {
+                            if adaptive_on && conv { return; }
+                            let s_lum   = lum(s);
+                            let old_n   = *n;
+                            let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
+                            *a += s;
+                            *n += 1;
+                            let new_mean = lum(*a) / *n as f32;
+                            *m2 += (s_lum - old_mean) * (s_lum - new_mean);
+                        });
                     samples += 1;
+
+                    // Mark pixels as converged when relative std error < threshold.
+                    if adaptive_on && samples >= MIN_ADAPTIVE_SAMPLES {
+                        adap_conv.par_iter_mut()
+                            .zip(pixel_samples.par_iter())
+                            .zip(var_m2_lum.par_iter())
+                            .zip(accumulator.par_iter())
+                            .for_each(|(((conv, &n), &m2), &acc)| {
+                                if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
+                                let mean_lum = lum(acc) / n as f32;
+                                if mean_lum < 1e-4 { *conv = true; return; }
+                                let variance = m2 / (n - 1).max(1) as f32;
+                                let std_err  = (variance / n as f32).sqrt();
+                                if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
+                            });
+                        n_converged = adap_conv.iter().filter(|&&c| c).count();
+                    }
 
                     // Build the aux buffers once per render sequence (first sample),
                     // so they are ready before the first OIDN invocation at sample 32.
@@ -538,25 +613,29 @@ fn main() {
             Event::RedrawRequested(_) => {
                 let mut buffer = surface.buffer_mut().unwrap();
                 let sc = 1.0 / samples.max(1) as f32;
-                #[cfg(feature = "denoise")]
-                {
-                    let denoised_guard = denoised.lock().unwrap();
-                    let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
-                    let buf: &mut [u32] = &mut buffer;
-                    if use_denoised {
-                        buf.par_iter_mut()
-                            .zip(accumulator.par_iter())
-                            .zip(denoised_guard.par_iter())
-                            .for_each(|((dst, &acc), &den)| {
-                                let raw = acc * sc;
-                                *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure);
-                            });
-                    } else {
-                        write_tonemap(buf, &accumulator, sc, exposure);
+                let buf: &mut [u32] = &mut buffer;
+                if adaptive_on {
+                    write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure);
+                } else {
+                    #[cfg(feature = "denoise")]
+                    {
+                        let denoised_guard = denoised.lock().unwrap();
+                        let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
+                        if use_denoised {
+                            buf.par_iter_mut()
+                                .zip(accumulator.par_iter())
+                                .zip(denoised_guard.par_iter())
+                                .for_each(|((dst, &acc), &den)| {
+                                    let raw = acc * sc;
+                                    *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure);
+                                });
+                        } else {
+                            write_tonemap(buf, &accumulator, sc, exposure);
+                        }
                     }
+                    #[cfg(not(feature = "denoise"))]
+                    write_tonemap(buf, &accumulator, sc, exposure);
                 }
-                #[cfg(not(feature = "denoise"))]
-                write_tonemap(&mut buffer, &accumulator, sc, exposure);
                 buffer.present().unwrap();
             }
 

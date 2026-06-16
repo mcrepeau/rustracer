@@ -406,9 +406,11 @@ pub fn render_aux_pass(
 
 /// Render one sample pass into `scratch` in parallel.
 /// `strata` = floor(sqrt(max_samples)); controls the stratified-sampling grid size.
+/// `converged`: optional per-pixel mask — `true` pixels are skipped (scratch written as black).
 #[allow(clippy::too_many_arguments)]
 pub fn render_tiles(
     scratch:     &mut [Color],
+    converged:   Option<&[bool]>,
     sample_idx:  u32,
     strata:      u32,
     width:       u32,
@@ -454,7 +456,12 @@ pub fn render_tiles(
 
         for row in row0..row1 {
             for col in col0..col1 {
-                let i     = row * w + col;
+                let i = row * w + col;
+                if converged.map_or(false, |c| c[i]) {
+                    // SAFETY: same non-overlapping guarantee as active pixels.
+                    unsafe { *base.add(i) = Color::default(); }
+                    continue;
+                }
                 let mut rng = SmallRng::seed_from_u64(
                     (i as u64).wrapping_mul(6364136223846793005)
                         ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
