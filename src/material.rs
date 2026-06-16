@@ -47,8 +47,8 @@ impl BlackbodyLight {
         let norm = 1.0 / mean.max(1e-30);
         let avg_color = {
             let mut acc = Color::default();
-            for i in 0..N {
-                acc += spectral_to_rgb(380.0 + i as f32 * 5.0) * (raw[i] * norm);
+            for (i, &r) in raw.iter().enumerate() {
+                acc += spectral_to_rgb(380.0 + i as f32 * 5.0) * (r * norm);
             }
             acc / N as f32 * intensity
         };

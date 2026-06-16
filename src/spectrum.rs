@@ -9,6 +9,7 @@ const CIE_START: f32   = 380.0;
 const CIE_STEP:  f32   = 5.0;
 
 #[rustfmt::skip]
+#[allow(clippy::excessive_precision)]
 static CIE_X: [f32; CIE_N] = [
     0.001368, 0.002236, 0.004243, 0.007650, 0.014310,
     0.023190, 0.043510, 0.077630, 0.134380, 0.214770,
@@ -43,6 +44,7 @@ static CIE_Y: [f32; CIE_N] = [
 ];
 
 #[rustfmt::skip]
+#[allow(clippy::excessive_precision)]
 static CIE_Z: [f32; CIE_N] = [
     0.006450, 0.010550, 0.020050, 0.036210, 0.067850,
     0.110200, 0.207400, 0.371300, 0.645600, 1.039050,

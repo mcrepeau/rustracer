@@ -21,6 +21,7 @@ pub struct Camera {
 }
 
 impl Camera {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         lookfrom: Point3, lookat: Point3, vup: Vec3,
         vfov_deg: f32, aspect_ratio: f32,

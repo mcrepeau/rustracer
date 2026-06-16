@@ -439,8 +439,8 @@ pub fn render_tiles(
     // raw-pointer Sync restriction, then cast back inside each closure call.
     const TILE: usize = 16;
     let h = height as usize;
-    let tiles_x = (w + TILE - 1) / TILE;
-    let tiles_y = (h + TILE - 1) / TILE;
+    let tiles_x = w.div_ceil(TILE);
+    let tiles_y = h.div_ceil(TILE);
     // SAFETY: tiles partition the image without overlap; each pixel is written
     // by exactly one tile iteration.
     let buf_ptr: usize = scratch.as_mut_ptr() as usize;
@@ -457,7 +457,7 @@ pub fn render_tiles(
         for row in row0..row1 {
             for col in col0..col1 {
                 let i = row * w + col;
-                if converged.map_or(false, |c| c[i]) {
+                if converged.is_some_and(|c| c[i]) {
                     // SAFETY: same non-overlapping guarantee as active pixels.
                     unsafe { *base.add(i) = Color::default(); }
                     continue;

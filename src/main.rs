@@ -312,7 +312,7 @@ fn run_render(args: RenderArgs) {
                 n_converged = adap_conv.iter().filter(|&&c| c).count();
             }
 
-            if s % 5 == 0 || s == samples_max || n_converged == n_px {
+            if s.is_multiple_of(5) || s == samples_max || n_converged == n_px {
                 let pct     = n_converged * 100 / n_px.max(1);
                 let elapsed = t0.elapsed().as_secs_f64();
                 print!("\r  {s:>5}/{samples_max} spp  {pct:>3}% converged  {elapsed:5.0}s  ");

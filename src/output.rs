@@ -42,6 +42,7 @@ fn agx_curve(x: f32) -> f32 {
 }
 
 #[inline]
+#[allow(clippy::excessive_precision)]
 fn agx_tonemap(c: Color) -> Color {
     // Input transform: linear sRGB → AgX working space
     let r = c.x * 0.842479062253094  + c.y * 0.0784335999999992 + c.z * 0.0792237451477643;
@@ -103,6 +104,7 @@ pub fn to_rgb_u32(c: Color, scale: f32, tm: ToneMapper) -> u32 {
 /// Pass `None` to use the uniform `samples` count for every pixel.
 /// `spp_label`: overrides the spp value in the auto-generated filename.
 /// `output_path`: explicit output path; overrides the auto-generated filename entirely.
+#[allow(clippy::too_many_arguments)]
 pub fn save_png(
     accumulator:   &[Color],
     samples:       u32,
