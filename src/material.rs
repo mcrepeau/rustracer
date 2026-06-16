@@ -1,4 +1,5 @@
 use std::f32::consts::PI;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use rand::{Rng, RngCore};
 use crate::vec3::{Color, Point3, Vec3};
@@ -387,6 +388,8 @@ impl Material for PbrMaterial {
                 })
             } else {
                 // ── Diffuse Lambertian (dielectrics only) ─────────────────────
+                // skip_pdf: false — the integrator samples a cosine-weighted direction
+                // and calls scattering_pdf(); rec.normal here is a throwaway placeholder.
                 Some(ScatterRecord {
                     attenuation: self.albedo * ((1.0 - self.metallic) / ((1.0 - p_spec) * (1.0 - p_coat))),
                     ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
@@ -447,41 +450,57 @@ fn pearl_sun_dir() -> Option<Vec3> {
 
 // ── Pearl ─────────────────────────────────────────────────────────────────────
 
-/// Spectral thin-film interference colour for nacre, computed via a full
-/// spectral integral over the visible range.
+// Precomputed LUT for the nacre spectral integral over OPD.
+//
+// nacre_color's raw output (before the grazing blend) depends only on the
+// optical path difference OPD = 2·n·d·cos(θ_t), not on the individual
+// (film_ior, film_thickness, cos_theta) parameters.  We table-ise that
+// 65-iteration integral once over OPD ∈ [0, 2500 nm] at 256 steps (~10 nm
+// per step, far finer than the ~800 nm colour-beat period) and look it up
+// with linear interpolation.  Cost drops from ~65 trig ops to 1 lerp.
+
+const NACRE_LUT_SIZE: usize  = 256;
+const NACRE_OPD_MAX:  f32    = 2500.0; // nm — covers film thicknesses up to ~850 nm
+
+static NACRE_LUT: OnceLock<Vec<Color>> = OnceLock::new();
+
+fn nacre_lut() -> &'static [Color] {
+    NACRE_LUT.get_or_init(|| {
+        (0..NACRE_LUT_SIZE).map(|i| {
+            let opd = i as f32 / (NACRE_LUT_SIZE - 1) as f32 * NACRE_OPD_MAX;
+            let mut color = Color::default();
+            let mut lambda = 380.0_f32;
+            while lambda <= 700.01 {
+                let irid = 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
+                color += spectral_to_rgb(lambda) * irid;
+                lambda += 5.0;
+            }
+            color / 65.0
+        }).collect()
+    })
+}
+
+/// Thin-film interference colour evaluated via the precomputed OPD LUT.
 ///
-/// Evaluates OPD = 2 n d cos(θ_t) and integrates the two-beam interference
-/// intensity against the CIE 1931 CMFs at every 5 nm step from 380–700 nm.
-/// This gives a physically correct, deterministic iridescent colour per bounce
-/// without relying on the hero wavelength — avoiding the convergence problem
-/// that arises because the interference cosine oscillates ~3 full cycles across
-/// the visible range, which would average to near-grey with single-wavelength
-/// sampling.
-///
-/// The integral is normalised so that a non-dispersive surface (constant OPD,
-/// irid = 0.5 everywhere) returns (0.5, 0.5, 0.5); blending toward white at
-/// grazing angles mimics the many-beam suppression of real nacre.
+/// OPD = 2·n·d·cos(θ_t) is computed from the parameters, then looked up in
+/// `NACRE_LUT` with linear interpolation.  A grazing blend toward (0.5,0.5,0.5)
+/// mimics the many-beam suppression of real nacre at oblique angles.
 #[inline]
 fn nacre_color(cos_theta: f32, film_ior: f32, film_thickness_nm: f32) -> Color {
     let sin_sq = (1.0 - cos_theta * cos_theta).max(0.0);
     let cos_t  = (1.0 - sin_sq / (film_ior * film_ior)).max(0.0).sqrt();
     let opd    = 2.0 * film_ior * film_thickness_nm * cos_t;
 
-    // Spectral integral: Σ CMF(λ) × irid(λ) over 65 wavelengths, 380–700 nm.
-    let mut color = Color::default();
-    let mut lambda = 380.0_f32;
-    while lambda <= 700.01 {
-        let irid = 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
-        color += spectral_to_rgb(lambda) * irid;
-        lambda += 5.0;
-    }
-    color /= 65.0; // Normalise: mean = (0.5, 0.5, 0.5) for flat interference.
+    // LUT lookup with linear interpolation.
+    let lut = nacre_lut();
+    let t   = (opd / NACRE_OPD_MAX).clamp(0.0, 1.0) * (NACRE_LUT_SIZE - 1) as f32;
+    let lo  = t as usize;
+    let hi  = (lo + 1).min(NACRE_LUT_SIZE - 1);
+    let raw = lut[lo] * (1.0 - (t - lo as f32)) + lut[hi] * (t - lo as f32);
 
-    // Grazing blend: at cos_theta → 0 the many-beam interference in real nacre
-    // suppresses saturation; blend toward white luster ((1,1,1) × 0.5).
-    let t     = cos_theta.powf(0.5);
-    let luster = Color::new(0.5, 0.5, 0.5);
-    color * t + luster * (1.0 - t)
+    // Grazing blend: suppress saturation toward white luster at oblique angles.
+    let blend = cos_theta.powf(0.5);
+    raw * blend + Color::new(0.5, 0.5, 0.5) * (1.0 - blend)
 }
 
 /// Smooth, aperiodic noise in [−1, 1] — three sine waves at golden-ratio
