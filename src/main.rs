@@ -141,6 +141,29 @@ impl Default for RenderArgs {
     }
 }
 
+fn print_controls() {
+    println!("Controls:");
+    println!("  [1-4]        Switch scene          [R]      Restart / reload scene");
+    println!("  [F]          Toggle free camera    [C]      Reset camera");
+    println!("  WASD         Move (free cam)       [Space]  Move up");
+    println!("  Mouse        Look (free cam)       [Shift]  Move down");
+    println!("  [,] [.]      Decrease / increase FOV");
+    println!("  [-] [=]      Decrease / increase exposure");
+    println!("  [[]  []]     Decrease / increase aperture");
+    println!("  [Arrows]     Rotate sun");
+    println!("  [P]          Save PNG");
+    println!("  [Enter]      Pause rendering");
+    println!("  [T]          Toggle tonemapper (AgX / ACES)");
+    println!("  [V]          Toggle adaptive sampling");
+    #[cfg(feature = "denoise")]
+    println!("  [N]          Toggle OIDN denoiser");
+    #[cfg(feature = "denoise")]
+    println!("  [J] [K]      Decrease / increase denoise blend");
+    println!("  [?]          Reprint this list");
+    println!("  [Esc]        Release mouse / quit");
+    println!();
+}
+
 fn print_help() {
     println!("rustracer — path tracer\n");
     println!("USAGE:");
@@ -336,9 +359,7 @@ fn main() {
         Err(e) => println!("scene.toml not loaded — {e}"),
     }
 
-    println!("Ready.  [1-4] scene  [F] free camera  WASD+mouse  Space/Shift up/down");
-    println!("        [P] save  [[] apt  [,.] fov  [-=] exp  [arrows] sun  [C] reset cam");
-    println!("        [Enter] pause  [R] restart/reload  [Esc] quit");
+    print_controls();
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -592,6 +613,7 @@ fn main() {
                                     tonemapper = if tonemapper == ToneMapper::AgX { ToneMapper::Aces } else { ToneMapper::AgX };
                                     window.request_redraw();
                                 }
+                                VirtualKeyCode::Slash => { print_controls(); }
                                 VirtualKeyCode::V => {
                                     adaptive_on = !adaptive_on;
                                     reset_accum!();
@@ -660,33 +682,30 @@ fn main() {
 
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
                     let scene    = &scenes[scene_idx];
-                    let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
+                    let cam_state_str = if free_cam { "FREE CAM" } else { "" };
                     #[cfg(feature = "denoise")]
-                    let oidn_hint = if oidn_on {
-                        let state = if denoise_running.load(Ordering::Relaxed) { "running…" }
-                                    else { "on" };
-                        format!("  OIDN {state} blend:{:.0}% [JK] [N] off", denoise_blend * 100.0)
-                    } else {
-                        "  [N] denoise".to_string()
-                    };
-                    #[cfg(not(feature = "denoise"))]
-                    let oidn_hint = "";
-                    let spp_label = format!("{samples} spp");
-                    let sun_hint = if let Background::Physical { sun_dir, .. } = scene.background {
-                        format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
+                    let oidn_str = if oidn_on {
+                        let state = if denoise_running.load(Ordering::Relaxed) { "running…" } else { "on" };
+                        format!("  OIDN {state} {:.0}%", denoise_blend * 100.0)
                     } else { String::new() };
-                    let adaptive_hint = if adaptive_on {
+                    #[cfg(not(feature = "denoise"))]
+                    let oidn_str = "";
+                    let sun_str = if let Background::Physical { sun_dir, .. } = scene.background {
+                        format!("  sun {:.0}°", sun_dir.y.asin().to_degrees())
+                    } else { String::new() };
+                    let adaptive_str = if adaptive_on {
                         let pct = n_converged * 100 / adap_conv.len().max(1);
-                        format!("  [V] adaptive {pct}% conv")
+                        format!("  adaptive {pct}% conv")
+                    } else { String::new() };
+                    let tm_str = if tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
+                    let cam_str = if cam_state_str.is_empty() {
+                        format!("apt {:.2}  fov {:.0}°", cam_state.aperture, cam_state.vfov)
                     } else {
-                        "  [V] adaptive".to_string()
+                        cam_state_str.to_string()
                     };
-                    let tm_hint = if tonemapper == ToneMapper::AgX { "  [T] AgX" } else { "  [T] ACES" };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}{}",
-                        scene.name, spp_label, cam_hint,
-                        cam_state.aperture, cam_state.vfov, exposure,
-                        sun_hint, oidn_hint, adaptive_hint, tm_hint,
+                        "rustracer — {} — {samples} spp  |  {cam_str}  exp {:.2}  {tm_str}{}{}{}",
+                        scene.name, exposure, sun_str, oidn_str, adaptive_str,
                     ));
                     last_title_update = Instant::now();
                 }
