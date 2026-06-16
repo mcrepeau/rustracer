@@ -252,7 +252,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     // surface. The photon map stores only caustic paths (at least one
                     // specular bounce), so there is no double-counting with NEE below.
                     if let Some(pm) = photon_map {
-                        let irr = pm.irradiance(rec.p);
+                        let irr = pm.irradiance(rec.p, rec.normal);
                         if irr.x > 0.0 || irr.y > 0.0 || irr.z > 0.0 {
                             let alb = rec.mat.albedo_hint(rec.u, rec.v, rec.p);
                             color += throughput * alb * irr;
