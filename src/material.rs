@@ -1001,3 +1001,128 @@ impl Material for PearlMaterial {
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.base_color }
     fn can_receive_caustics(&self) -> bool { true }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    fn luma(c: Color) -> f32 {
+        0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z
+    }
+
+    // ── GGX NDF ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ggx_ndf_integrates_to_one() {
+        // ∫_hemisphere D(cos_h, α) · cos_h · dω = 1  for any α > 0.
+        // Integrate analytically over φ (gives 2π) and numerically over θ ∈ [0, π/2].
+        for &alpha in &[0.1f32, 0.3, 0.7, 1.0] {
+            let n       = 1000usize;
+            let d_theta = std::f32::consts::FRAC_PI_2 / n as f32;
+            let mut sum = 0.0f64;
+            for i in 0..n {
+                let theta = (i as f32 + 0.5) * d_theta;
+                let cos_h = theta.cos();
+                let sin_h = theta.sin();
+                sum += ggx_ndf(cos_h, alpha) as f64
+                    * cos_h as f64
+                    * sin_h as f64
+                    * d_theta as f64
+                    * 2.0 * std::f64::consts::PI;
+            }
+            assert!((sum - 1.0).abs() < 0.01,
+                "GGX NDF integral at α={alpha} = {sum:.4} (expected 1.0)");
+        }
+    }
+
+    // ── Smith G1 ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn smith_g1_is_in_unit_range() {
+        for &alpha in &[0.01f32, 0.1, 0.3, 0.5, 0.8, 1.0] {
+            for &cos_theta in &[0.01f32, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {
+                let g = smith_g1(cos_theta, alpha);
+                assert!(g >= 0.0 && g <= 1.0,
+                    "smith_g1({cos_theta}, {alpha}) = {g:.4} is outside [0, 1]");
+            }
+        }
+    }
+
+    #[test]
+    fn smith_g1_smooth_limit_is_one() {
+        // At α→0 (perfectly smooth surface): G1 = 2cos / (cos + sqrt(α²+(1−α²)cos²)) → 1.
+        for &cos_theta in &[0.1f32, 0.5, 0.9, 1.0] {
+            let g = smith_g1(cos_theta, 1e-6);
+            assert!((g - 1.0).abs() < 1e-4,
+                "smooth G1(cos={cos_theta}, α≈0) = {g:.5} (expected 1.0)");
+        }
+    }
+
+    // ── White furnace (PbrMaterial) ───────────────────────────────────────────
+
+    // Calls scatter() n times at normal incidence and returns the mean attenuation luminance.
+    // For metallic paths (skip_pdf=true), attenuation is already the full Monte Carlo weight.
+    fn white_furnace_mean(mat: &PbrMaterial, n: usize, rng: &mut SmallRng) -> f64 {
+        let ray = Ray::new(
+            Point3::new(0.0, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        let rec = HitRecord {
+            p:          Point3::new(0.0, 0.0, 0.0),
+            normal:     Vec3::new(0.0, 0.0, -1.0), // outward normal faces toward ray origin
+            mat,
+            t: 1.0, u: 0.0, v: 0.0,
+            front_face: true,
+        };
+        let mut sum   = 0.0f64;
+        let mut count = 0usize;
+        for _ in 0..n {
+            if let Some(sr) = mat.scatter(&ray, &rec, rng) {
+                sum   += luma(sr.attenuation) as f64;
+                count += 1;
+            }
+        }
+        if count == 0 { return 0.0; }
+        sum / count as f64
+    }
+
+    #[test]
+    fn white_furnace_metallic_no_energy_gain() {
+        // F·G1(wi) ≤ 1 must hold at every roughness — single-scattering GGX
+        // loses energy at high roughness (expected) but must never gain it.
+        for &roughness in &[0.1f32, 0.5, 0.9] {
+            let mat = PbrMaterial {
+                albedo:    Color::new(1.0, 1.0, 1.0),
+                metallic:  1.0,
+                roughness,
+                clearcoat: 0.0,
+                sheen:     0.0,
+                ..PbrMaterial::default()
+            };
+            let mut rng  = SmallRng::seed_from_u64(42);
+            let mean = white_furnace_mean(&mat, 8000, &mut rng);
+            assert!(mean <= 1.0 + 1e-6,
+                "white metallic furnace (roughness={roughness}) mean={mean:.4} — energy gain");
+        }
+    }
+
+    #[test]
+    fn white_furnace_smooth_metallic_is_nearly_lossless() {
+        // At low roughness and normal incidence, G1(wi)≈1, so E[F·G1]≈1.
+        // A mirror-like white metal should return almost all incident energy.
+        let mat = PbrMaterial {
+            albedo:    Color::new(1.0, 1.0, 1.0),
+            metallic:  1.0,
+            roughness: 0.05,
+            clearcoat: 0.0,
+            sheen:     0.0,
+            ..PbrMaterial::default()
+        };
+        let mut rng  = SmallRng::seed_from_u64(123);
+        let mean = white_furnace_mean(&mat, 8000, &mut rng);
+        assert!(mean > 0.95, "smooth white metallic furnace mean={mean:.4} — too lossy");
+        assert!(mean <= 1.0 + 1e-6, "smooth white metallic furnace mean={mean:.4} — energy gain");
+    }
+}
