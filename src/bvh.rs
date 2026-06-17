@@ -501,3 +501,87 @@ impl Hittable for BvhTree {
         if self.nodes.is_empty() { None } else { Some(self.bbox) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vec3::{Point3, Vec3};
+    use crate::hittable::{HitRecord, HittableList, Material, ScatterRecord};
+    use crate::ray::Ray;
+
+    struct DummyMat;
+    impl Material for DummyMat {
+        fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+    }
+
+    fn unit_sphere_at(center: Point3) -> crate::sphere::Sphere {
+        crate::sphere::Sphere::new(center, 1.0, Arc::new(DummyMat))
+    }
+
+    fn ray_from(origin: Point3, direction: Vec3) -> Ray {
+        Ray::new(origin, direction)
+    }
+
+    #[test]
+    fn bvh_hits_sphere_on_axis() {
+        let mut list = HittableList::new();
+        list.add(unit_sphere_at(Point3::new(0.0, 0.0, 0.0)));
+        let bvh = BvhTree::from_list(list);
+        let r   = ray_from(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        assert!(bvh.hit(&r, 0.001, f32::INFINITY).is_some(), "ray through sphere center should hit");
+    }
+
+    #[test]
+    fn bvh_misses_ray_beside_sphere() {
+        let mut list = HittableList::new();
+        list.add(unit_sphere_at(Point3::new(0.0, 0.0, 0.0)));
+        let bvh = BvhTree::from_list(list);
+        // Ray aimed 2 units to the side — clears the radius-1 sphere.
+        let r = ray_from(Point3::new(2.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        assert!(bvh.hit(&r, 0.001, f32::INFINITY).is_none(), "ray beside sphere should miss");
+    }
+
+    #[test]
+    fn bvh_any_hit_matches_hit() {
+        let mut list = HittableList::new();
+        list.add(unit_sphere_at(Point3::new(0.0, 0.0, 0.0)));
+        let bvh   = BvhTree::from_list(list);
+        let hit   = ray_from(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let miss  = ray_from(Point3::new(2.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        assert!( bvh.any_hit(&hit,  0.001, f32::INFINITY), "any_hit should return true through sphere");
+        assert!(!bvh.any_hit(&miss, 0.001, f32::INFINITY), "any_hit should return false beside sphere");
+    }
+
+    #[test]
+    fn bvh_finds_nearest_of_multiple_spheres() {
+        // Two spheres along the Z axis: one at z=-3, one at z=3.
+        // Ray from z=-10 along +Z should hit the nearer one first (t ≈ 6).
+        let mut list = HittableList::new();
+        list.add(unit_sphere_at(Point3::new(0.0, 0.0, -3.0)));
+        list.add(unit_sphere_at(Point3::new(0.0, 0.0,  3.0)));
+        let bvh = BvhTree::from_list(list);
+        let r   = ray_from(Point3::new(0.0, 0.0, -10.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = bvh.hit(&r, 0.001, f32::INFINITY).expect("should hit at least one sphere");
+        assert!(rec.t < 8.0, "nearest sphere should be hit first, t = {}", rec.t);
+    }
+
+    #[test]
+    fn bvh_all_spheres_in_grid_are_reachable() {
+        // Build a 3×3 grid of spheres spaced 10 units apart and verify each is hittable.
+        let mut list = HittableList::new();
+        let positions: Vec<Point3> = (-1..=1).flat_map(|x| (-1..=1).map(move |y| {
+            Point3::new(x as f32 * 10.0, y as f32 * 10.0, 0.0)
+        })).collect();
+        for &p in &positions {
+            list.add(unit_sphere_at(p));
+        }
+        let bvh = BvhTree::from_list(list);
+        for p in positions {
+            let r = ray_from(Point3::new(p.x, p.y, -20.0), Vec3::new(0.0, 0.0, 1.0));
+            assert!(
+                bvh.hit(&r, 0.001, f32::INFINITY).is_some(),
+                "sphere at ({}, {}) should be reachable", p.x, p.y,
+            );
+        }
+    }
+}

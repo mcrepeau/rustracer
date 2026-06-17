@@ -196,3 +196,115 @@ pub fn cauchy_ior(lambda_nm: f32, b: f32, c: f32) -> f32 {
     let lam_um = lambda_nm * 1e-3;
     b + c / (lam_um * lam_um)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalization_mean_is_white() {
+        // The normalization in norms() is defined over the 65 CIE table entries
+        // (380–700 nm, 5 nm steps). Averaging spectral_to_rgb at exactly those
+        // wavelengths must yield (1, 1, 1) — that is the invariant the renderer relies on.
+        let mut sum = [0.0f64; 3];
+        for i in 0..CIE_N {
+            let lambda = CIE_START + i as f32 * CIE_STEP;
+            let c = spectral_to_rgb(lambda);
+            sum[0] += c.x as f64;
+            sum[1] += c.y as f64;
+            sum[2] += c.z as f64;
+        }
+        let mean = [sum[0] / CIE_N as f64, sum[1] / CIE_N as f64, sum[2] / CIE_N as f64];
+        assert!((mean[0] - 1.0).abs() < 1e-4, "R mean = {}", mean[0]);
+        assert!((mean[1] - 1.0).abs() < 1e-4, "G mean = {}", mean[1]);
+        assert!((mean[2] - 1.0).abs() < 1e-4, "B mean = {}", mean[2]);
+    }
+
+    #[test]
+    fn wavelength_colors_match_visible_spectrum() {
+        let blue  = spectral_to_rgb(450.0);
+        let green = spectral_to_rgb(550.0);
+        let red   = spectral_to_rgb(650.0);
+
+        assert!(blue.z  > blue.x  && blue.z  > blue.y,  "450 nm should be blue-dominant");
+        assert!(green.y > green.x && green.y > green.z, "550 nm should be green-dominant");
+        assert!(red.x   > red.y   && red.x   > red.z,   "650 nm should be red-dominant");
+    }
+
+    #[test]
+    fn out_of_range_wavelengths_clamp_to_boundary() {
+        let at_380  = spectral_to_rgb(380.0);
+        let below   = spectral_to_rgb(300.0);
+        let at_700  = spectral_to_rgb(700.0);
+        let above   = spectral_to_rgb(800.0);
+
+        assert!((at_380.x - below.x).abs() < 1e-5);
+        assert!((at_380.y - below.y).abs() < 1e-5);
+        assert!((at_380.z - below.z).abs() < 1e-5);
+        assert!((at_700.x - above.x).abs() < 1e-5);
+        assert!((at_700.y - above.y).abs() < 1e-5);
+        assert!((at_700.z - above.z).abs() < 1e-5);
+    }
+
+    #[test]
+    fn planck_hotter_blackbody_is_bluer() {
+        // At 6500 K (daylight) the blue/red ratio is higher than at 3000 K (warm tungsten).
+        // Wien's displacement law: λ_peak ∝ 1/T.
+        let ratio_hot  = planck_raw(450.0, 6500.0) / planck_raw(650.0, 6500.0);
+        let ratio_warm = planck_raw(450.0, 3000.0) / planck_raw(650.0, 3000.0);
+        assert!(ratio_hot > ratio_warm, "6500K blue/red ratio should exceed 3000K");
+    }
+
+    #[test]
+    fn planck_monotone_in_temperature() {
+        // Hotter blackbody emits more radiance at every wavelength.
+        let lam = 550.0;
+        assert!(planck_raw(lam, 6000.0)  > planck_raw(lam, 3000.0));
+        assert!(planck_raw(lam, 10000.0) > planck_raw(lam, 6000.0));
+    }
+
+    #[test]
+    fn cauchy_crown_glass_sodium_d_line() {
+        // Crown glass at the sodium D line (589.3 nm): expected IOR ≈ 1.52.
+        // Reference: standard optics tables.
+        let n = cauchy_ior(589.3, 1.507, 0.00375);
+        assert!((n - 1.52).abs() < 0.005, "crown glass IOR at 589 nm = {n:.4}");
+    }
+
+    #[test]
+    fn cauchy_normal_dispersion() {
+        // IOR must decrease monotonically from blue to red for positive C.
+        let (b, c) = (1.507, 0.00375);
+        let n_blue  = cauchy_ior(450.0, b, c);
+        let n_green = cauchy_ior(550.0, b, c);
+        let n_red   = cauchy_ior(650.0, b, c);
+        assert!(n_blue > n_green, "IOR should decrease toward red (blue > green)");
+        assert!(n_green > n_red,  "IOR should decrease toward red (green > red)");
+    }
+
+    #[test]
+    fn fresnel_conductor_grazing_approaches_one() {
+        // At near-grazing incidence, reflectance → 1 for any conductor.
+        let r = fresnel_conductor(0.001, 0.18, 3.0);
+        assert!(r > 0.99, "grazing reflectance should be > 0.99, got {r:.4}");
+    }
+
+    #[test]
+    fn fresnel_conductor_normal_incidence_matches_formula() {
+        // At normal incidence (cos θ = 1), the conductor Fresnel formula simplifies to:
+        //   R = ((n-1)² + k²) / ((n+1)² + k²)
+        let (n, k) = (0.23_f32, 3.00_f32);
+        let expected = ((n - 1.0).powi(2) + k * k) / ((n + 1.0).powi(2) + k * k);
+        let got = fresnel_conductor(1.0, n, k);
+        assert!((got - expected).abs() < 1e-4, "got {got:.5}, expected {expected:.5}");
+    }
+
+    #[test]
+    fn fresnel_conductor_result_in_unit_range() {
+        for &cos_theta in &[0.0f32, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {
+            let r = fresnel_conductor(cos_theta, 1.5, 2.0);
+            assert!(r >= 0.0 && r <= 1.0,
+                "Fresnel({cos_theta}) = {r:.4} is outside [0, 1]");
+        }
+    }
+}
