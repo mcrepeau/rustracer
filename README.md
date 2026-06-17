@@ -89,7 +89,7 @@ Press **N** in-app to toggle denoising. The denoiser runs on a background thread
 | Material | Description |
 |----------|-------------|
 | `Lambertian` | Cosine-weighted diffuse with solid colour or texture |
-| `PbrMaterial` | Full GGX microfacet BRDF — anisotropic VNDF sampling (Heitz 2018), metallic workflow, clearcoat lobe |
+| `PbrMaterial` | Full GGX microfacet BRDF — anisotropic VNDF sampling (Heitz 2018), metallic workflow, clearcoat, sheen, and emissive lobes |
 | `Dielectric` | Schlick-Fresnel glass with configurable IOR |
 | `SpectralDielectric` | Dispersive glass via Cauchy equation; hero-wavelength CMF weighting |
 | `SpectralMetal` | Conductor Fresnel from J&C 1972 IOR tables (Au, Cu, Ag) |
@@ -106,7 +106,7 @@ Press **N** in-app to toggle denoising. The denoiser runs on a background thread
 ### Scene system
 - TOML scene file loading (`--scene path/to/scene.toml`)
 - Procedural and image textures (Perlin noise, solid colour, checker, file-loaded)
-- Shapes: Sphere (static and motion-blur), Quad, Box, Cylinder, Cone, Disk
+- Shapes: Sphere (static and motion-blur), Quad, Box, Cylinder, Cone, Disk, Triangle / Mesh (OBJ via `tobj`)
 
 ## Scenes
 
