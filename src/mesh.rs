@@ -30,6 +30,29 @@ pub fn load_obj(path: &str, mat: Arc<dyn Material>) -> Result<Arc<dyn Hittable>,
         let get_nor = |i: usize| Vec3::new(nor[3*i], nor[3*i+1], nor[3*i+2]);
         let get_uv  = |i: usize| (tex[2*i], tex[2*i+1]);
 
+        // Accumulate per-vertex tangents from UV-space derivatives (dPos/dU).
+        let n_verts = pos.len() / 3;
+        let mut tangent_sum = vec![Vec3::default(); n_verts];
+        if has_texcoords {
+            for chunk in idx.chunks(3) {
+                let (i0, i1, i2) = (chunk[0] as usize, chunk[1] as usize, chunk[2] as usize);
+                let e1 = get_pos(i1) - get_pos(i0);
+                let e2 = get_pos(i2) - get_pos(i0);
+                let (du1, dv1) = { let uv = get_uv(i1); let uv0 = get_uv(i0); (uv.0 - uv0.0, uv.1 - uv0.1) };
+                let (du2, dv2) = { let uv = get_uv(i2); let uv0 = get_uv(i0); (uv.0 - uv0.0, uv.1 - uv0.1) };
+                let denom = du1 * dv2 - dv1 * du2;
+                if denom.abs() < 1e-8 { continue; }
+                let t = (e1 * dv2 - e2 * dv1) * (1.0 / denom);
+                tangent_sum[i0] = tangent_sum[i0] + t;
+                tangent_sum[i1] = tangent_sum[i1] + t;
+                tangent_sum[i2] = tangent_sum[i2] + t;
+            }
+        }
+        let get_tan = |i: usize| {
+            let t = tangent_sum[i];
+            if t.length_squared() > 1e-8 { t.unit() } else { Vec3::new(1.0, 0.0, 0.0) }
+        };
+
         for chunk in idx.chunks(3) {
             let (i0, i1, i2) = (chunk[0] as usize, chunk[1] as usize, chunk[2] as usize);
             let v0 = get_pos(i0);
@@ -50,7 +73,11 @@ pub fn load_obj(path: &str, mat: Arc<dyn Material>) -> Result<Arc<dyn Hittable>,
             let uv1 = if has_texcoords { get_uv(i1) } else { (1.0, 0.0) };
             let uv2 = if has_texcoords { get_uv(i2) } else { (0.5, 1.0) };
 
-            list.add(Triangle::new(v0, v1, v2, n0, n1, n2, uv0, uv1, uv2, Arc::clone(&mat)));
+            let t0 = get_tan(i0);
+            let t1 = get_tan(i1);
+            let t2 = get_tan(i2);
+
+            list.add(Triangle::new(v0, v1, v2, n0, n1, n2, t0, t1, t2, uv0, uv1, uv2, Arc::clone(&mat)));
         }
     }
 

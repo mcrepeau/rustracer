@@ -487,6 +487,12 @@ fn sample_linear(img: &RgbImage, u: f32, v: f32) -> f32 {
     img.get_pixel(x, y)[0] as f32 / 255.0
 }
 
+fn sample_rgb(img: &RgbImage, u: f32, v: f32) -> Color {
+    let (x, y) = uv_to_pixel(img, u, v);
+    let px = img.get_pixel(x, y);
+    Color::new(px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0)
+}
+
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
 ///
 /// All specular lobes are sampled from the Visible Normal Distribution Function
@@ -527,6 +533,7 @@ pub struct PbrMaterial {
     pub roughness_tex:       Option<Arc<RgbImage>>,
     pub metallic_tex:        Option<Arc<RgbImage>>,
     pub ao_tex:              Option<Arc<RgbImage>>,
+    pub normal_tex:          Option<Arc<RgbImage>>,
 }
 
 impl Default for PbrMaterial {
@@ -549,6 +556,7 @@ impl Default for PbrMaterial {
             roughness_tex:       None,
             metallic_tex:        None,
             ao_tex:              None,
+            normal_tex:          None,
         }
     }
 }
@@ -571,7 +579,21 @@ impl PbrMaterial {
 
 impl Material for PbrMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let n     = rec.normal;
+        // Apply normal map if present and the hit point has a valid tangent.
+        let n = if let Some(tex) = &self.normal_tex {
+            if rec.tangent.length_squared() > 1e-6 {
+                let raw  = sample_rgb(tex, rec.u, rec.v);
+                let ts_n = Vec3::new(raw.x * 2.0 - 1.0, raw.y * 2.0 - 1.0, raw.z * 2.0 - 1.0);
+                let ng   = rec.normal;
+                let t    = rec.tangent;
+                let b    = ng.cross(t);
+                (t * ts_n.x + b * ts_n.y + ng * ts_n.z).unit()
+            } else {
+                rec.normal
+            }
+        } else {
+            rec.normal
+        };
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         if cos_o <= 0.0 { return None; }
@@ -1131,6 +1153,7 @@ mod tests {
             mat,
             t: 1.0, u: 0.0, v: 0.0,
             front_face: true,
+            tangent:    Vec3::default(),
         };
         let mut sum   = 0.0f64;
         let mut count = 0usize;
@@ -1192,6 +1215,7 @@ mod tests {
             mat,
             t: 1.0, u: 0.0, v: 0.0,
             front_face: true,
+            tangent:    Vec3::default(),
         }
     }
 
@@ -1241,6 +1265,7 @@ mod tests {
             mat: &glass,
             t: 1.0, u: 0.0, v: 0.0,
             front_face: false,
+            tangent:    Vec3::default(),
         };
         let mut rng = SmallRng::seed_from_u64(0);
         for _ in 0..50 {

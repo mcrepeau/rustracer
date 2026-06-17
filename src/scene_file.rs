@@ -223,6 +223,8 @@ pub enum MaterialConfig {
         metallic_path:  Option<String>,
         #[serde(default)]
         ao_path:        Option<String>,
+        #[serde(default)]
+        normal_path:    Option<String>,
         #[serde(default = "default_roughness")]
         roughness:      f32,
         #[serde(default)]
@@ -495,12 +497,13 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
                                    emission: col(emission), emission_strength,
                                    ..PbrMaterial::default() }),
 
-        MaterialConfig::TexturedPbr { albedo_path, roughness_path, metallic_path, ao_path, roughness, metallic } =>
+        MaterialConfig::TexturedPbr { albedo_path, roughness_path, metallic_path, ao_path, normal_path, roughness, metallic } =>
             Arc::new(PbrMaterial {
                 albedo_tex:    Some(load_img(&albedo_path)?),
                 roughness_tex: roughness_path.as_deref().map(load_img).transpose()?,
                 metallic_tex:  metallic_path.as_deref().map(load_img).transpose()?,
                 ao_tex:        ao_path.as_deref().map(load_img).transpose()?,
+                normal_tex:    normal_path.as_deref().map(load_img).transpose()?,
                 roughness,
                 metallic,
                 ..PbrMaterial::default()

@@ -78,6 +78,7 @@ material.albedo_path   = "assets/textures/basketball_albedo.png"
 material.roughness_path = "assets/textures/basketball_roughness.png"
 material.metallic_path = "assets/textures/basketball_metallic.png"
 material.ao_path       = "assets/textures/basketball_ao.png"
+material.normal_path   = "assets/textures/basketball_normal.png"
 scale                  = 0.02
 translate              = [3.8, 1.02, 2.2]
 
