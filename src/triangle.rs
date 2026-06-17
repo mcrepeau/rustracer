@@ -21,6 +21,7 @@ pub struct Triangle {
 }
 
 impl Triangle {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         v0: Point3, v1: Point3, v2: Point3,
         n0: Vec3,   n1: Vec3,   n2: Vec3,
@@ -31,7 +32,8 @@ impl Triangle {
     }
 
     /// Triangle with a flat (face) normal and no meaningful UV coordinates.
-    pub fn flat(v0: Point3, v1: Point3, v2: Point3, mat: Arc<dyn Material>) -> Self {
+    #[cfg(test)]
+    fn flat(v0: Point3, v1: Point3, v2: Point3, mat: Arc<dyn Material>) -> Self {
         let n = (v1 - v0).cross(v2 - v0).unit();
         Self::new(v0, v1, v2, n, n, n, (0.0, 0.0), (1.0, 0.0), (0.5, 1.0), mat)
     }
