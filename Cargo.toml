@@ -9,7 +9,7 @@ winit = "0.28"
 rayon = "1.10"
 hashbrown = "0.15"
 rand = { version = "0.8", features = ["small_rng"] }
-image = "0.25"
+image = { version = "0.25", features = ["exr"] }
 tobj  = "4"
 serde = { version = "1", features = ["derive"] }
 toml  = "0.8"

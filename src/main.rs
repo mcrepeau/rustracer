@@ -70,13 +70,12 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     cam.autofocus(&*scene.world);
     let camera = cam.to_camera(aspect);
     let world  = scene.world.as_ref();
-    let bg     = scene.background;
     scratch.resize((WIDTH * HEIGHT) as usize, Color::default());
 
     let strata = compute_strata(samples);
     let t0 = Instant::now();
     for s in 0..samples {
-        render_tiles(scratch, None, s, strata, WIDTH, HEIGHT, &camera, world, bg, &scene.lights, 1.0, scene.photon_map.as_deref());
+        render_tiles(scratch, None, s, strata, WIDTH, HEIGHT, &camera, world, &scene.background, &scene.lights, 1.0, scene.photon_map.as_deref());
     }
     t0.elapsed()
 }
@@ -279,7 +278,7 @@ fn run_render(args: RenderArgs) {
         render_tiles(&mut scratch,
                      if adaptive { Some(adap_conv.as_slice()) } else { None },
                      s, strata, args.width, args.height, &camera,
-                     scene.world.as_ref(), scene.background,
+                     scene.world.as_ref(), &scene.background,
                      &scene.lights, 1.0, scene.photon_map.as_deref());
 
         accumulator.par_iter_mut()
@@ -362,7 +361,7 @@ fn run_render(args: RenderArgs) {
         print!("Denoising with OIDN…  ");
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let (alb, nrm) = render_aux_pass(args.width, args.height, &camera,
-                                         scene.world.as_ref(), scene.background);
+                                         scene.world.as_ref(), &scene.background);
         let spp_label = pixel_samples_opt.as_ref().map(|_| samples_max).unwrap_or(actual_spp);
         match denoise::denoise_rgb(args.width, args.height, color, alb, nrm) {
             Some(denoised) => {
@@ -817,7 +816,7 @@ fn main() {
                     } else { String::new() };
                     #[cfg(not(feature = "denoise"))]
                     let oidn_str = "";
-                    let sun_str = if let Background::Physical { sun_dir, .. } = scene.background {
+                    let sun_str = if let Background::Physical { sun_dir, .. } = &scene.background {
                         format!("  sun {:.0}°", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
                     let adaptive_str = if adaptive_on {
@@ -840,12 +839,10 @@ fn main() {
                 let all_conv = adaptive_on && n_converged == adap_conv.len();
                 if samples < scenes[scene_idx].max_samples && !all_conv {
                     let scene = &scenes[scene_idx];
-                    let bg    = scene.background;
-
                     let bg_scale = 1.0;
                     let conv_mask = if adaptive_on { Some(adap_conv.as_slice()) } else { None };
                     render_tiles(&mut scratch, conv_mask, samples, strata, win_w, win_h, &camera,
-                                 scene.world.as_ref(), bg, &scene.lights, bg_scale,
+                                 scene.world.as_ref(), &scene.background, &scene.lights, bg_scale,
                                  scene.photon_map.as_deref());
 
                     // Accumulate samples and update per-pixel Welford statistics.
@@ -896,9 +893,9 @@ fn main() {
                     // Skipped for scenes where first-hit geometry doesn't correlate
                     // with the final pixel colour (indirect lighting, volumes).
                     #[cfg(feature = "denoise")]
-                    if samples == 1 && matches!(scene.background, Background::Physical { .. }) {
+                    if samples == 1 && matches!(&scene.background, Background::Physical { .. }) {
                         let (alb, nrm) = render_aux_pass(win_w, win_h, &camera,
-                                                         scene.world.as_ref(), bg);
+                                                         scene.world.as_ref(), &scene.background);
                         aux_albedo = alb;
                         aux_normal = nrm;
                     }

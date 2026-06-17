@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use image::Rgb32FImage;
 use crate::camera::Camera;
 use crate::hittable::{Hittable, HittableList};
 use crate::material::{clear_pearl_sun_dir, set_pearl_sun_dir};
@@ -17,17 +19,41 @@ const COS_SUN_MAX: f32 = 0.9999892;
 
 // ── Background ────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
+/// Equirectangular HDR environment map loaded from an EXR file.
+pub struct EnvMapData {
+    image: Rgb32FImage,
+}
+
+impl EnvMapData {
+    pub fn new(image: Rgb32FImage) -> Self { Self { image } }
+
+    fn sample(&self, dir: Vec3) -> Color {
+        use std::f32::consts::PI;
+        let d  = dir.unit();
+        let u  = (0.5 + d.x.atan2(d.z) / (2.0 * PI)).rem_euclid(1.0);
+        let v  = d.y.clamp(-1.0, 1.0).acos() / PI;
+        let w  = self.image.width();
+        let h  = self.image.height();
+        let px = ((u * w as f32) as u32).min(w - 1);
+        let py = ((v * h as f32) as u32).min(h - 1);
+        let p  = self.image.get_pixel(px, py);
+        Color::new(p[0], p[1], p[2])
+    }
+}
+
+#[derive(Clone)]
 pub enum Background {
     Solid(Color),
     Physical { sun_dir: Vec3, turbidity: f32 },
+    EnvMap(Arc<EnvMapData>),
 }
 
 impl Background {
-    pub fn eval(self, dir: Vec3) -> Color {
+    pub fn eval(&self, dir: Vec3) -> Color {
         match self {
-            Background::Solid(c) => c,
-            Background::Physical { sun_dir, turbidity } => preetham_sky(dir, sun_dir, turbidity),
+            Background::Solid(c)                           => *c,
+            Background::Physical { sun_dir, turbidity }    => preetham_sky(dir, *sun_dir, *turbidity),
+            Background::EnvMap(em)                         => em.sample(dir),
         }
     }
 }
@@ -144,7 +170,7 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
 
 /// Uniform solid-angle PDF for the solar disc cone; returns 0 outside the disc.
 /// The disc half-angle matches the `cos_gamma > 0.9997` threshold in preetham_sky.
-fn sun_pdf_value(dir: Vec3, background: Background) -> f32 {
+fn sun_pdf_value(dir: Vec3, background: &Background) -> f32 {
     use std::f32::consts::PI;
     if let Background::Physical { sun_dir, .. } = background {
         if sun_dir.y > 0.0 && dir.unit().dot(sun_dir.unit()) > COS_SUN_MAX {
@@ -171,7 +197,7 @@ fn sample_sun_cone(axis: Vec3, cos_theta_max: f32, rng: &mut impl Rng) -> Vec3 {
 // ── Path tracer ───────────────────────────────────────────────────────────────
 
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
-pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, photon_map: Option<&PhotonMap>, rng: &mut impl Rng) -> Color {
+pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights: &HittableList, bg_scale: f32, photon_map: Option<&PhotonMap>, rng: &mut impl Rng) -> Color {
     let mut throughput           = Color::new(1.0, 1.0, 1.0);
     let mut color                = Color::default();
     let mut ray                  = *r;
@@ -233,7 +259,6 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                                     color += throughput * brdf_cos * sun_color / (p_sun + p_mat);
                                 }
                             }
-                            // MIS weight for the BRDF-sampled ray that might hit the sun disc.
                             let p_mat_brdf = rec.mat.specular_sampling_pdf(&ray, &rec, sr.ray.direction);
                             if p_mat_brdf > 0.0 {
                                 prev_spec_sun_weight = p_mat_brdf / (p_mat_brdf + p_sun);
@@ -293,7 +318,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                                     let sun_color = background.eval(sun_sample);
                                     let area_pdf  = if lights.objects.is_empty() { 0.0 }
                                                     else { lights.pdf_value(rec.p, sun_sample, ray.time) };
-                                    let mis_d = sun_pdf + brdf + area_pdf;
+                                    let mis_d     = sun_pdf + brdf + area_pdf;
                                     color += throughput * sr.attenuation * brdf * sun_color / mis_d;
                                 }
                             }
@@ -353,7 +378,7 @@ pub fn render_aux_pass(
     height:     u32,
     camera:     &Camera,
     world:      &dyn Hittable,
-    background: Background,
+    background: &Background,
 ) -> (Vec<f32>, Vec<f32>) {
     let w       = width  as usize;
     let n       = w * height as usize;
@@ -412,7 +437,7 @@ pub fn render_tiles(
     height:      u32,
     camera:      &Camera,
     world:       &dyn Hittable,
-    background:  Background,
+    background:  &Background,
     lights:      &HittableList,
     bg_scale:    f32,
     photon_map:  Option<&PhotonMap>,
@@ -424,8 +449,8 @@ pub fn render_tiles(
     let strata_f = strata as f32;
 
     match background {
-        Background::Physical { sun_dir, .. } => set_pearl_sun_dir(sun_dir),
-        _                                => clear_pearl_sun_dir(),
+        Background::Physical { sun_dir, .. } => set_pearl_sun_dir(*sun_dir),
+        _                                    => clear_pearl_sun_dir(),
     }
 
     // Tile the image into 16×16 blocks so that rays within a tile share BVH

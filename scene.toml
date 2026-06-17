@@ -11,15 +11,19 @@ max_samples = 2000
 [camera]
 look_from  = [8, 5, 10]
 look_at    = [3.8, 0.0, 2.2]
-vfov       = 15.0
+vfov       = 70.0
 aperture   = 0.00
 move_speed = 0.2
 
 # ── Background ────────────────────────────────────────────────────────────────
 [background]
-type          = "physical"
-sun_azimuth   = -55.0
-sun_elevation = 32.0
+type = "env_map"
+path = "assets/sunset_puresky_4k.hdr"
+
+# [background]
+# type          = "physical"
+# sun_azimuth   = -55.0
+# sun_elevation = 32.0
 
 # ── Objects ───────────────────────────────────────────────────────────────────
 # Shapes:
@@ -49,8 +53,8 @@ sun_elevation = 32.0
 
 # ── Floor ─────────────────────────────────────────────────────────────────────
 [[objects]]
-shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
-material = { type = "pbr", albedo = [0.55, 0.50, 0.45], roughness = 0.85, metallic = 0.0 }
+shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }
+material = { type = "pbr", albedo = [0.50, 0.48, 0.46], roughness = 0.25, metallic = 0.0 }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # OLD CHAIR (OBJ mesh — modelled in cm, so scale 0.01 → metres)
@@ -58,7 +62,7 @@ material = { type = "pbr", albedo = [0.55, 0.50, 0.45], roughness = 0.85, metall
 [[objects]]
 shape     = { type = "mesh", path = "assets/old_chair.obj" }
 material  = { type = "spectral_metal", variant = "gold", roughness = 0.2 }
-scale     = 0.01
+scale     = 0.02
 rotate_y  = 160.0
 translate = [3.8, 0.0, 2.2]
 
@@ -74,8 +78,8 @@ material.albedo_path   = "assets/textures/basketball_albedo.png"
 material.roughness_path = "assets/textures/basketball_roughness.png"
 material.metallic_path = "assets/textures/basketball_metallic.png"
 material.ao_path       = "assets/textures/basketball_ao.png"
-scale                  = 0.01
-translate              = [3.8, 0.51, 2.2]
+scale                  = 0.02
+translate              = [3.8, 1.02, 2.2]
 
 # ── Caustics ──────────────────────────────────────────────────────────────────
 # Uncomment for caustic pools under the glass float and Fresnel lamp.

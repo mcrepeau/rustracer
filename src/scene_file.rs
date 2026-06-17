@@ -14,7 +14,7 @@ use crate::cylinder::Cylinder;
 use crate::disk::Disk;
 use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
-use crate::renderer::Background;
+use crate::renderer::{Background, EnvMapData};
 use crate::scene::SceneData;
 use crate::sphere::Sphere;
 use crate::texture::Texture;
@@ -79,6 +79,8 @@ pub enum BackgroundConfig {
     },
     /// Uniform colour background.
     Solid { color: [f32; 3] },
+    /// Equirectangular HDR environment map (EXR file).
+    EnvMap { path: String },
 }
 
 fn default_sun_elevation() -> f32 { 30.0 }
@@ -327,6 +329,18 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
             }
         }
         BackgroundConfig::Solid { color } => Background::Solid(col(color)),
+        BackgroundConfig::EnvMap { path } => {
+            let mut reader = image::ImageReader::open(&path)
+                .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
+                .with_guessed_format()
+                .map_err(|e| format!("cannot load environment map '{path}': {e}"))?;
+            reader.limits(image::Limits::no_limits());
+            let img = reader
+                .decode()
+                .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
+                .into_rgb32f();
+            Background::EnvMap(Arc::new(EnvMapData::new(img)))
+        }
     };
 
     // ── Static objects ────────────────────────────────────────────────────────
