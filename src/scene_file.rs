@@ -187,6 +187,14 @@ pub enum MaterialConfig {
         film_thickness: f32,
         #[serde(default = "default_film_ior")]
         film_ior: f32,
+        #[serde(default)]
+        sheen: f32,
+        #[serde(default = "default_sheen_tint")]
+        sheen_tint: f32,
+        #[serde(default)]
+        emission: [f32; 3],
+        #[serde(default)]
+        emission_strength: f32,
     },
     Pearl {
         #[serde(default = "default_pearl_color")]
@@ -213,6 +221,7 @@ fn default_film_thickness()     -> f32 { 450.0 }
 fn default_orient_strength()    -> f32 { 0.30 }
 fn default_film_scale()         -> f32 { 3.0 }
 fn default_luster_roughness()   -> f32 { 0.05 }
+fn default_sheen_tint()         -> f32 { 0.5 }
 
 /// A quad that emits light — added to both the world and the NEE light list.
 #[derive(Deserialize)]
@@ -412,10 +421,13 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
             Arc::new(DiffuseLight { emit: Texture::from(col(color)) }),
 
         MaterialConfig::Pbr { albedo, metallic, roughness, anisotropy, anisotropy_angle,
-                              clearcoat, clearcoat_roughness, film_thickness, film_ior } =>
+                              clearcoat, clearcoat_roughness, film_thickness, film_ior,
+                              sheen, sheen_tint, emission, emission_strength } =>
             Arc::new(PbrMaterial { albedo: col(albedo), metallic, roughness,
                                    anisotropy, anisotropy_angle,
-                                   clearcoat, clearcoat_roughness, film_thickness, film_ior }),
+                                   clearcoat, clearcoat_roughness, film_thickness, film_ior,
+                                   sheen, sheen_tint,
+                                   emission: col(emission), emission_strength }),
 
         MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale, luster_roughness } =>
             Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale, luster_roughness }),

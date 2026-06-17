@@ -482,6 +482,10 @@ impl Material for SSSMaterial {
 /// - `clearcoat_roughness`: roughness of the coat surface (default ~0.03).
 /// - `film_thickness`: thin-film thickness in nm (0 = achromatic; 400–800 for vivid colours).
 /// - `film_ior`: IOR of the thin film (default 1.5 for common dielectric coats).
+/// - `sheen`: weight of the grazing-angle retroreflective lobe [0–1], for cloth and velvet.
+/// - `sheen_tint`: 0 = white sheen, 1 = sheen tinted toward the base albedo (default 0.5).
+/// - `emission`: RGB emission colour (linear); multiplied by `emission_strength`.
+/// - `emission_strength`: scale factor for the emission (0 = dark, default).
 pub struct PbrMaterial {
     pub albedo:              Color,
     pub roughness:           f32,
@@ -492,6 +496,10 @@ pub struct PbrMaterial {
     pub clearcoat_roughness: f32,
     pub film_thickness:      f32,
     pub film_ior:            f32,
+    pub sheen:               f32,
+    pub sheen_tint:          f32,
+    pub emission:            Color,
+    pub emission_strength:   f32,
 }
 
 impl Default for PbrMaterial {
@@ -506,6 +514,10 @@ impl Default for PbrMaterial {
             clearcoat_roughness: 0.03,
             film_thickness:      0.0,
             film_ior:            1.5,
+            sheen:               0.0,
+            sheen_tint:          0.5,
+            emission:            Color::default(),
+            emission_strength:   0.0,
         }
     }
 }
@@ -609,16 +621,35 @@ impl Material for PbrMaterial {
                     skip_pdf:    true,
                 })
             } else {
-                // ── Diffuse Lambertian (dielectrics only) ─────────────────────
+                // ── Diffuse Lambertian + Sheen ────────────────────────────────
                 // skip_pdf: false — the integrator samples a cosine-weighted direction
                 // and calls scattering_pdf(); rec.normal here is a throwaway placeholder.
+                //
+                // Sheen is a retroreflective grazing lobe for cloth/velvet (Disney 2012).
+                // scattering_pdf() returns cos_i/π so attenuation must equal π × f_total:
+                //   attenuation = albedo*(1−m) + π·sheen·C_sheen·F_H
+                // where F_H = (1−cos_o)^5 uses the view angle as proxy for the half-angle,
+                // correctly peaking at grazing incidence without requiring wi at scatter time.
+                let sheen_attn = if self.sheen > 0.0 && self.metallic < 0.999 {
+                    let luma = 0.2126 * self.albedo.x + 0.7152 * self.albedo.y + 0.0722 * self.albedo.z;
+                    let c_tint = if luma > 1e-6 { self.albedo / luma } else { Color::new(1.0, 1.0, 1.0) };
+                    let sheen_color = Color::new(1.0, 1.0, 1.0) * (1.0 - self.sheen_tint) + c_tint * self.sheen_tint;
+                    let f_h = (1.0 - cos_o).powi(5);
+                    sheen_color * (self.sheen * (1.0 - self.metallic) * f_h * PI)
+                } else {
+                    Color::default()
+                };
                 Some(ScatterRecord {
-                    attenuation: self.albedo * ((1.0 - self.metallic) / ((1.0 - p_spec) * (1.0 - p_coat))),
+                    attenuation: (self.albedo * (1.0 - self.metallic) + sheen_attn) / ((1.0 - p_spec) * (1.0 - p_coat)),
                     ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
                     skip_pdf:    false,
                 })
             }
         }
+    }
+
+    fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color {
+        self.emission * self.emission_strength
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
