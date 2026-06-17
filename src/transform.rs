@@ -4,6 +4,44 @@ use crate::hittable::{HitRecord, Hittable};
 use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
 
+// ── Scale ─────────────────────────────────────────────────────────────────────
+
+pub struct Scale {
+    object: Arc<dyn Hittable>,
+    factor: f32,
+}
+
+impl Scale {
+    pub fn new(object: Arc<dyn Hittable>, factor: f32) -> Self {
+        Self { object, factor }
+    }
+}
+
+impl Hittable for Scale {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
+        let inv = 1.0 / self.factor;
+        // Transform ray to object space: scale both origin and direction by inv.
+        // t is invariant: P(t) = O + t·D  →  P/s = (O/s) + t·(D/s).
+        let scaled = Ray::scatter_from(inv * r.origin, inv * r.direction, r);
+        let mut rec = self.object.hit(&scaled, t_min, t_max)?;
+        rec.p = self.factor * rec.p;
+        // Normal direction is unchanged for uniform scale (inverse-transpose = identity direction).
+        Some(rec)
+    }
+
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        let inv = 1.0 / self.factor;
+        let scaled = Ray::scatter_from(inv * r.origin, inv * r.direction, r);
+        self.object.any_hit(&scaled, t_min, t_max)
+    }
+
+    fn bounding_box(&self) -> Option<Aabb> {
+        self.object.bounding_box().map(|bb| {
+            Aabb::new(self.factor * bb.min, self.factor * bb.max)
+        })
+    }
+}
+
 // ── Translate ─────────────────────────────────────────────────────────────────
 
 pub struct Translate {
