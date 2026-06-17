@@ -107,6 +107,9 @@ pub enum ShapeConfig {
         #[serde(default = "default_wave_scale")]
         wave_scale: f32,
     },
+    /// OBJ mesh file — path relative to the working directory.
+    /// Material is applied to all triangles.
+    Mesh { path: String },
     // ── Volume shapes — `material` field is ignored; color+density are inline ──
     /// Uniform-density participating medium enclosed in a sphere.
     /// `g`: Henyey-Greenstein asymmetry (0 = isotropic, 0.85 = cloud droplets).
@@ -341,6 +344,9 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
                         Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
+                    ShapeConfig::Mesh { path } =>
+                        crate::mesh::load_obj(&path, mat)
+                            .map_err(|e| format!("objects[{i}]: {e}"))?,
                     _ => unreachable!(), // volume variants handled above
                 }
             }
