@@ -307,4 +307,35 @@ mod tests {
                 "Fresnel({cos_theta}) = {r:.4} is outside [0, 1]");
         }
     }
+
+    #[test]
+    fn gold_reflects_much_more_red_than_blue() {
+        // Gold's characteristic warm colour comes from its interband absorption edge
+        // around 480–520 nm: low reflectance in blue, high in red/yellow.
+        // Values derived from the J&C 1972 tabulation in GOLD_N / GOLD_K.
+        let (n_blue, k_blue) = gold_ior(440.0); // deep blue
+        let (n_red,  k_red)  = gold_ior(660.0); // red
+        let r_blue = fresnel_conductor(1.0, n_blue, k_blue);
+        let r_red  = fresnel_conductor(1.0, n_red,  k_red);
+        assert!(r_blue < 0.5, "gold blue reflectance should be < 0.5, got {r_blue:.3}");
+        assert!(r_red  > 0.9, "gold red reflectance should be > 0.9, got {r_red:.3}");
+        assert!(r_red > 2.0 * r_blue, "gold red/blue ratio should exceed 2×");
+    }
+
+    #[test]
+    fn silver_is_spectrally_flat_and_bright() {
+        // Silver appears neutral (white/grey) because it reflects all visible
+        // wavelengths at high and nearly equal reflectance.
+        let lambdas = [450.0f32, 550.0, 650.0];
+        let reflectances: Vec<f32> = lambdas.iter().map(|&lam| {
+            let (n, k) = silver_ior(lam);
+            fresnel_conductor(1.0, n, k)
+        }).collect();
+
+        let r_min = reflectances.iter().cloned().fold(f32::INFINITY,     f32::min);
+        let r_max = reflectances.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(r_min > 0.9, "silver reflectance should be > 0.9 at all visible wavelengths, min = {r_min:.3}");
+        assert!(r_max - r_min < 0.06, "silver spectral spread should be < 0.06, got {:.3}", r_max - r_min);
+    }
 }
