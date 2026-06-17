@@ -1125,4 +1125,89 @@ mod tests {
         assert!(mean > 0.95, "smooth white metallic furnace mean={mean:.4} — too lossy");
         assert!(mean <= 1.0 + 1e-6, "smooth white metallic furnace mean={mean:.4} — energy gain");
     }
+
+    // ── Dielectric ────────────────────────────────────────────────────────────
+
+    // HitRecord for a front-face hit at normal incidence (ray going +z, normal −z).
+    fn front_hit_normal_incidence(mat: &dyn Material) -> HitRecord<'_> {
+        HitRecord {
+            p:          Point3::new(0.0, 0.0, 0.0),
+            normal:     Vec3::new(0.0, 0.0, -1.0),
+            mat,
+            t: 1.0, u: 0.0, v: 0.0,
+            front_face: true,
+        }
+    }
+
+    #[test]
+    fn dielectric_attenuation_is_always_white() {
+        // Glass must be perfectly clear regardless of angle or Fresnel outcome.
+        let glass = Dielectric { ir: 1.5 };
+        let r   = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = front_hit_normal_incidence(&glass);
+        let mut rng = SmallRng::seed_from_u64(0);
+        for _ in 0..200 {
+            let sr = glass.scatter(&r, &rec, &mut rng).expect("glass always scatters");
+            assert!((sr.attenuation.x - 1.0).abs() < 1e-6
+                &&  (sr.attenuation.y - 1.0).abs() < 1e-6
+                &&  (sr.attenuation.z - 1.0).abs() < 1e-6,
+                "attenuation must be white, got {:?}", sr.attenuation);
+        }
+    }
+
+    #[test]
+    fn dielectric_is_always_specular() {
+        // skip_pdf=true so the renderer uses the scattered direction directly.
+        let glass = Dielectric { ir: 1.5 };
+        let r   = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = front_hit_normal_incidence(&glass);
+        let mut rng = SmallRng::seed_from_u64(42);
+        for _ in 0..100 {
+            let sr = glass.scatter(&r, &rec, &mut rng).expect("glass always scatters");
+            assert!(sr.skip_pdf, "dielectric scatter must be specular (skip_pdf=true)");
+        }
+    }
+
+    #[test]
+    fn dielectric_tir_always_reflects_at_steep_internal_angle() {
+        // From inside glass (n=1.5) at 50° from the surface normal:
+        // ratio × sin(50°) ≈ 1.15 > 1 → TIR is guaranteed, no RNG involved.
+        // The reflected ray must flip its z-component (going back into the medium).
+        let s50 = 50f32.to_radians().sin();
+        let c50 = 50f32.to_radians().cos();
+        let glass = Dielectric { ir: 1.5 };
+        let r = Ray::new(Point3::new(0.0, 0.0, -1.0), Vec3::new(s50, 0.0, c50));
+        // back face: outward normal (0,0,1) dotted with direction = c50 > 0 → front_face=false.
+        // HitRecord::new would flip to (0,0,−1); we set that directly.
+        let rec = HitRecord {
+            p: Point3::new(0.0, 0.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            mat: &glass,
+            t: 1.0, u: 0.0, v: 0.0,
+            front_face: false,
+        };
+        let mut rng = SmallRng::seed_from_u64(0);
+        for _ in 0..50 {
+            let sr = glass.scatter(&r, &rec, &mut rng).expect("must scatter");
+            assert!(sr.ray.direction.z < 0.0,
+                "TIR must reflect back (z < 0), got z={:.4}", sr.ray.direction.z);
+        }
+    }
+
+    #[test]
+    fn dielectric_mostly_transmits_at_normal_incidence() {
+        // Schlick r₀ = ((1−n)/(1+n))² ≈ 0.04 for n=1.5.
+        // Over 500 samples, > 90% should transmit (z > 0, same direction as input).
+        let glass = Dielectric { ir: 1.5 };
+        let r   = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = front_hit_normal_incidence(&glass);
+        let mut rng = SmallRng::seed_from_u64(7);
+        let n = 500usize;
+        let transmitted = (0..n)
+            .filter(|_| glass.scatter(&r, &rec, &mut rng).expect("must scatter").ray.direction.z > 0.0)
+            .count();
+        let frac = transmitted as f32 / n as f32;
+        assert!(frac > 0.90,
+            "≥90% should transmit at normal incidence (Schlick r₀≈4%), got {:.1}%", frac * 100.0);
+    }
 }

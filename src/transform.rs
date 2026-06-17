@@ -112,3 +112,108 @@ impl Hittable for Rotate {
     fn bounding_box(&self) -> Option<Aabb> { self.bbox }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hittable::{Material, ScatterRecord};
+    use crate::sphere::Sphere;
+
+    struct DummyMat;
+    impl Material for DummyMat {
+        fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+    }
+
+    fn sphere_at(cx: f32, cy: f32, cz: f32, r: f32) -> Arc<Sphere> {
+        Arc::new(Sphere::new(Point3::new(cx, cy, cz), r, Arc::new(DummyMat)))
+    }
+
+    fn shoot<H: Hittable>(h: &H, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32) -> Option<HitRecord<'_>> {
+        let r = Ray::new(Point3::new(ox, oy, oz), Vec3::new(dx, dy, dz));
+        h.hit(&r, 0.001, f32::INFINITY)
+    }
+
+    // ── Translate ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn translate_hit_point_is_offset() {
+        // Sphere at origin, radius=1. Translate by (5,0,0) → appears at (5,0,0).
+        // Ray from (5,0,−5) going (0,0,1): in object space it's a centre shot → t=4.
+        let t = Translate::new(sphere_at(0.0, 0.0, 0.0, 1.0), Vec3::new(5.0, 0.0, 0.0));
+        let rec = shoot(&t, 5.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit");
+        // Near face of the sphere is at z=−1 in object space → world (5, 0, −1).
+        assert!((rec.t - 4.0).abs() < 1e-5, "t = {}", rec.t);
+        assert!((rec.p.x - 5.0).abs() < 1e-5, "p.x = {}", rec.p.x);
+        assert!((rec.p.z + 1.0).abs() < 1e-5, "p.z = {}", rec.p.z);
+    }
+
+    #[test]
+    fn translate_miss_at_original_position() {
+        // Ray aimed at the pre-translation origin must miss the translated sphere.
+        let t = Translate::new(sphere_at(0.0, 0.0, 0.0, 1.0), Vec3::new(5.0, 0.0, 0.0));
+        assert!(shoot(&t, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn translate_preserves_normal_direction() {
+        // Normal is a direction — it must not be translated, only the hit point is.
+        // A centre shot in -z gives outward normal (0,0,−1) and front_face=true.
+        let t = Translate::new(sphere_at(0.0, 0.0, 0.0, 1.0), Vec3::new(5.0, 0.0, 0.0));
+        let rec = shoot(&t, 5.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit");
+        assert!(rec.front_face, "should be front face");
+        assert!(rec.normal.z < -0.99, "normal should point −z, got {}", rec.normal.z);
+    }
+
+    #[test]
+    fn translate_bounding_box_is_shifted() {
+        // AABB of unit sphere at origin is [−1,1]³; shift by (5,0,0) → [4,6]×[−1,1]×[−1,1].
+        let t = Translate::new(sphere_at(0.0, 0.0, 0.0, 1.0), Vec3::new(5.0, 0.0, 0.0));
+        let bb = t.bounding_box().expect("should have bbox");
+        assert!((bb.min.x - 4.0).abs() < 1e-5, "min.x = {}", bb.min.x);
+        assert!((bb.max.x - 6.0).abs() < 1e-5, "max.x = {}", bb.max.x);
+        assert!((bb.min.y + 1.0).abs() < 1e-5, "min.y = {}", bb.min.y);
+        assert!((bb.max.y - 1.0).abs() < 1e-5, "max.y = {}", bb.max.y);
+    }
+
+    // ── Rotate ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rotate_y_90deg_moves_off_axis_sphere() {
+        // Sphere at (1,0,0), radius=0.5. Rotate 90° around Y:
+        // fwd = [[0,0,1],[0,1,0],[−1,0,0]] maps (1,0,0) → (0,0,−1).
+        // Ray from (0,0,−5)→(0,0,1): hits the sphere now at (0,0,−1), t=3.5.
+        let obj = Rotate::around_y(sphere_at(1.0, 0.0, 0.0, 0.5), 90.0);
+        let rec = shoot(&obj, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit rotated sphere");
+        assert!((rec.t - 3.5).abs() < 1e-4, "t = {}", rec.t);
+    }
+
+    #[test]
+    fn rotate_y_90deg_hit_point_is_at_rotated_position() {
+        // The hit point on the near face of the sphere (world z ≈ −1.5, x ≈ 0, y ≈ 0).
+        let obj = Rotate::around_y(sphere_at(1.0, 0.0, 0.0, 0.5), 90.0);
+        let rec = shoot(&obj, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit");
+        assert!(rec.p.x.abs()          < 1e-4, "p.x = {}", rec.p.x);
+        assert!(rec.p.y.abs()          < 1e-4, "p.y = {}", rec.p.y);
+        assert!((rec.p.z + 1.5).abs()  < 1e-4, "p.z = {}", rec.p.z);
+    }
+
+    #[test]
+    fn rotate_y_90deg_normal_is_rotated() {
+        // Object-space outward normal at the near face is (1,0,0) (pointing away from sphere centre).
+        // After 90° Y rotation: mat_apply([[0,0,1],[0,1,0],[−1,0,0]], (1,0,0)) = (0,0,−1).
+        let obj = Rotate::around_y(sphere_at(1.0, 0.0, 0.0, 0.5), 90.0);
+        let rec = shoot(&obj, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit");
+        let outward = if rec.front_face { rec.normal } else { -rec.normal };
+        assert!(outward.x.abs()         < 1e-4, "outward.x = {}", outward.x);
+        assert!(outward.y.abs()         < 1e-4, "outward.y = {}", outward.y);
+        assert!((outward.z + 1.0).abs() < 1e-4, "outward.z = {}", outward.z);
+    }
+
+    #[test]
+    fn rotate_y_zero_degrees_is_identity() {
+        // 0° rotation: sphere at (1,0,0), ray from (5,0,0)→(−1,0,0) hits at t=3.5.
+        let obj = Rotate::around_y(sphere_at(1.0, 0.0, 0.0, 0.5), 0.0);
+        let rec = shoot(&obj, 5.0, 0.0, 0.0, -1.0, 0.0, 0.0).expect("should hit");
+        assert!((rec.t - 3.5).abs() < 1e-4, "t = {}", rec.t);
+    }
+}
+
