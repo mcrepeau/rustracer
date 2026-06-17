@@ -9,11 +9,11 @@ max_samples = 2000
 
 # ── Camera ────────────────────────────────────────────────────────────────────
 [camera]
-look_from  = [2, 4, 12]
-look_at    = [0, 3.5, 0]
-vfov       = 40.0
-aperture   = 0.04
-move_speed = 0.3
+look_from  = [8, 5, 10]
+look_at    = [3.8, 0.0, 2.2]
+vfov       = 15.0
+aperture   = 0.00
+move_speed = 0.2
 
 # ── Background ────────────────────────────────────────────────────────────────
 [background]
@@ -44,6 +44,7 @@ sun_elevation = 32.0
 #   diffuse_light       — color [r,g,b]  (>1 = HDR bright)
 #   pbr                 — albedo [r,g,b]  metallic  roughness
 #   spectral_metal      — variant ("gold"|"copper"|"silver")  roughness
+#   textured_pbr        — albedo_path  (roughness_path  metallic_path  ao_path)  roughness  metallic
 #   pearl               — film_thickness  film_scale  orient_strength
 
 # ── Floor ─────────────────────────────────────────────────────────────────────
@@ -53,7 +54,6 @@ material = { type = "pbr", albedo = [0.55, 0.50, 0.45], roughness = 0.85, metall
 
 # ══════════════════════════════════════════════════════════════════════════════
 # OLD CHAIR (OBJ mesh — modelled in cm, so scale 0.01 → metres)
-# Placed outside the keeper's cottage, facing toward the lighthouse.
 # ══════════════════════════════════════════════════════════════════════════════
 [[objects]]
 shape     = { type = "mesh", path = "assets/old_chair.obj" }
@@ -61,6 +61,21 @@ material  = { type = "spectral_metal", variant = "gold", roughness = 0.2 }
 scale     = 0.01
 rotate_y  = 160.0
 translate = [3.8, 0.0, 2.2]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BASKETBALL (OBJ mesh — modelled in cm, so scale 0.01 → metres)
+# Ball sits on the floor at Y=0 (mesh already bottom-aligned).
+# Note: normal map not applied (tangent-space normal mapping not yet supported).
+# ══════════════════════════════════════════════════════════════════════════════
+[[objects]]
+shape                  = { type = "mesh", path = "assets/basketball.obj" }
+material.type          = "textured_pbr"
+material.albedo_path   = "assets/textures/basketball_albedo.png"
+material.roughness_path = "assets/textures/basketball_roughness.png"
+material.metallic_path = "assets/textures/basketball_metallic.png"
+material.ao_path       = "assets/textures/basketball_ao.png"
+scale                  = 0.01
+translate              = [3.8, 0.51, 2.2]
 
 # ── Caustics ──────────────────────────────────────────────────────────────────
 # Uncomment for caustic pools under the glass float and Fresnel lamp.

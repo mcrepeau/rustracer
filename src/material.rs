@@ -1,6 +1,7 @@
 use std::f32::consts::PI;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use image::RgbImage;
 use rand::{Rng, RngCore};
 use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
@@ -466,6 +467,26 @@ impl Material for SSSMaterial {
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
 }
 
+fn uv_to_pixel(img: &RgbImage, u: f32, v: f32) -> (u32, u32) {
+    let u = u.clamp(0.0, 1.0);
+    let v = 1.0 - v.clamp(0.0, 1.0);  // images top-down, UV bottom-up
+    let x = ((u * img.width()  as f32) as u32).min(img.width()  - 1);
+    let y = ((v * img.height() as f32) as u32).min(img.height() - 1);
+    (x, y)
+}
+
+fn sample_srgb(img: &RgbImage, u: f32, v: f32) -> Color {
+    let (x, y) = uv_to_pixel(img, u, v);
+    let px = img.get_pixel(x, y);
+    let lin = |c: u8| (c as f32 / 255.0).powf(2.2);
+    Color::new(lin(px[0]), lin(px[1]), lin(px[2]))
+}
+
+fn sample_linear(img: &RgbImage, u: f32, v: f32) -> f32 {
+    let (x, y) = uv_to_pixel(img, u, v);
+    img.get_pixel(x, y)[0] as f32 / 255.0
+}
+
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
 ///
 /// All specular lobes are sampled from the Visible Normal Distribution Function
@@ -486,6 +507,8 @@ impl Material for SSSMaterial {
 /// - `sheen_tint`: 0 = white sheen, 1 = sheen tinted toward the base albedo (default 0.5).
 /// - `emission`: RGB emission colour (linear); multiplied by `emission_strength`.
 /// - `emission_strength`: scale factor for the emission (0 = dark, default).
+/// - `albedo_tex / roughness_tex / metallic_tex / ao_tex`: optional image maps that override
+///   the corresponding scalar fields when set. Albedo decoded sRGB→linear; others are linear.
 pub struct PbrMaterial {
     pub albedo:              Color,
     pub roughness:           f32,
@@ -500,6 +523,10 @@ pub struct PbrMaterial {
     pub sheen_tint:          f32,
     pub emission:            Color,
     pub emission_strength:   f32,
+    pub albedo_tex:          Option<Arc<RgbImage>>,
+    pub roughness_tex:       Option<Arc<RgbImage>>,
+    pub metallic_tex:        Option<Arc<RgbImage>>,
+    pub ao_tex:              Option<Arc<RgbImage>>,
 }
 
 impl Default for PbrMaterial {
@@ -518,7 +545,27 @@ impl Default for PbrMaterial {
             sheen_tint:          0.5,
             emission:            Color::default(),
             emission_strength:   0.0,
+            albedo_tex:          None,
+            roughness_tex:       None,
+            metallic_tex:        None,
+            ao_tex:              None,
         }
+    }
+}
+
+impl PbrMaterial {
+    fn albedo_at(&self, u: f32, v: f32) -> Color {
+        let c = self.albedo_tex.as_ref().map_or(self.albedo, |t| sample_srgb(t, u, v));
+        match &self.ao_tex {
+            Some(ao) => c * sample_linear(ao, u, v),
+            None     => c,
+        }
+    }
+    fn roughness_at(&self, u: f32, v: f32) -> f32 {
+        self.roughness_tex.as_ref().map_or(self.roughness, |t| sample_linear(t, u, v))
+    }
+    fn metallic_at(&self, u: f32, v: f32) -> f32 {
+        self.metallic_tex.as_ref().map_or(self.metallic, |t| sample_linear(t, u, v))
     }
 }
 
@@ -529,9 +576,12 @@ impl Material for PbrMaterial {
         let cos_o = wo.dot(n);
         if cos_o <= 0.0 { return None; }
 
-        let alpha = (self.roughness * self.roughness).max(1e-4_f32);
-        let f0    = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
-                  + self.albedo * self.metallic;
+        let albedo    = self.albedo_at(rec.u, rec.v);
+        let roughness = self.roughness_at(rec.u, rec.v);
+        let metallic  = self.metallic_at(rec.u, rec.v);
+        let alpha = (roughness * roughness).max(1e-4_f32);
+        let f0    = Color::new(0.04, 0.04, 0.04) * (1.0 - metallic)
+                  + albedo * metallic;
 
         // Clearcoat lobe: dielectric IOR 1.5 (F0 = 0.04), scaled by clearcoat weight.
         // The Fresnel at normal incidence is only ~4%, making the clearcoat very rarely
@@ -546,7 +596,7 @@ impl Material for PbrMaterial {
 
         // Base specular probability from Fresnel at the view angle.
         let f_approx = schlick_color(cos_o, f0);
-        let p_spec = if self.metallic > 0.999 {
+        let p_spec = if metallic > 0.999 {
             1.0_f32
         } else {
             (0.2126 * f_approx.x + 0.7152 * f_approx.y + 0.0722 * f_approx.z)
@@ -630,17 +680,17 @@ impl Material for PbrMaterial {
                 //   attenuation = albedo*(1−m) + π·sheen·C_sheen·F_H
                 // where F_H = (1−cos_o)^5 uses the view angle as proxy for the half-angle,
                 // correctly peaking at grazing incidence without requiring wi at scatter time.
-                let sheen_attn = if self.sheen > 0.0 && self.metallic < 0.999 {
-                    let luma = 0.2126 * self.albedo.x + 0.7152 * self.albedo.y + 0.0722 * self.albedo.z;
-                    let c_tint = if luma > 1e-6 { self.albedo / luma } else { Color::new(1.0, 1.0, 1.0) };
+                let sheen_attn = if self.sheen > 0.0 && metallic < 0.999 {
+                    let luma = 0.2126 * albedo.x + 0.7152 * albedo.y + 0.0722 * albedo.z;
+                    let c_tint = if luma > 1e-6 { albedo / luma } else { Color::new(1.0, 1.0, 1.0) };
                     let sheen_color = Color::new(1.0, 1.0, 1.0) * (1.0 - self.sheen_tint) + c_tint * self.sheen_tint;
                     let f_h = (1.0 - cos_o).powi(5);
-                    sheen_color * (self.sheen * (1.0 - self.metallic) * f_h * PI)
+                    sheen_color * (self.sheen * (1.0 - metallic) * f_h * PI)
                 } else {
                     Color::default()
                 };
                 Some(ScatterRecord {
-                    attenuation: (self.albedo * (1.0 - self.metallic) + sheen_attn) / ((1.0 - p_spec) * (1.0 - p_coat)),
+                    attenuation: (albedo * (1.0 - metallic) + sheen_attn) / ((1.0 - p_spec) * (1.0 - p_coat)),
                     ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
                     skip_pdf:    false,
                 })
@@ -664,11 +714,14 @@ impl Material for PbrMaterial {
         let cos_i = wi.dot(n);
         if cos_o <= 0.0 || cos_i <= 0.0 { return Color::default(); }
 
+        let albedo    = self.albedo_at(rec.u, rec.v);
+        let roughness = self.roughness_at(rec.u, rec.v);
+        let metallic  = self.metallic_at(rec.u, rec.v);
         let h    = (wo + wi).unit();
         let wo_h = wo.dot(h).max(0.0);
         let h_n  = h.dot(n).max(0.0);
-        let f0   = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
-                 + self.albedo * self.metallic;
+        let f0   = Color::new(0.04, 0.04, 0.04) * (1.0 - metallic)
+                 + albedo * metallic;
 
         let mut result = Color::default();
 
@@ -689,7 +742,7 @@ impl Material for PbrMaterial {
 
         // Base specular lobe: F · D · G1(wo) · G1(wi) / (4 · cos_o)
         {
-            let alpha  = (self.roughness * self.roughness).max(1e-4_f32);
+            let alpha  = (roughness * roughness).max(1e-4_f32);
             let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
             let ax     = alpha / aspect;
             let ay     = alpha * aspect;
@@ -717,16 +770,19 @@ impl Material for PbrMaterial {
         let cos_i = wi.dot(n);
         if cos_o <= 0.0 || cos_i <= 0.0 { return 0.0; }
 
+        let albedo   = self.albedo_at(rec.u, rec.v);
+        let roughness = self.roughness_at(rec.u, rec.v);
+        let metallic  = self.metallic_at(rec.u, rec.v);
         let h   = (wo + wi).unit();
         let h_n = h.dot(n).max(0.0);
-        let f0  = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
-                + self.albedo * self.metallic;
+        let f0  = Color::new(0.04, 0.04, 0.04) * (1.0 - metallic)
+                + albedo * metallic;
 
         let p_coat = if self.clearcoat > 1e-3 {
             (schlick(cos_o, 1.0 / 1.5_f32) * self.clearcoat).max(0.12 * self.clearcoat)
         } else { 0.0 };
         let f_approx = schlick_color(cos_o, f0);
-        let p_spec   = if self.metallic > 0.999 { 1.0_f32 } else {
+        let p_spec   = if metallic > 0.999 { 1.0_f32 } else {
             (0.2126 * f_approx.x + 0.7152 * f_approx.y + 0.0722 * f_approx.z)
                 .clamp(0.04, 0.9)
         };
@@ -743,7 +799,7 @@ impl Material for PbrMaterial {
 
         // Base specular VNDF pdf: (1−p_coat)·p_spec · D · G1(wo) / (4 · cos_o)
         if (1.0 - p_coat) * p_spec > 1e-6 {
-            let alpha  = (self.roughness * self.roughness).max(1e-4_f32);
+            let alpha  = (roughness * roughness).max(1e-4_f32);
             let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
             let ax     = alpha / aspect;
             let ay     = alpha * aspect;
@@ -761,7 +817,7 @@ impl Material for PbrMaterial {
         pdf
     }
 
-    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
+    fn albedo_hint(&self, u: f32, v: f32, _p: Point3) -> Color { self.albedo_at(u, v) }
     fn can_receive_caustics(&self) -> bool { self.metallic < 0.999 }
 }
 

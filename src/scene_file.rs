@@ -210,6 +210,22 @@ pub enum MaterialConfig {
         #[serde(default)]
         emission_strength: f32,
     },
+    /// PBR material driven by image texture maps.
+    /// `albedo_path` is required; the others are optional (fall back to scalar defaults).
+    /// Normal maps are not yet supported.
+    TexturedPbr {
+        albedo_path:    String,
+        #[serde(default)]
+        roughness_path: Option<String>,
+        #[serde(default)]
+        metallic_path:  Option<String>,
+        #[serde(default)]
+        ao_path:        Option<String>,
+        #[serde(default = "default_roughness")]
+        roughness:      f32,
+        #[serde(default)]
+        metallic:       f32,
+    },
     /// Conductor Fresnel from J&C 1972 tabulated IOR data.
     SpectralMetal {
         /// "gold", "copper", or "silver"
@@ -425,6 +441,12 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
 
 // ── Material builder ──────────────────────────────────────────────────────────
 
+fn load_img(path: &str) -> Result<Arc<image::RgbImage>, String> {
+    image::open(path)
+        .map_err(|e| format!("cannot load texture '{path}': {e}"))
+        .map(|img| Arc::new(img.into_rgb8()))
+}
+
 fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
     Ok(match cfg {
         MaterialConfig::Lambertian { color } =>
@@ -456,7 +478,19 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
                                    anisotropy, anisotropy_angle,
                                    clearcoat, clearcoat_roughness, film_thickness, film_ior,
                                    sheen, sheen_tint,
-                                   emission: col(emission), emission_strength }),
+                                   emission: col(emission), emission_strength,
+                                   ..PbrMaterial::default() }),
+
+        MaterialConfig::TexturedPbr { albedo_path, roughness_path, metallic_path, ao_path, roughness, metallic } =>
+            Arc::new(PbrMaterial {
+                albedo_tex:    Some(load_img(&albedo_path)?),
+                roughness_tex: roughness_path.as_deref().map(load_img).transpose()?,
+                metallic_tex:  metallic_path.as_deref().map(load_img).transpose()?,
+                ao_tex:        ao_path.as_deref().map(load_img).transpose()?,
+                roughness,
+                metallic,
+                ..PbrMaterial::default()
+            }),
 
         MaterialConfig::SpectralMetal { variant, roughness } => {
             let v = match variant.to_lowercase().as_str() {
