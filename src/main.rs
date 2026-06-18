@@ -165,6 +165,7 @@ fn print_controls() {
     println!("  [Enter]      Pause rendering");
     println!("  [T]          Toggle tonemapper (AgX / ACES)");
     println!("  [V]          Toggle adaptive sampling");
+    println!("  [M]          Toggle photon map (caustics on/off)");
     #[cfg(feature = "denoise")]
     println!("  [N]          Toggle OIDN denoiser");
     #[cfg(feature = "denoise")]
@@ -526,7 +527,8 @@ fn main() {
     let mut strata = compute_strata(scenes[scene_idx].max_samples);
     // Adaptive sampling state
     let mut tonemapper     = ToneMapper::AgX;
-    let mut adaptive_on   = false;
+    let mut adaptive_on    = false;
+    let mut photon_map_on  = true;
     let n_px              = (win_w * win_h) as usize;
     let mut pixel_samples = vec![0u32;  n_px];  // per-pixel sample count
     let mut var_m2_lum    = vec![0.0f32; n_px]; // Welford M2 for luminance
@@ -755,6 +757,11 @@ fn main() {
                                     reset_accum!();
                                     window.request_redraw();
                                 }
+                                VirtualKeyCode::M => {
+                                    photon_map_on = !photon_map_on;
+                                    reset_accum!();
+                                    window.request_redraw();
+                                }
                                 VirtualKeyCode::R if scene_idx == 3 => {
                                     match scene_file::load("scene.toml") {
                                         Ok(s) => {
@@ -833,6 +840,9 @@ fn main() {
                         let pct = n_converged * 100 / adap_conv.len().max(1);
                         format!("  adaptive {pct}% conv")
                     } else { String::new() };
+                    let pm_str = if !photon_map_on && scene.photon_map.is_some() {
+                        "  [photon map OFF]"
+                    } else { "" };
                     let tm_str = if tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
                     let cam_str = if cam_state_str.is_empty() {
                         format!("apt {:.2}  fov {:.0}°", cam_state.aperture, cam_state.vfov)
@@ -840,8 +850,8 @@ fn main() {
                         cam_state_str.to_string()
                     };
                     window.set_title(&format!(
-                        "rustracer — {} — {samples} spp  |  {cam_str}  exp {:.2}  {tm_str}{}{}{}",
-                        scene.name, exposure, sun_str, oidn_str, adaptive_str,
+                        "rustracer — {} — {samples} spp  |  {cam_str}  exp {:.2}  {tm_str}{}{}{}{}",
+                        scene.name, exposure, sun_str, oidn_str, adaptive_str, pm_str,
                     ));
                     last_title_update = Instant::now();
                 }
@@ -851,9 +861,10 @@ fn main() {
                     let scene = &scenes[scene_idx];
                     let bg_scale = 1.0;
                     let conv_mask = if adaptive_on { Some(adap_conv.as_slice()) } else { None };
+                    let pm = if photon_map_on { scene.photon_map.as_deref() } else { None };
                     render_tiles(&mut scratch, conv_mask, samples, strata, win_w, win_h, &camera,
                                  scene.world.as_ref(), &scene.background, &scene.lights, bg_scale,
-                                 scene.photon_map.as_deref());
+                                 pm);
 
                     // Accumulate samples and update per-pixel Welford statistics.
                     // Converged pixels are skipped (scratch[i] == black, flag checked).

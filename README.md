@@ -60,6 +60,7 @@ Press **N** in-app to toggle denoising. The denoiser runs on a background thread
 | Arrows | Rotate sun (Physical sky scenes) |
 | T | Toggle tonemapper (AgX / ACES) |
 | V | Toggle adaptive sampling |
+| M | Toggle photon map (caustics on/off) |
 | L | Print current camera position to terminal (TOML format for scene.toml) |
 | P | Save PNG |
 | Enter | Pause / resume rendering |
