@@ -89,7 +89,7 @@ pub fn build_random_scene() -> SceneData {
 
     // Heroes at slots 0,1,2,4,5,6 — material-only spheres sharing the hero loop.
     let hero_slots: Vec<(u32, Arc<dyn Material>)> = vec![
-        (0, Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375 })),
+        (0, Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375, ..Default::default() })),
         (1, Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() })),
         (2, Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold, 0.04))),
         (4, Arc::new(SSSMaterial {
@@ -224,7 +224,7 @@ pub fn build_cornell_box() -> SceneData {
     // across the visible spectrum — high dispersion like an optical prism,
     // producing visible rainbow fringes in the caustic and refraction.
     list.add(Sphere::new(Point3::new(190.0, 245.0, 190.0), 80.0,
-        Arc::new(SpectralDielectric { cauchy_b: 1.612, cauchy_c: 0.00950 })));
+        Arc::new(SpectralDielectric { cauchy_b: 1.612, cauchy_c: 0.00950, ..Default::default() })));
 
     let mut scene = SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
@@ -340,7 +340,7 @@ pub fn build_nextweek_scene() -> SceneData {
     list.objects.push(Arc::new(Diamond::new(
         Point3::new(220.0, 325.0, 300.0),
         diamond_r,
-        Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
+        Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585, ..Default::default() }),
     )) as Arc<dyn Hittable>);
 
     // Earth texture (textured Lambertian).

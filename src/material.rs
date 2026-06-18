@@ -213,9 +213,21 @@ impl Material for Dielectric {
 /// - Crown glass:  cauchy_b ≈ 1.507, cauchy_c ≈ 0.00375
 /// - Dense flint:  cauchy_b ≈ 1.612, cauchy_c ≈ 0.00950
 /// - Diamond:      cauchy_b ≈ 2.395, cauchy_c ≈ 0.00585
+///
+/// `absorption` is a per-unit-length Beer-Lambert coefficient (RGB, scene units).
+/// Applied once per interior segment — accumulates correctly across TIR bounces.
+/// `[0,0,0]` = clear glass. Example: `[0.05, 0.01, 0.0]` gives an amber tint
+/// that deepens with thickness.
 pub struct SpectralDielectric {
-    pub cauchy_b: f32,
-    pub cauchy_c: f32,
+    pub cauchy_b:   f32,
+    pub cauchy_c:   f32,
+    pub absorption: Color,
+}
+
+impl Default for SpectralDielectric {
+    fn default() -> Self {
+        Self { cauchy_b: 1.5, cauchy_c: 0.0, absorption: Color::new(0.0, 0.0, 0.0) }
+    }
 }
 
 impl Material for SpectralDielectric {
@@ -228,11 +240,22 @@ impl Material for SpectralDielectric {
         // Reflections are always achromatic — Fresnel reflectance is nearly flat
         // across the visible spectrum.
         let weight_this_refraction = !reflected && !r_in.spectral_weighted;
-        let attenuation = if weight_this_refraction {
+        let mut attenuation = if weight_this_refraction {
             spectral_to_rgb(r_in.wavelength)
         } else {
             Color::new(1.0, 1.0, 1.0)
         };
+
+        // Beer-Lambert absorption: applied on every interior segment (exit or TIR).
+        // rec.t is the chord length since the last boundary event, so absorption
+        // accumulates correctly across multiple TIR bounces inside the medium.
+        if !rec.front_face {
+            let d = rec.t;
+            attenuation.x *= (-self.absorption.x * d).exp();
+            attenuation.y *= (-self.absorption.y * d).exp();
+            attenuation.z *= (-self.absorption.z * d).exp();
+        }
+
         let mut scattered = Ray::scatter_from(rec.p, direction, r_in);
         if weight_this_refraction { scattered.spectral_weighted = true; }
         Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })

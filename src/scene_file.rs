@@ -183,6 +183,10 @@ pub enum MaterialConfig {
         /// Diamond ≈ 0.04, glass ≈ 0.01.
         #[serde(default)]
         dispersion: f32,
+        /// Beer-Lambert absorption coefficient per unit length (RGB, scene units).
+        /// [0,0,0] = clear glass. Example: [0.05, 0.01, 0.0] gives amber tint.
+        #[serde(default)]
+        absorption: [f32; 3],
     },
     DiffuseLight { color: [f32; 3] },
     Pbr {
@@ -474,7 +478,7 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
         MaterialConfig::Dielectric { ior } =>
             Arc::new(Dielectric { ir: ior }),
 
-        MaterialConfig::SpectralDielectric { ior, dispersion } => {
+        MaterialConfig::SpectralDielectric { ior, dispersion, absorption } => {
             // Convert (ior at d-line, spread over visible) to Cauchy n(λ)=B+C/λ²
             // C determined from spread: Δn = C × (1/λ_b² − 1/λ_r²), λ in μm.
             // λ_b = 0.435 μm, λ_r = 0.700 μm → denominator ≈ 3.250 μm⁻².
@@ -482,7 +486,11 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
             // B so that n(d-line, 587.56 nm) = ior: B = ior − C / 0.58756².
             // The d-line (He 587.56 nm) is the standard reference for optical glass IOR.
             let cauchy_b = ior - cauchy_c / (0.58756 * 0.58756);
-            Arc::new(SpectralDielectric { cauchy_b, cauchy_c })
+            Arc::new(SpectralDielectric {
+                cauchy_b,
+                cauchy_c,
+                absorption: Color::new(absorption[0], absorption[1], absorption[2]),
+            })
         }
 
         MaterialConfig::DiffuseLight { color } =>
