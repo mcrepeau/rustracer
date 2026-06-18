@@ -160,6 +160,7 @@ fn print_controls() {
     println!("  [-] [=]      Decrease / increase exposure");
     println!("  [I]  [O]     Decrease / increase aperture");
     println!("  [Arrows]     Rotate sun");
+    println!("  [L]          Print camera position (look_from / look_at for scene.toml)");
     println!("  [P]          Save PNG");
     println!("  [Enter]      Pause rendering");
     println!("  [T]          Toggle tonemapper (AgX / ACES)");
@@ -652,6 +653,15 @@ fn main() {
                                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
                                         save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                     }
+                                }
+                                VirtualKeyCode::L => {
+                                    let from = cam_state.pos;
+                                    let at   = cam_state.look_at();
+                                    println!("# paste into [camera] in scene.toml");
+                                    println!("look_from = [{:.4}, {:.4}, {:.4}]", from.x, from.y, from.z);
+                                    println!("look_at   = [{:.4}, {:.4}, {:.4}]", at.x,   at.y,   at.z);
+                                    println!("vfov      = {:.1}", cam_state.vfov);
+                                    println!("aperture  = {:.3}", cam_state.aperture);
                                 }
                                 VirtualKeyCode::I => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);

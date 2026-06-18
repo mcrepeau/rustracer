@@ -141,4 +141,10 @@ impl CameraState {
             self.focus_dist = rec.t;
         }
     }
+
+    /// The point the camera is aimed at (pos + forward × focus_dist).
+    /// After autofocus this lands on the nearest scene object along the view axis.
+    pub fn look_at(&self) -> Point3 {
+        self.pos + self.fwd() * self.focus_dist
+    }
 }
