@@ -21,11 +21,57 @@ const COS_SUN_MAX: f32 = 0.9999892;
 
 /// Equirectangular HDR environment map loaded from an EXR file.
 pub struct EnvMapData {
-    image: Rgb32FImage,
+    image:        Rgb32FImage,
+    marginal_cdf: Vec<f32>,  // len = H; CDF over image rows
+    cond_cdf:     Vec<f32>,  // len = H*W, row-major; conditional CDF over columns per row
+    inv_total:    f32,       // reciprocal of Σ(luminance × sinθ), used in PDF evaluation
 }
 
 impl EnvMapData {
-    pub fn new(image: Rgb32FImage) -> Self { Self { image } }
+    pub fn new(image: Rgb32FImage) -> Self {
+        use std::f32::consts::PI;
+        let w = image.width()  as usize;
+        let h = image.height() as usize;
+        let lum = |r: f32, g: f32, b: f32| 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+        // Build per-row conditional CDFs and collect the row marginal weights.
+        // Each pixel is weighted by luminance × sin(θ) — the solid-angle element
+        // for an equirectangular map — so bright, equator-facing pixels are sampled
+        // more often than equally bright pixels near the poles.
+        let mut row_weights = vec![0.0f32; h];
+        let mut cond_cdf    = vec![0.0f32; h * w];
+        for j in 0..h {
+            let sin_j   = (PI * (j as f32 + 0.5) / h as f32).sin();
+            let mut sum = 0.0f32;
+            for i in 0..w {
+                let px = image.get_pixel(i as u32, j as u32);
+                sum += lum(px[0], px[1], px[2]) * sin_j;
+                cond_cdf[j * w + i] = sum;
+            }
+            if sum > 0.0 {
+                for i in 0..w { cond_cdf[j * w + i] /= sum; }
+            } else {
+                for i in 0..w { cond_cdf[j * w + i] = (i + 1) as f32 / w as f32; }
+            }
+            row_weights[j] = sum;
+        }
+
+        // Build the 1-D marginal CDF over rows.
+        let total: f32 = row_weights.iter().sum();
+        let mut marginal_cdf = vec![0.0f32; h];
+        let mut cum = 0.0f32;
+        for j in 0..h {
+            cum += row_weights[j];
+            marginal_cdf[j] = if total > 0.0 { cum / total } else { (j + 1) as f32 / h as f32 };
+        }
+
+        Self {
+            inv_total: if total > 0.0 { 1.0 / total } else { 0.0 },
+            image,
+            marginal_cdf,
+            cond_cdf,
+        }
+    }
 
     fn sample(&self, dir: Vec3) -> Color {
         use std::f32::consts::PI;
@@ -38,6 +84,63 @@ impl EnvMapData {
         let py = ((v * h as f32) as u32).min(h - 1);
         let p  = self.image.get_pixel(px, py);
         Color::new(p[0], p[1], p[2])
+    }
+
+    /// Importance-sample a world-space direction proportional to luminance × solid angle.
+    /// Returns (direction, solid-angle PDF).
+    pub fn sample_dir(&self, rng: &mut impl rand::Rng) -> (Vec3, f32) {
+        use std::f32::consts::PI;
+        let w = self.image.width()  as usize;
+        let h = self.image.height() as usize;
+
+        // Two-stage inversion: first pick a row, then a column within that row.
+        let j = {
+            let xi: f32 = rng.gen();
+            self.marginal_cdf.partition_point(|&v| v < xi).min(h - 1)
+        };
+        let i = {
+            let xi: f32 = rng.gen();
+            self.cond_cdf[j * w .. (j + 1) * w].partition_point(|&v| v < xi).min(w - 1)
+        };
+
+        // Sub-pixel jitter for continuous (u,v) sampling.
+        let u = (i as f32 + rng.gen::<f32>()) / w as f32;
+        let v = (j as f32 + rng.gen::<f32>()) / h as f32;
+
+        // Invert the equirectangular projection used in sample():
+        //   u = 0.5 + atan2(x, z) / (2π)  →  φ = 2π(u − 0.5)
+        //   v = acos(y) / π                →  θ = πv
+        let phi   = 2.0 * PI * (u - 0.5);
+        let theta = PI * v;
+        let sin_t = theta.sin();
+        let dir   = Vec3::new(sin_t * phi.sin(), theta.cos(), sin_t * phi.cos());
+
+        (dir, self.dir_pdf_at(i, j))
+    }
+
+    /// Solid-angle PDF for a given world-space direction.
+    pub fn dir_pdf(&self, dir: Vec3) -> f32 {
+        use std::f32::consts::PI;
+        let w = self.image.width()  as usize;
+        let h = self.image.height() as usize;
+        let d = dir.unit();
+        let u = (0.5 + d.x.atan2(d.z) / (2.0 * PI)).rem_euclid(1.0);
+        let v = d.y.clamp(-1.0, 1.0).acos() / PI;
+        let i = ((u * w as f32) as usize).min(w - 1);
+        let j = ((v * h as f32) as usize).min(h - 1);
+        self.dir_pdf_at(i, j)
+    }
+
+    fn dir_pdf_at(&self, i: usize, j: usize) -> f32 {
+        use std::f32::consts::PI;
+        let w   = self.image.width()  as usize;
+        let h   = self.image.height() as usize;
+        let px  = self.image.get_pixel(i as u32, j as u32);
+        let lum = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+        // The sinθ weighting used during CDF construction cancels exactly with the
+        // equirectangular→solid-angle Jacobian (|dω/d(u,v)| = 2π² sinθ), giving:
+        //   p_ω = L(i,j) × W × H / (Z × 2π²)
+        lum * (w * h) as f32 * self.inv_total / (2.0 * PI * PI)
     }
 }
 
@@ -194,6 +297,10 @@ fn sample_sun_cone(axis: Vec3, cos_theta_max: f32, rng: &mut impl Rng) -> Vec3 {
     t * (sin_theta * phi.cos()) + b * (sin_theta * phi.sin()) + axis * cos_theta
 }
 
+fn env_pdf_value(dir: Vec3, background: &Background) -> f32 {
+    if let Background::EnvMap(em) = background { em.dir_pdf(dir) } else { 0.0 }
+}
+
 // ── Path tracer ───────────────────────────────────────────────────────────────
 
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
@@ -215,7 +322,8 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                 // - After a specular bounce (prev_specular = true): use prev_spec_sun_weight
                 //   (1.0 if no specular sun NEE was done, else p_vndf/(p_vndf+p_sun)).
                 let sun_pdf = sun_pdf_value(ray.direction, background);
-                let emit_w  = if sun_pdf == 0.0   { 1.0 }
+                let env_pdf = env_pdf_value(ray.direction, background);
+                let emit_w  = if sun_pdf + env_pdf == 0.0 { 1.0 }
                               else if prev_specular { prev_spec_sun_weight }
                               else                  { prev_mis_w_brdf };
                 color += throughput * background.eval(ray.direction) * bg_scale * emit_w;
@@ -325,6 +433,27 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                         }
                     }
 
+                    // ── Env-map NEE: importance-sample bright env map regions ───────
+                    // Mirrors the sun NEE block above.  A direction is drawn from the
+                    // luminance-weighted 2-D CDF built at load time; if the shadow ray
+                    // is unoccluded the env radiance is added with MIS weighting.
+                    if let Background::EnvMap(em) = background {
+                        let (env_dir, env_pdf) = em.sample_dir(rng);
+                        if env_pdf > 0.0 {
+                            let shadow = Ray::new_at_time(rec.p, env_dir, ray.time);
+                            if !world.any_hit(&shadow, 0.001, f32::INFINITY) {
+                                let brdf = rec.mat.scattering_pdf(&ray, &rec, &shadow);
+                                if brdf > 0.0 {
+                                    let area_pdf = if lights.objects.is_empty() { 0.0 }
+                                                   else { lights.pdf_value(rec.p, env_dir, ray.time) };
+                                    let env_color = background.eval(env_dir);
+                                    color += throughput * sr.attenuation * brdf * env_color
+                                        / (env_pdf + brdf + area_pdf);
+                                }
+                            }
+                        }
+                    }
+
                     // ── Indirect lighting: cosine-weighted BRDF sample ────────────
                     // Also compute the MIS weight for the case where this ray hits a
                     // light next iteration: w_brdf = p_brdf / (p_brdf + p_nee).
@@ -340,7 +469,8 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                         let area = if lights.objects.is_empty() { 0.0 }
                                    else { lights.pdf_value(rec.p, ind_dir, ray.time) };
                         let sun  = sun_pdf_value(ind_dir, background);
-                        area + sun
+                        let env  = env_pdf_value(ind_dir, background);
+                        area + sun + env
                     };
                     prev_mis_w_brdf = pdf_val / (pdf_val + nee_pdf_for_ind).max(1e-8);
 

@@ -1,6 +1,6 @@
 # rustracer
 
-A physically-based spectral path tracer with interactive camera controls. Built in Rust with an 8-wide QBVH accelerator (AVX2), hero-wavelength spectral rendering, explicit NEE with MIS, anisotropic GGX, and a kd-tree caustic photon map.
+A physically-based path tracer built in Rust. It simulates how light actually behaves — bouncing, refracting, and scattering through a scene — to produce photorealistic images. It runs interactively in a window and can also render to PNG in headless mode.
 
 ## Build & Run
 
@@ -60,68 +60,177 @@ Press **N** in-app to toggle denoising. The denoiser runs on a background thread
 ## Features
 
 ### Rendering
-- Unidirectional path tracing with full global illumination
-- Explicit next-event estimation (NEE) with MIS balance heuristic — shadow ray cast toward area lights at every diffuse bounce; direct and BRDF sampling weights balanced via `p_nee / (p_nee + p_brdf)`
-- `any_hit()` BVH traversal for shadow rays — exits at first hit, skips child sorting
-- Cosine-weighted hemisphere sampling for indirect diffuse
-- Depth of field with polygonal bokeh (configurable blade count)
-- Motion blur
+
+Path tracing works by sending many rays from the camera into the scene. Each ray bounces around — hitting surfaces, scattering, sometimes hitting a light — and the average of thousands of these paths gives you the final pixel colour. More samples per pixel means less noise.
+
+- **Unidirectional path tracing** with full global illumination (indirect lighting, colour bleeding, soft shadows — all emerge naturally from the simulation)
+- **Next-event estimation (NEE) with MIS** — at each diffuse bounce, an extra shadow ray is cast directly toward area lights. This greatly reduces noise in scenes with small or bright lights, where a random bounce is unlikely to hit them by chance. The direct and indirect contributions are balanced with the MIS balance heuristic so light is never counted twice.
+- **Cosine-weighted hemisphere sampling** for diffuse indirect bounces — samples are biased toward directions that contribute more energy, reducing variance without introducing bias
+- **Depth of field** — rays are scattered across a simulated lens aperture, producing realistic out-of-focus blur. Bokeh shape is controlled by a configurable blade count.
+- **Motion blur** — objects can be assigned a velocity; rays are jittered in time to simulate shutter opening
 
 ### Spectral rendering
-- Hero-wavelength spectral path tracing: one wavelength λ sampled per camera ray, accumulated with CIE 1931 colour matching functions
-- **SpectralDielectric** — Cauchy dispersion equation `n(λ) = B + C/λ²`; correct chromatic aberration and rainbow caustics from glass
-- **SpectralMetal** — exact unpolarised conductor Fresnel from Johnson & Christy (1972) tabulated IOR data for Gold, Copper, and Silver (13 samples, 25 nm grid, 380–680 nm)
-- `spectral_weighted` flag ensures the CMF weight is applied exactly once per path regardless of bounce count
+
+Most path tracers work entirely in RGB — red, green, and blue channels. This tracer optionally goes further by simulating actual wavelengths of light, which enables physically correct phenomena that RGB cannot reproduce.
+
+- **Hero-wavelength spectral rendering** — one wavelength λ (between 380 and 700 nm) is sampled per camera ray and tracked through all bounces. The final colour is reconstructed using the CIE 1931 colour matching functions, which define how human eyes convert wavelengths to RGB perception.
+- **SpectralDielectric** — glass whose refractive index depends on wavelength (Cauchy equation: `n(λ) = B + C/λ²`). Different colours bend by different amounts, producing chromatic aberration in lenses and rainbow caustics from prisms.
+- **SpectralMetal** — conductor Fresnel reflectance computed from measured IOR data (Johnson & Christy 1972) for Gold, Copper, and Silver. The colour shift with viewing angle is physically exact, not approximated.
 
 ### Acceleration
-- QBVH: 8-wide with AVX2, 4-wide fallback with SSE2/NEON — selected at compile time
-- Parallelised tile rendering, accumulation, and tone-mapping via Rayon
-- Adaptive sampling with perceptual luminance-variance threshold per tile
 
-### Photon mapping
+Path tracing is expensive — every pixel needs thousands of ray-scene intersection tests. Several layers of optimisation make it interactive:
+
+- **QBVH (8-wide Bounding Volume Hierarchy)** — the scene is wrapped in a tree of axis-aligned bounding boxes. Ray traversal tests 8 child nodes simultaneously using AVX2 SIMD instructions, with a 4-wide SSE2/NEON fallback on other hardware. Shadow rays use a faster `any_hit()` variant that exits at the first hit.
+- **Parallelised tile rendering** via Rayon — the image is divided into tiles, each rendered by a separate CPU thread simultaneously
+- **Adaptive sampling** — tiles that have already converged (low luminance variance) are skipped in subsequent passes, concentrating samples where they're still needed
+
+### Caustics (Photon Mapping)
+
+Caustics are the bright, curved light patterns formed when light focuses through a curved transparent surface — like the rippling bright patches at the bottom of a swimming pool, or the rainbow cast by a glass prism. Standard path tracing struggles with caustics because it relies on rays randomly finding the exact path through the lens, which is extremely unlikely.
+
+This tracer uses a **photon map** to solve this: a separate forward-tracing pass shoots photons from light sources, stores where they land (after refracting through glass), and builds a kd-tree over them. During the main render, the density of stored photons near a surface point is used to estimate caustic radiance.
+
 - Balanced kd-tree (median-split, widest-axis) built once at scene construction
-- Epanechnikov kernel density estimate pre-divided by π; caller multiplies by surface albedo
-- Hemisphere normal filtering: photons whose stored surface normal opposes the shading normal are rejected, preventing caustic leakage through opaque geometry
-- Only paths through spectral materials (`SpectralDielectric`, `SpectralMetal`) contribute photons — ordinary glass balls are excluded to keep the ground clean
-- Per-scene gather radius calibrated to ~5% of coordinate scale
+- Epanechnikov kernel density estimation
+- Hemisphere normal filtering: photons whose stored surface normal opposes the shading normal are rejected, preventing caustic light from leaking through opaque geometry
+- Only paths through spectral materials (`SpectralDielectric`, `SpectralMetal`) contribute photons
+
+### Backgrounds
+
+Two background modes are supported, configured per scene:
+
+**Physical sky** — an analytical atmospheric scattering model. Sun position is controlled by azimuth and elevation angles (also adjustable with arrow keys at runtime). Produces a physically plausible sky gradient with sun disk and a horizon haze. Does not require any external file.
+
+```toml
+[background]
+type          = "physical"
+sun_azimuth   = -55.0
+sun_elevation = 32.0
+```
+
+**Environment map** — a real-world HDR photo of an environment wrapped around the scene as a spherical backdrop. Any ray that escapes the scene without hitting geometry samples the environment map instead, giving the scene accurate real-world lighting colours and a photographic background.
+
+Both `.hdr` (Radiance RGBE) and `.exr` (OpenEXR) files are supported. Files of any size can be loaded — the image reader has no memory cap. HDRI sky packs from sites like Poly Haven work out of the box.
+
+```toml
+[background]
+type = "env_map"
+path = "assets/sunset_puresky_4k.hdr"
+```
+
+> **Note:** Environment maps currently light the scene via indirect rays only — there is no importance sampling toward bright regions of the map. Diffuse surfaces under an env map therefore converge more slowly than under a physical sky (which uses NEE). Well-lit glossy and specular surfaces converge fast regardless.
 
 ### Materials
+
 | Material | Description |
 |----------|-------------|
-| `Lambertian` | Cosine-weighted diffuse with solid colour or texture |
-| `PbrMaterial` | Full GGX microfacet BRDF — anisotropic VNDF sampling (Heitz 2018), metallic workflow, clearcoat, sheen, and emissive lobes |
-| `Dielectric` | Schlick-Fresnel glass with configurable IOR |
-| `SpectralDielectric` | Dispersive glass via Cauchy equation; hero-wavelength CMF weighting |
-| `SpectralMetal` | Conductor Fresnel from J&C 1972 IOR tables (Au, Cu, Ag) |
-| `SssMaterial` | Subsurface scattering with Beer–Lambert absorption |
-| `PearlMaterial` | Thin-film iridescence with nacre LUT; orientation-varying colour shift |
-| `BlackbodyLight` | Planck emission spectrum at configurable temperature and brightness |
-| `DiffuseLight` | Flat-colour emissive surface |
+| `Lambertian` | Cosine-weighted diffuse; accepts a solid colour or a texture |
+| `PbrMaterial` | Full GGX microfacet BRDF — anisotropic VNDF sampling (Heitz 2018), metallic/roughness workflow, optional clearcoat, sheen, and emissive lobes |
+| `TexturedPbr` | Same as PbrMaterial but driven by image maps (albedo, roughness, metallic, ambient occlusion). Also supports **tangent-space normal maps** — see below. |
+| `Dielectric` | Schlick-Fresnel glass with configurable IOR (index of refraction) |
+| `SpectralDielectric` | Dispersive glass via the Cauchy equation; requires hero-wavelength rendering for correct chromatic aberration |
+| `SpectralMetal` | Conductor Fresnel from measured J&C 1972 IOR tables (Au, Cu, Ag) |
+| `SssMaterial` | Subsurface scattering with Beer–Lambert absorption — light enters and exits at different points, giving a wax- or skin-like appearance |
+| `PearlMaterial` | Thin-film iridescence with a nacre lookup table; colour shifts with view angle |
+| `BlackbodyLight` | Emissive surface with a Planck blackbody spectrum at a given temperature (in Kelvin) |
+| `DiffuseLight` | Flat-colour emissive surface; colour values above 1.0 act as HDR brightness |
+
+#### Normal maps
+
+`TexturedPbr` supports tangent-space normal maps. These are images where the RGB values encode a surface normal direction (red = X, green = Y, blue = Z in tangent space). They let a low-polygon mesh appear to have fine geometric detail — bumps, seams, and surface texture — without actually adding geometry.
+
+The implementation:
+1. **Per-vertex tangents** are computed from UV-space derivatives during OBJ loading and averaged across shared vertices.
+2. At ray–triangle intersection, the tangent is interpolated barycentrically and Gram-Schmidt orthogonalised against the shading normal.
+3. At shade time, a TBN matrix (Tangent, Bitangent, Normal) transforms the decoded normal map sample from tangent space into world space.
+
+The normal map path in `scene.toml`:
+
+```toml
+material.normal_path = "assets/textures/basketball_normal.png"
+```
+
+Normal maps follow the OpenGL convention (green channel points up in tangent space). If bumps appear inverted, negate the green channel in the image.
 
 ### Post-processing
-- **AgX** tonemapper (default) — filmic response with pleasant highlight roll-off
-- **ACES** tonemapper — full RRT + ODT pipeline with input/output transforms
-- Optional OIDN denoising with adjustable blend ratio
 
-### Scene system
-- TOML scene file loading (`--scene path/to/scene.toml`)
-- Procedural and image textures (Perlin noise, solid colour, checker, file-loaded)
-- Shapes: Sphere (static and motion-blur), Quad, Box, Cylinder, Cone, Disk, Triangle / Mesh (OBJ via `tobj`)
+- **AgX** tonemapper (default) — a filmic response curve designed to handle very bright highlights gracefully without the harsh clipping or colour hue shift that simpler curves produce. Developed by Troy Sobotka.
+- **ACES** tonemapper — the Academy Color Encoding System; a full RRT + ODT pipeline used in film production.
+- Optional **OIDN denoising** — Intel's AI-based denoiser runs on a background thread. The denoised result is blended into the live view; blend strength is adjustable with J/K.
+
+## Custom scenes (scene.toml)
+
+Scenes can be defined in TOML files. Press **4** in the viewer to load `scene.toml` from the working directory, or use `--scene path/to/file.toml` for headless renders. Press **R** to hot-reload after editing.
+
+### Shapes
+
+```toml
+{ type = "sphere",         center = [x,y,z], radius = r }
+{ type = "box",            p_min = [x,y,z],  p_max = [x,y,z] }
+{ type = "cylinder",       center = [x,y,z], radius = r, height = h }
+{ type = "cone",           center = [x,y,z], radius = r, height = h }
+{ type = "disk",           center = [x,y,z], normal = [x,y,z], radius = r }
+{ type = "infinite_plane", point  = [x,y,z], normal = [x,y,z] }
+{ type = "mesh",           path   = "assets/file.obj" }
+```
+
+> Use `disk` rather than `infinite_plane` when an env map is the background — an infinite plane extends to the horizon and will clip into the sky. A disk with radius 20–30 gives a clean ground without reaching the skyline.
+
+### Transforms
+
+Per-object transforms are applied in SRT order (scale → rotate\_y → translate):
+
+```toml
+scale     = 0.01        # uniform scale factor (e.g. cm → m for most OBJ exports)
+rotate_y  = 90.0        # degrees around the world Y axis
+translate = [x, y, z]  # world-space offset applied last
+```
+
+### Materials
+
+```toml
+{ type = "lambertian",          color = [r,g,b] }
+{ type = "metal",               color = [r,g,b], fuzz = 0.0 }
+{ type = "dielectric",          ior = 1.5 }
+{ type = "spectral_dielectric", ior = 1.8, dispersion = 0.02 }
+{ type = "diffuse_light",       color = [r,g,b] }   # values > 1.0 = HDR bright
+{ type = "pbr",                 albedo = [r,g,b], metallic = 0.0, roughness = 0.5 }
+{ type = "spectral_metal",      variant = "gold",   roughness = 0.1 }  # gold | copper | silver
+{ type = "pearl",               film_thickness = 400.0, film_scale = 1.0, orient_strength = 0.5 }
+```
+
+TexturedPbr (all fields except `albedo_path` are optional):
+
+```toml
+material.type          = "textured_pbr"
+material.albedo_path   = "assets/textures/colour.png"
+material.roughness_path = "assets/textures/roughness.png"
+material.metallic_path = "assets/textures/metallic.png"
+material.ao_path       = "assets/textures/ao.png"
+material.normal_path   = "assets/textures/normal.png"
+material.roughness     = 0.5    # fallback if no roughness map
+material.metallic      = 0.0    # fallback if no metallic map
+```
 
 ## Scenes
 
-1. **Random Spheres** — Physical sky, large checkerboard ground, eight hero spheres (gold, copper, silver SpectralMetal; SpectralDielectric diamond; PBR; SSS; pearl; iridescent), ~350 small random diffuse/glass/SSS balls. Spectral-material caustics projected onto ground by the sun.
+1. **Random Spheres** — Physical sky, large checkerboard ground, eight hero spheres showcasing different material types (gold, copper, and silver SpectralMetal; SpectralDielectric diamond; PBR; subsurface scattering; pearl; iridescent), plus roughly 350 small randomly placed diffuse, glass, and SSS balls. Spectral-material caustics are projected onto the ground by the sun.
 
-2. **Cornell Box** — 6500 K BlackbodyLight, classic coloured walls, two stacked boxes, SpectralDielectric dense-flint glass sphere (rainbow caustics), SpectralMetal gold sphere. Photon-map caustics enabled.
+2. **Cornell Box** — The classic renderer benchmark scene: coloured walls, two boxes, and a 6500 K blackbody area light. Contains a SpectralDielectric dense-flint glass sphere (which produces rainbow caustics on the floor) and a SpectralMetal gold sphere. Photon-map caustics enabled.
 
-3. **Next Week** — Area light, moving sphere, Dielectric glass sphere, metallic PBR sphere, blue volumetric fog sphere, earth-texture sphere, Perlin-noise sphere, SpectralDielectric diamond (radius 100) below the light, pearl sphere, cluster of 1000 small white spheres, global mist medium. Photon-map caustics enabled.
+3. **Next Week** — A sampler of many features: area light, motion-blurred sphere, Dielectric glass sphere, metallic PBR sphere, blue volumetric fog sphere, earth-texture sphere, Perlin-noise sphere, SpectralDielectric diamond below the light, pearl sphere, a cluster of 1000 small white spheres, and a global mist medium. Photon-map caustics enabled.
+
+4. **Custom scene** (`scene.toml`) — Loaded from the working directory. Currently: old wooden chair and basketball OBJ meshes with PBR textures (including a normal map on the basketball), polished concrete disk floor, sunset HDR environment map.
 
 ## Implementation notes
 
-- Release builds use `target-cpu=native`, fat LTO, and a single codegen unit
-- QBVH node width (8 vs 4) selected at compile time via `#[cfg(target_feature = "avx2")]`
-- Spectral CMF weight applied at first spectral bounce via `spectral_weighted` flag; subsequent bounces multiply by a scalar Fresnel/transmittance so the weight is never compounded
-- MIS weight: `w_nee = p_nee / (p_nee + p_brdf)` (balance heuristic); emitted radiance accumulated only on camera rays and after specular bounces to avoid double-counting with NEE
-- Photon kd-tree built with `select_nth_unstable_by` (in-place median partition, O(N log N)); query recurses with split-plane pruning (O(√N) average for range queries)
-- Adaptive sampling tracks per-tile luminance variance; tiles below threshold are skipped in subsequent passes
-- OIDN runs on a background thread; result is blended into the display buffer without blocking the render loop
+- Release builds use `target-cpu=native`, fat LTO, and a single codegen unit for maximum instruction throughput
+- QBVH node width (8 vs 4) is selected at compile time via `#[cfg(target_feature = "avx2")]`
+- Spectral CMF weight is applied at the first spectral bounce via a `spectral_weighted` flag; subsequent bounces multiply by a scalar reflectance so the weight is never compounded
+- MIS weight: `w_nee = p_nee / (p_nee + p_brdf)` (balance heuristic); emitted radiance is accumulated only on camera rays and after specular bounces to avoid double-counting with NEE
+- Photon kd-tree is built with `select_nth_unstable_by` (in-place median partition, O(N log N)); queries recurse with split-plane pruning (O(√N) average for range queries)
+- Adaptive sampling tracks per-tile luminance variance; tiles below the convergence threshold are skipped in subsequent passes
+- OIDN runs on a background thread; its result is blended into the display buffer without blocking the render loop
+- Environment maps are loaded with no memory cap — files of any size are supported
+- Normal map tangents are computed in a two-pass algorithm: first accumulate per-face tangents into per-vertex accumulators, then normalise and Gram-Schmidt orthogonalise at shade time
