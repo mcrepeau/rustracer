@@ -247,3 +247,15 @@ material.metallic      = 0.0    # fallback if no metallic map
 - OIDN runs on a background thread; its result is blended into the display buffer without blocking the render loop
 - Environment maps are loaded with no memory cap — files of any size are supported
 - Normal map tangents are computed in a two-pass algorithm: first accumulate per-face tangents into per-vertex accumulators, then normalise and Gram-Schmidt orthogonalise at shade time
+
+### Compile-time tuning knobs
+
+These constants can be adjusted in source before building:
+
+| Constant | File | Default | Effect |
+|---|---|---|---|
+| `MAX_DEPTH` | `src/renderer.rs` | `50` | Maximum ray bounce depth. Lower values cut render time but lose energy in scenes with lots of glass or mirrors. |
+| `ADAPTIVE_THRESHOLD` | `src/main.rs` | `0.05` | Relative standard error (σ/μ) below which a pixel is considered converged and skipped. Lower = more samples before early exit. |
+| `MIN_ADAPTIVE_SAMPLES` | `src/main.rs` | `16` | Minimum samples a pixel must accumulate before adaptive early-exit can trigger. |
+| `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | A sample whose luminance exceeds this multiple of the running pixel mean is scaled down to that ratio × mean. Higher values preserve more energy at the cost of occasional bright spikes. |
+| `FIREFLY_MIN_SAMPLES` | `src/main.rs` | `4` | Minimum samples before per-pixel firefly clamping activates. |
