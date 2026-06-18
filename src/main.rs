@@ -900,10 +900,8 @@ fn main() {
 
                     // Build the aux buffers once per render sequence (first sample),
                     // so they are ready before the first OIDN invocation at sample 32.
-                    // Skipped for scenes where first-hit geometry doesn't correlate
-                    // with the final pixel colour (indirect lighting, volumes).
                     #[cfg(feature = "denoise")]
-                    if samples == 1 && matches!(&scene.background, Background::Physical { .. }) {
+                    if samples == 1 {
                         let (alb, nrm) = render_aux_pass(win_w, win_h, &camera,
                                                          scene.world.as_ref(), &scene.background);
                         aux_albedo = alb;
