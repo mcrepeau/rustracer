@@ -313,15 +313,10 @@ fn run_render(args: RenderArgs) {
                 .for_each(|(((conv, &n), &m2), &acc)| {
                     if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
                     let mean_lum = lum(acc) / n as f32;
+                    if mean_lum < 1e-4 { *conv = true; return; }
                     let variance = m2 / (n - 1).max(1) as f32;
                     let std_err  = (variance / n as f32).sqrt();
-                    // Converge if noise is below the absolute floor (pixel is noiseless/dark),
-                    // OR if relative error is below threshold (well-sampled bright pixel).
-                    // Never converge on low mean_lum alone — a zero-mean from unlucky early
-                    // samples must also have zero variance to be called truly dark.
-                    if std_err < ADAPTIVE_ABS_THRESHOLD
-                        || (mean_lum > ADAPTIVE_ABS_THRESHOLD && std_err / mean_lum < ADAPTIVE_THRESHOLD)
-                    { *conv = true; }
+                    if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
                 });
             n_converged = adap_conv.iter().filter(|&&c| c).count();
         }
@@ -415,12 +410,7 @@ fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples:
 /// Minimum samples before a pixel can be declared converged.
 const MIN_ADAPTIVE_SAMPLES: u32 = 16;
 /// Maximum relative standard error (σ/μ) to consider a pixel converged.
-const ADAPTIVE_THRESHOLD:     f32 = 0.05;
-/// Absolute std-error floor: a pixel whose noise is below this is considered
-/// noiseless regardless of its mean.  Prevents treating low-variance dark pixels
-/// as converged when they haven't sampled a dominant light source yet — those
-/// pixels will have non-zero variance once NEE fires.
-const ADAPTIVE_ABS_THRESHOLD: f32 = 1e-3;
+const ADAPTIVE_THRESHOLD:   f32 = 0.05;
 /// Per-sample firefly clamp: a new sample whose luminance exceeds this multiple
 /// of the running pixel mean is scaled down to this ratio × mean.  Adapts to
 /// local brightness so genuinely bright pixels (all samples bright) are not
@@ -900,11 +890,10 @@ fn main() {
                             .for_each(|(((conv, &n), &m2), &acc)| {
                                 if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
                                 let mean_lum = lum(acc) / n as f32;
+                                if mean_lum < 1e-4 { *conv = true; return; }
                                 let variance = m2 / (n - 1).max(1) as f32;
                                 let std_err  = (variance / n as f32).sqrt();
-                                if std_err < ADAPTIVE_ABS_THRESHOLD
-                                    || (mean_lum > ADAPTIVE_ABS_THRESHOLD && std_err / mean_lum < ADAPTIVE_THRESHOLD)
-                                { *conv = true; }
+                                if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
                             });
                         n_converged = adap_conv.iter().filter(|&&c| c).count();
                     }
