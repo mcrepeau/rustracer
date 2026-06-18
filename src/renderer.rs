@@ -457,7 +457,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                     // ── Indirect lighting: cosine-weighted BRDF sample ────────────
                     // Also compute the MIS weight for the case where this ray hits a
                     // light next iteration: w_brdf = p_brdf / (p_brdf + p_nee).
-                    let cpdf     = CosinePdf::new(rec.normal);
+                    let cpdf     = CosinePdf::new(rec.mat.shading_normal(&rec));
                     let ind_dir  = cpdf.generate(rng);
                     let pdf_val  = cpdf.value(ind_dir);
                     if pdf_val <= 0.0 { break; }

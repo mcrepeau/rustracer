@@ -562,6 +562,20 @@ impl Default for PbrMaterial {
 }
 
 impl PbrMaterial {
+    fn tbn_normal(&self, rec: &HitRecord<'_>) -> Vec3 {
+        if let Some(tex) = &self.normal_tex {
+            if rec.tangent.length_squared() > 1e-6 {
+                let raw  = sample_rgb(tex, rec.u, rec.v);
+                let ts_n = Vec3::new(raw.x * 2.0 - 1.0, raw.y * 2.0 - 1.0, raw.z * 2.0 - 1.0);
+                let ng   = rec.normal;
+                let t    = rec.tangent;
+                let b    = ng.cross(t);
+                return (t * ts_n.x + b * ts_n.y + ng * ts_n.z).unit();
+            }
+        }
+        rec.normal
+    }
+
     fn albedo_at(&self, u: f32, v: f32) -> Color {
         let c = self.albedo_tex.as_ref().map_or(self.albedo, |t| sample_srgb(t, u, v));
         match &self.ao_tex {
@@ -578,22 +592,12 @@ impl PbrMaterial {
 }
 
 impl Material for PbrMaterial {
+    fn shading_normal(&self, rec: &HitRecord<'_>) -> Vec3 {
+        self.tbn_normal(rec)
+    }
+
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        // Apply normal map if present and the hit point has a valid tangent.
-        let n = if let Some(tex) = &self.normal_tex {
-            if rec.tangent.length_squared() > 1e-6 {
-                let raw  = sample_rgb(tex, rec.u, rec.v);
-                let ts_n = Vec3::new(raw.x * 2.0 - 1.0, raw.y * 2.0 - 1.0, raw.z * 2.0 - 1.0);
-                let ng   = rec.normal;
-                let t    = rec.tangent;
-                let b    = ng.cross(t);
-                (t * ts_n.x + b * ts_n.y + ng * ts_n.z).unit()
-            } else {
-                rec.normal
-            }
-        } else {
-            rec.normal
-        };
+        let n = self.tbn_normal(rec);
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         if cos_o <= 0.0 { return None; }
@@ -725,12 +729,12 @@ impl Material for PbrMaterial {
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
-        let cosine = rec.normal.dot(scattered.direction.unit());
+        let cosine = self.tbn_normal(rec).dot(scattered.direction.unit());
         (cosine / PI).max(0.0)
     }
 
     fn specular_brdf_cos(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> Color {
-        let n     = rec.normal;
+        let n     = self.tbn_normal(rec);
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         let cos_i = wi.dot(n);
@@ -786,7 +790,7 @@ impl Material for PbrMaterial {
     }
 
     fn specular_sampling_pdf(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> f32 {
-        let n     = rec.normal;
+        let n     = self.tbn_normal(rec);
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         let cos_i = wi.dot(n);

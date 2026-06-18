@@ -47,6 +47,14 @@ pub trait Material: Send + Sync {
     fn specular_sampling_pdf(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _wi: Vec3) -> f32 {
         0.0
     }
+
+    /// The shading normal after applying any normal map, in world space.
+    /// Defaults to the geometric/interpolated normal; PbrMaterial overrides this
+    /// to apply the TBN transform so that PDF sampling and BRDF evaluation are
+    /// consistent with the normal-mapped surface.
+    fn shading_normal(&self, rec: &HitRecord<'_>) -> Vec3 {
+        rec.normal
+    }
 }
 
 pub struct HitRecord<'a> {
