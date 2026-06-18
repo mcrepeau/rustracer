@@ -17,6 +17,7 @@ struct KdPhoton {
 }
 
 const DISK_R: f32 = 20.0;
+pub const PHOTON_MAX_DEPTH: i32 = 12;
 
 /// Balanced-kd-tree caustic photon map with surface-normal hemisphere filtering.
 ///
@@ -211,7 +212,7 @@ fn trace_photon(
     let mut hit_spectral = false;
     let wavelength       = rng.gen_range(380.0_f32..700.0);
 
-    for _ in 0..12 {
+    for _ in 0..PHOTON_MAX_DEPTH {
         let mut ray = Ray::new_at_time(pos, dir, 0.0);
         ray.wavelength = wavelength;
         let rec = world.hit(&ray, 0.001, f32::INFINITY)?;
