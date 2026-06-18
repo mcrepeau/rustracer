@@ -23,6 +23,13 @@ fn emissive_quad_mat(q: Point3, u: Vec3, v: Vec3, mat: Arc<dyn Material>) -> (Qu
     (world, sampler)
 }
 
+/// Creates a matched (world sphere, light-sampler sphere) pair with an arbitrary material.
+fn emissive_sphere_mat(center: Point3, radius: f32, mat: Arc<dyn Material>) -> (Sphere, Sphere) {
+    let world   = Sphere::new(center, radius, Arc::clone(&mat));
+    let sampler = Sphere::new(center, radius, mat);
+    (world, sampler)
+}
+
 pub fn build_random_scene() -> SceneData {
     use std::f32::consts::PI;
     let mut rng = rand::thread_rng();
@@ -40,7 +47,8 @@ pub fn build_random_scene() -> SceneData {
     list.objects.push(ground);
 
     // Centre: emissive PBR sphere — a glowing hot ember that casts warm light on the ring.
-    list.add(Sphere::new(
+    // A sampler copy goes into `lights` so NEE explicitly targets it every bounce.
+    let (ember_world, ember_sampler) = emissive_sphere_mat(
         Point3::new(0.0, 1.0, 0.0), 1.0,
         Arc::new(PbrMaterial {
             albedo:            Color::new(0.12, 0.04, 0.01),
@@ -50,7 +58,10 @@ pub fn build_random_scene() -> SceneData {
             emission_strength: 6.0,
             ..Default::default()
         }),
-    ));
+    );
+    list.add(ember_world);
+    let mut lights = HittableList::new();
+    lights.add(ember_sampler);
 
     // ── Hero spheres in a circle ──────────────────────────────────────────────────
     // 7 positions evenly at radius HERO_R.  Position 3 hosts a NoiseMedium (requires
@@ -156,11 +167,11 @@ pub fn build_random_scene() -> SceneData {
 
     let mut scene = SceneData {
         world:               Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:              HittableList::new(),
+        lights,
         background:          Background::Physical { sun_dir: Vec3::new(-0.4, 0.9, -0.3).unit(), turbidity: 3.0 },
         name:                "Random Spheres",
         cam_init:            SceneCameraParams {
-            pos: Point3::new(13.0, 2.0, 3.0), lookat: Point3::new(0.0, 0.0, 0.0),
+            pos: Point3::new(3.72, 7.1, 18.36), lookat: Point3::new(0.20, 1.09, 0.98),
             vfov: 20.0, aperture: 0.1, focus_dist: 10.0, move_speed: 0.3,
             aperture_blades: 6,
         },
