@@ -36,43 +36,70 @@ pub fn build_random_scene() -> SceneData {
         }}),
     ));
 
-    // Diamond at the centre of the scene.
-    let diamond_r   = 0.7_f32;
-    let diamond_pav = diamond_r * 40.75_f32.to_radians().tan();
-    let diamond: Arc<dyn Hittable> = Arc::new(Diamond::new(
-        Point3::new(0.0, diamond_pav + 0.05, 0.0),
-        diamond_r,
-        Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
-    ));
-
     let mut list = HittableList::new();
     list.objects.push(ground);
-    list.objects.push(diamond);
 
-    // ── Hero spheres in a circle around the diamond ───────────────────────────────
-    // Seven materials evenly distributed at radius HERO_R, one per 2π/7 radians.
-    const HERO_R: f32 = 4.0;
-    let hero_mats: Vec<Arc<dyn Material>> = vec![
-        Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375 }),       // crown glass
-        Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() }), // rough terracotta
-        Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold,   0.04)),
-        Arc::new(SpectralMetal::new(SpectralMetalVariant::Copper, 0.08)),
-        Arc::new(SpectralMetal::new(SpectralMetalVariant::Silver, 0.02)),
-        Arc::new(PearlMaterial {
+    // Centre: emissive PBR sphere — a glowing hot ember that casts warm light on the ring.
+    list.add(Sphere::new(
+        Point3::new(0.0, 1.0, 0.0), 1.0,
+        Arc::new(PbrMaterial {
+            albedo:            Color::new(0.12, 0.04, 0.01),
+            roughness:         0.8,
+            metallic:          0.6,
+            emission:          Color::new(1.0, 0.30, 0.02),
+            emission_strength: 6.0,
+            ..Default::default()
+        }),
+    ));
+
+    // ── Hero spheres in a circle ──────────────────────────────────────────────────
+    // 7 positions evenly at radius HERO_R.  Position 3 hosts a NoiseMedium (requires
+    // two scene objects: a glass boundary + the medium), handled before the material loop.
+    const HERO_R:   f32 = 4.0;
+    const N_HEROES: u32 = 7;
+
+    // Hero 3: noise-driven cloud volume trapped inside a glass sphere.
+    {
+        let angle = 3.0_f32 * 2.0 * PI / N_HEROES as f32;
+        let pos   = Point3::new(HERO_R * angle.cos(), 1.0, HERO_R * angle.sin());
+        let cloud_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
+            pos, 1.0, Arc::new(Dielectric { ir: 1.5 }),
+        ));
+        list.objects.push(Arc::clone(&cloud_boundary));
+        list.add(NoiseMedium::new(
+            cloud_boundary,
+            Color::new(0.65, 0.80, 1.0),  // pale blue-white — cloud / nebula
+            12.0,  // density
+            1.8,   // noise_scale: controls cloud texture size within the sphere
+            0.0,   // threshold: 0 = fully filled, higher = patchier
+            0.7,   // g: forward-scattering (water-droplet clouds)
+        ));
+    }
+
+    // Heroes at slots 0,1,2,4,5,6 — material-only spheres sharing the hero loop.
+    let hero_slots: Vec<(u32, Arc<dyn Material>)> = vec![
+        (0, Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375 })),
+        (1, Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() })),
+        (2, Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold, 0.04))),
+        (4, Arc::new(SSSMaterial {
+            albedo:  Color::new(0.55, 0.97, 0.55),
+            sigma_a: Color::new(3.0, 0.2, 3.0),
+            ior: 1.5, density: 5.0, g: 0.3,
+        })),
+        (5, Arc::new(PearlMaterial {
             base_color: Color::new(0.98, 0.93, 0.88), ior: 1.56,
             film_thickness: 450.0, orient_strength: 0.30,
             film_scale: 5.0, luster_roughness: 0.05,
-        }),
-        Arc::new(PbrMaterial {                                                       // iridescent clearcoat
+        })),
+        (6, Arc::new(PbrMaterial {
             albedo: Color::new(0.02, 0.01, 0.03), roughness: 0.6,
             clearcoat: 0.9, clearcoat_roughness: 0.03,
             film_thickness: 480.0, film_ior: 1.45,
             ..Default::default()
-        }),
+        })),
     ];
-    let n = hero_mats.len();
-    for (k, mat) in hero_mats.into_iter().enumerate() {
-        let angle = k as f32 * 2.0 * PI / n as f32;
+    for (k, mat) in hero_slots {
+        let angle = k as f32 * 2.0 * PI / N_HEROES as f32;
         list.add(Sphere::new(
             Point3::new(HERO_R * angle.cos(), 1.0, HERO_R * angle.sin()),
             1.0, mat,
@@ -188,11 +215,6 @@ pub fn build_cornell_box() -> SceneData {
     list.add(Sphere::new(Point3::new(190.0, 245.0, 190.0), 80.0,
         Arc::new(SpectralDielectric { cauchy_b: 1.612, cauchy_c: 0.00950 })));
 
-    // Gold sphere: conductor Fresnel from J&C 1972 IOR tables; warm reflections
-    // under the 6500 K BlackbodyLight reveal the spectral edge ≈ 480–520 nm.
-    list.add(Sphere::new(Point3::new(400.0, 80.0, 150.0), 80.0,
-        Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold, 0.0))));
-
     let mut scene = SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights,
@@ -255,25 +277,10 @@ pub fn build_nextweek_scene() -> SceneData {
     lights.add(light_sampler);
     list.add(light_world);
 
-    // ── Row 1: spectral metal + SSS (z = 100) ────────────────────────────────────
-    // Silver: physically-based conductor Fresnel from Johnson & Christy 1972 IOR tables.
-    list.add(Sphere::new(Point3::new(210.0, 150.0, 100.0), 50.0,
-        Arc::new(SpectralMetal::new(SpectralMetalVariant::Silver, 0.01))));
-    // SSS jade: volumetric multiple scattering with Beer-Lambert absorption.
-    // density=7 ≈ 2 scatters per diameter; sigma_a absorbs R+B, transmitting green.
-    list.add(Sphere::new(Point3::new(470.0, 150.0, 100.0), 50.0,
-        Arc::new(SSSMaterial {
-            albedo:  Color::new(0.55, 0.97, 0.55),
-            sigma_a: Color::new(3.0, 0.2, 3.0),
-            ior:     1.5,
-            density: 7.0,
-            g:       0.3,
-        })));
-
     // ── Row 2: PBR material showcase (z = 225) ───────────────────────────────────
     // Velvet: sheen=1 brightens grazing incidence; sheen_tint=0.3 keeps the
     // rim mostly white against the deep violet base.
-    list.add(Sphere::new(Point3::new( 80.0, 150.0, 225.0), 50.0,
+    list.add(Sphere::new(Point3::new( 80.0, 150.0, 350.0), 50.0,
         Arc::new(PbrMaterial {
             albedo:     Color::new(0.08, 0.04, 0.18),
             roughness:  0.9,
@@ -281,8 +288,9 @@ pub fn build_nextweek_scene() -> SceneData {
             sheen_tint: 0.3,
             ..Default::default()
         })));
+
     // Brushed aluminium: anisotropic GGX streaks the highlight tangentially.
-    list.add(Sphere::new(Point3::new(340.0, 150.0, 225.0), 50.0,
+    list.add(Sphere::new(Point3::new(300.0, 150.0, 220.0), 50.0,
         Arc::new(PbrMaterial {
             albedo:           Color::new(0.78, 0.78, 0.80),
             roughness:        0.3,
@@ -291,20 +299,6 @@ pub fn build_nextweek_scene() -> SceneData {
             anisotropy_angle: 0.0,
             ..Default::default()
         })));
-    // Iridescent clearcoat: near-black base under a thin-film dielectric coat
-    // whose interference colour cycles through the spectrum with viewing angle.
-    list.add(Sphere::new(Point3::new(470.0, 150.0, 225.0), 50.0,
-        Arc::new(PbrMaterial {
-            albedo:              Color::new(0.02, 0.01, 0.03),
-            roughness:           0.05,
-            clearcoat:           1.0,
-            clearcoat_roughness: 0.03,
-            film_thickness:      480.0,
-            film_ior:            1.45,
-            ..Default::default()
-        })));
-
-    // ── Existing showcase objects ─────────────────────────────────────────────────
 
     // Motion-blurred orange Lambertian sphere (demonstrates motion blur).
     let c0 = Point3::new(400.0, 400.0, 200.0);
@@ -316,7 +310,7 @@ pub fn build_nextweek_scene() -> SceneData {
     // Noise-driven patchy blue cloud inside a glass sphere (heterogeneous volume).
     // Moved left to clear space for the two showcase rows.
     let fog_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
-        Point3::new(-80.0, 150.0, 300.0), 70.0,
+        Point3::new(200.0, 400.0, 500.0), 60.0,
         Arc::new(Dielectric { ir: 1.5 }),
     ));
     list.objects.push(Arc::clone(&fog_boundary));
@@ -333,7 +327,7 @@ pub fn build_nextweek_scene() -> SceneData {
     // The 3200 K light produces warm-tinted rainbow fire inside the gem.
     let diamond_r = 100.0_f32;
     list.objects.push(Arc::new(Diamond::new(
-        Point3::new(200.0, 430.0, 200.0),
+        Point3::new(220.0, 325.0, 300.0),
         diamond_r,
         Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
     )) as Arc<dyn Hittable>);
@@ -346,22 +340,8 @@ pub fn build_nextweek_scene() -> SceneData {
             odd:   Color::new(0.2, 0.7, 0.2),
         });
     list.add(Sphere::new(
-        Point3::new(400.0, 200.0, 400.0), 100.0,
+        Point3::new(400.0, 220.0, 400.0), 100.0,
         Arc::new(Lambertian { texture: earth_tex }),
-    ));
-
-    // Emissive PBR: rough dark metal that self-illuminates like molten rock.
-    // Not added to `lights` — picked up by BRDF sampling only.
-    list.add(Sphere::new(
-        Point3::new(220.0, 280.0, 300.0), 80.0,
-        Arc::new(PbrMaterial {
-            albedo:            Color::new(0.15, 0.05, 0.02),
-            roughness:         0.7,
-            metallic:          0.8,
-            emission:          Color::new(1.0, 0.35, 0.02),
-            emission_strength: 8.0,
-            ..Default::default()
-        }),
     ));
 
     // Cloud of 1 000 white diffuse micro-spheres (BVH stress test).
@@ -381,7 +361,7 @@ pub fn build_nextweek_scene() -> SceneData {
     }
     let cluster: Arc<dyn Hittable> = Arc::new(BvhTree::from_list(cluster));
     let cluster: Arc<dyn Hittable> = Arc::new(Rotate::around_y(cluster, 15.0));
-    let cluster: Arc<dyn Hittable> = Arc::new(Translate::new(cluster, Vec3::new(-100.0, 270.0, 395.0)));
+    let cluster: Arc<dyn Hittable> = Arc::new(Translate::new(cluster, Vec3::new(-100.0, 300.0, 395.0)));
     list.objects.push(cluster);
 
     // Caustic quad geometry mirrors the area light for photon-map emission.
@@ -398,9 +378,9 @@ pub fn build_nextweek_scene() -> SceneData {
         background: Background::Solid(Color::default()),
         name:       "Next Week",
         cam_init:   SceneCameraParams {
-            pos:             Point3::new(478.0, 278.0, -600.0),
-            lookat:          Point3::new(278.0, 200.0,  150.0),
-            vfov:            40.0,
+            pos:             Point3::new(452.0, 366.0, -425.0),
+            lookat:          Point3::new(266.0, 315.0,  225.0),
+            vfov:            45.0,
             aperture:        0.0,
             focus_dist:      10.0,
             move_speed:      8.0,
