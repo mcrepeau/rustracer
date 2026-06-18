@@ -4,7 +4,7 @@ use crate::camera::Camera;
 use crate::hittable::{Hittable, HittableList};
 use crate::material::{clear_pearl_sun_dir, set_pearl_sun_dir};
 use crate::pdf::{CosinePdf, HittablePdf, Pdf};
-use crate::photon::{PhotonMap, SppmPixel, VisiblePoint};
+use crate::photon::{PhotonMap, PHOTON_MAX_DEPTH, SppmPixel, VisiblePoint};
 use crate::ray::Ray;
 use crate::vec3::{Color, Vec3};
 use rand::Rng;
@@ -621,7 +621,7 @@ fn trace_to_visible_point(
 ) -> Option<VisiblePoint> {
     let mut throughput = Color::new(1.0, 1.0, 1.0);
     let mut ray        = *r;
-    for _ in 0..12 {
+    for _ in 0..PHOTON_MAX_DEPTH {
         let rec = world.hit(&ray, 0.001, f32::INFINITY)?;
         let sr  = rec.mat.scatter(&ray, &rec, rng)?;
         if sr.skip_pdf {
