@@ -4,7 +4,7 @@ use crate::camera::Camera;
 use crate::hittable::{Hittable, HittableList};
 use crate::material::{clear_pearl_sun_dir, set_pearl_sun_dir};
 use crate::pdf::{CosinePdf, HittablePdf, Pdf};
-use crate::photon::PhotonMap;
+use crate::photon::{PhotonMap, SppmPixel, VisiblePoint};
 use crate::ray::Ray;
 use crate::vec3::{Color, Vec3};
 use rand::Rng;
@@ -550,6 +550,98 @@ pub fn render_aux_pass(
         normal.extend_from_slice(&n);
     }
     (albedo, normal)
+}
+
+// ── SPPM camera pass ──────────────────────────────────────────────────────────
+
+/// Trace camera rays to their first caustic-eligible diffuse hit and return
+/// the collected visible points.  Uses the same stratified-sample RNG as
+/// `render_tiles` so the VP positions are consistent with the camera paths
+/// already traced for the non-caustic contribution.
+pub fn collect_visible_points(
+    width:       u32,
+    height:      u32,
+    camera:      &Camera,
+    world:       &dyn Hittable,
+    sample_idx:  u32,
+    strata:      u32,
+    sppm_pixels: &[SppmPixel],
+) -> Vec<VisiblePoint> {
+    let w        = width  as usize;
+    let h        = height as usize;
+    let n        = w * h;
+    let w_denom  = (width  - 1).max(1) as f32;
+    let h_denom  = (height - 1).max(1) as f32;
+    let strata2  = strata * strata;
+    let strata_f = strata as f32;
+
+    (0..n)
+        .into_par_iter()
+        .filter_map(|i| {
+            let row = i / w;
+            let col = i % w;
+            let mut rng = SmallRng::seed_from_u64(
+                (i as u64).wrapping_mul(6_364_136_223_846_793_005)
+                    ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
+            );
+            let ray_y = height - 1 - row as u32;
+
+            // Mirror the stratified jitter from render_tiles exactly so the
+            // specular scatter decisions are seeded identically.
+            let (u_jitter, v_jitter) = if strata2 > 0 {
+                let offset = (i as u32).wrapping_mul(0x9E3779B9) % strata2;
+                let s      = (sample_idx + offset) % strata2;
+                let sx     = s % strata;
+                let sy     = s / strata;
+                (
+                    (sx as f32 + rng.gen::<f32>()) / strata_f,
+                    (sy as f32 + rng.gen::<f32>()) / strata_f,
+                )
+            } else {
+                (rng.gen::<f32>(), rng.gen::<f32>())
+            };
+
+            let u = (col as f32 + u_jitter) / w_denom;
+            let v = (ray_y as f32 + v_jitter) / h_denom;
+            let mut cam_ray = camera.get_ray(u, v, &mut rng);
+            cam_ray.wavelength = rng.gen_range(380.0_f32..700.0);
+
+            trace_to_visible_point(&cam_ray, world, i, sppm_pixels[i].radius, &mut rng)
+        })
+        .collect()
+}
+
+/// Follow specular bounces until the first caustic-eligible diffuse hit.
+fn trace_to_visible_point(
+    r:      &Ray,
+    world:  &dyn Hittable,
+    pixel:  usize,
+    radius: f32,
+    rng:    &mut SmallRng,
+) -> Option<VisiblePoint> {
+    let mut throughput = Color::new(1.0, 1.0, 1.0);
+    let mut ray        = *r;
+    for _ in 0..12 {
+        let rec = world.hit(&ray, 0.001, f32::INFINITY)?;
+        let sr  = rec.mat.scatter(&ray, &rec, rng)?;
+        if sr.skip_pdf {
+            throughput *= sr.attenuation;
+            ray         = sr.ray;
+        } else {
+            if rec.mat.can_receive_caustics() {
+                return Some(VisiblePoint {
+                    pos:    rec.p,
+                    normal: rec.mat.shading_normal(&rec),
+                    albedo: rec.mat.albedo_hint(rec.u, rec.v, rec.p),
+                    beta:   throughput,
+                    radius,
+                    pixel,
+                });
+            }
+            return None;
+        }
+    }
+    None
 }
 
 // ── Tile renderer ─────────────────────────────────────────────────────────────

@@ -34,9 +34,10 @@ use rayon::prelude::*;
 use vec3::Color;
 use camera::CameraState;
 #[cfg(not(feature = "denoise"))]
-use renderer::{Background, render_tiles};
+use renderer::{Background, render_tiles, collect_visible_points};
 #[cfg(feature = "denoise")]
-use renderer::{Background, render_tiles, render_aux_pass};
+use renderer::{Background, render_tiles, render_aux_pass, collect_visible_points};
+use photon::{PhotonSource, SppmState, sppm_photon_pass};
 use scene::SceneData;
 use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene};
 use output::{to_rgb_u32, save_png, ToneMapper};
@@ -70,12 +71,24 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     cam.autofocus(&*scene.world);
     let camera = cam.to_camera(aspect);
     let world  = scene.world.as_ref();
-    scratch.resize((WIDTH * HEIGHT) as usize, Color::default());
+    let n_px   = (WIDTH * HEIGHT) as usize;
+    scratch.resize(n_px, Color::default());
+
+    let mut sppm_state = if scene.use_sppm {
+        Some(SppmState::new(n_px, scene.caustic_gather_radius, scene.sppm_alpha, scene.sppm_photons_per_iter))
+    } else {
+        None
+    };
+    let sppm_source = scene_photon_source(scene);
 
     let strata = compute_strata(samples);
     let t0 = Instant::now();
     for s in 0..samples {
         render_tiles(scratch, None, s, strata, WIDTH, HEIGHT, &camera, world, &scene.background, &scene.lights, 1.0, scene.photon_map.as_deref());
+        if let (Some(state), Some(src)) = (&mut sppm_state, &sppm_source) {
+            let vps = collect_visible_points(WIDTH, HEIGHT, &camera, world, s, strata, &state.pixels);
+            sppm_photon_pass(world, src, state, &vps);
+        }
     }
     t0.elapsed()
 }
@@ -251,6 +264,12 @@ fn run_render(args: RenderArgs) {
 
     let mut accumulator = vec![Color::default(); n_px];
     let mut scratch     = vec![Color::default(); n_px];
+    let mut sppm_state: Option<SppmState> = if scene.use_sppm {
+        Some(SppmState::new(n_px, scene.caustic_gather_radius, scene.sppm_alpha, scene.sppm_photons_per_iter))
+    } else {
+        None
+    };
+    let sppm_source = scene_photon_source(&scene);
 
     let tm_name = if args.tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
     println!("Scene:      {}", scene.name);
@@ -281,6 +300,13 @@ fn run_render(args: RenderArgs) {
                      s, strata, args.width, args.height, &camera,
                      scene.world.as_ref(), &scene.background,
                      &scene.lights, 1.0, scene.photon_map.as_deref());
+
+        // SPPM photon pass: collect visible points and update per-pixel caustic estimate.
+        if let (Some(state), Some(src)) = (&mut sppm_state, &sppm_source) {
+            let vps = collect_visible_points(args.width, args.height, &camera,
+                                             scene.world.as_ref(), s, strata, &state.pixels);
+            sppm_photon_pass(scene.world.as_ref(), src, state, &vps);
+        }
 
         accumulator.par_iter_mut()
             .zip(scratch.par_iter())
@@ -350,13 +376,16 @@ fn run_render(args: RenderArgs) {
     println!("\n\nRendered in {:.2}s  ({:.1} ms/spp)\n",
              elapsed.as_secs_f64(), elapsed.as_millis() as f64 / actual_spp.max(1) as f64);
 
+    let sppm_caustic = sppm_state.as_ref().map(|s| s.caustic_buf.as_slice());
+
     // ── OIDN denoising ────────────────────────────────────────────────────────
     #[cfg(feature = "denoise")]
     if args.denoise {
         let color: Vec<f32> = accumulator.iter().enumerate()
             .flat_map(|(i, c)| {
-                let n = pixel_samples_opt.as_ref().map_or(actual_spp, |ps| ps[i]).max(1) as f32;
-                [c.x / n, c.y / n, c.z / n]
+                let n    = pixel_samples_opt.as_ref().map_or(actual_spp, |ps| ps[i]).max(1) as f32;
+                let caus = sppm_caustic.map_or(Color::default(), |ca| ca[i]);
+                [c.x / n + caus.x, c.y / n + caus.y, c.z / n + caus.z]
             })
             .collect();
         print!("Denoising with OIDN…  ");
@@ -370,9 +399,9 @@ fn run_render(args: RenderArgs) {
                     let slug = scene.name.to_lowercase().replace(' ', "_");
                     format!("render_{}_{:04}spp_denoised.png", slug, spp_label)
                 });
-                // denoised buffer is already per-pixel-normalized; pass samples=1 so save_png
-                // applies exposure directly without a second division
-                save_png(&denoised, 1, None, scene.name,
+                // denoised buffer is already per-pixel-normalized and includes caustic;
+                // pass samples=1 and caustic=None so save_png doesn't add it twice.
+                save_png(&denoised, 1, None, None, scene.name,
                          args.width, args.height, args.exposure, args.tonemapper,
                          Some(spp_label), Some(&denoised_path));
             }
@@ -384,27 +413,44 @@ fn run_render(args: RenderArgs) {
     // ── Raw PNG save ──────────────────────────────────────────────────────────
     let ps    = pixel_samples_opt.as_deref();
     let label = pixel_samples_opt.as_ref().map(|_| samples_max);
-    save_png(&accumulator, actual_spp, ps, scene.name,
+    save_png(&accumulator, actual_spp, ps, sppm_caustic, scene.name,
              args.width, args.height, args.exposure, args.tonemapper,
              label, args.output.as_deref());
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, exposure: f32, tm: ToneMapper) {
-    buf.par_iter_mut()
-        .zip(accumulator.par_iter())
-        .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure, tm));
+fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, caustic: Option<&[Color]>, exposure: f32, tm: ToneMapper) {
+    if let Some(ca) = caustic {
+        buf.par_iter_mut()
+            .zip(accumulator.par_iter())
+            .zip(ca.par_iter())
+            .for_each(|((dst, &acc), &caus)| *dst = to_rgb_u32(acc * sc + caus, exposure, tm));
+    } else {
+        buf.par_iter_mut()
+            .zip(accumulator.par_iter())
+            .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure, tm));
+    }
 }
 
 /// Adaptive-sampling display: each pixel uses its own sample count.
-fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples: &[u32], exposure: f32, tm: ToneMapper) {
-    buf.par_iter_mut()
-        .zip(accumulator.par_iter())
-        .zip(pixel_samples.par_iter())
-        .for_each(|((dst, &acc), &n)| {
-            *dst = to_rgb_u32(acc, exposure / n.max(1) as f32, tm);
-        });
+fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples: &[u32], caustic: Option<&[Color]>, exposure: f32, tm: ToneMapper) {
+    if let Some(ca) = caustic {
+        buf.par_iter_mut()
+            .zip(accumulator.par_iter())
+            .zip(pixel_samples.par_iter())
+            .zip(ca.par_iter())
+            .for_each(|(((dst, &acc), &n), &caus)| {
+                *dst = to_rgb_u32(acc / n.max(1) as f32 + caus, exposure, tm);
+            });
+    } else {
+        buf.par_iter_mut()
+            .zip(accumulator.par_iter())
+            .zip(pixel_samples.par_iter())
+            .for_each(|((dst, &acc), &n)| {
+                *dst = to_rgb_u32(acc / n.max(1) as f32, exposure, tm);
+            });
+    }
 }
 
 /// Minimum samples before a pixel can be declared converged.
@@ -426,6 +472,7 @@ fn spawn_denoiser(
     accumulator:     &[Color],
     samples:         u32,
     pixel_samples:   Option<&[u32]>,
+    caustic:         Option<&[Color]>,
     aux_albedo:      &[f32],
     aux_normal:      &[f32],
     denoised:        &Arc<Mutex<Vec<Color>>>,
@@ -434,8 +481,9 @@ fn spawn_denoiser(
 ) {
     let input = accumulator.iter().enumerate()
         .flat_map(|(i, c)| {
-            let n = pixel_samples.map_or(samples, |ps| ps[i]).max(1) as f32;
-            [c.x / n, c.y / n, c.z / n]
+            let n    = pixel_samples.map_or(samples, |ps| ps[i]).max(1) as f32;
+            let caus = caustic.map_or(Color::default(), |ca| ca[i]);
+            [c.x / n + caus.x, c.y / n + caus.y, c.z / n + caus.z]
         })
         .collect::<Vec<f32>>();
     let alb     = aux_albedo.to_vec();
@@ -453,6 +501,20 @@ fn spawn_denoiser(
         }
         running.store(false, Ordering::Release);
     });
+}
+
+/// Build a photon emission source from a scene's background + caustic quad.
+fn scene_photon_source(scene: &SceneData) -> Option<PhotonSource> {
+    if !scene.enable_caustics { return None; }
+    match &scene.background {
+        Background::Physical { sun_dir, .. } if sun_dir.y > 0.0 => {
+            let sun_color = scene.background.eval(*sun_dir) * std::f32::consts::PI;
+            Some(PhotonSource::Sun { dir: *sun_dir, color: sun_color })
+        }
+        _ => scene.caustic_quad.map(|(origin, u_axis, v_axis, color)| {
+            PhotonSource::Quad { origin, u_axis, v_axis, color }
+        }),
+    }
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -537,6 +599,19 @@ fn main() {
     let mut cam_dirty         = false;
     let mut pending_autofocus = false;
     let mut last_title_update = Instant::now();
+    let mut sppm_state: Option<SppmState> = {
+        let scene = &scenes[scene_idx];
+        if scene.use_sppm {
+            Some(SppmState::new(
+                (win_w * win_h) as usize,
+                scene.caustic_gather_radius,
+                scene.sppm_alpha,
+                scene.sppm_photons_per_iter,
+            ))
+        } else {
+            None
+        }
+    };
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -549,6 +624,7 @@ fn main() {
                 adap_conv.fill(false);
                 n_converged = 0;
                 samples = 0;
+                if let Some(s) = sppm_state.as_mut() { s.reset(); }
                 #[cfg(feature = "denoise")]
                 {
                     denoised.lock().unwrap().clear();
@@ -565,6 +641,16 @@ fn main() {
                 cam_state        = CameraState::from_params(&scenes[i].cam_init);
                 strata           = compute_strata(scenes[i].max_samples);
                 reset_accum!();
+                sppm_state = if scenes[i].use_sppm {
+                    Some(SppmState::new(
+                        (win_w * win_h) as usize,
+                        scenes[i].caustic_gather_radius,
+                        scenes[i].sppm_alpha,
+                        scenes[i].sppm_photons_per_iter,
+                    ))
+                } else {
+                    None
+                };
                 cam_dirty        = true;
                 pending_autofocus = true;
             }};
@@ -589,6 +675,7 @@ fn main() {
                         adap_conv.clear();     adap_conv.resize(n, false);
                         n_converged = 0;
                         samples = 0;
+                        if let Some(s) = &mut sppm_state { s.resize(n); }
                         cam_dirty = true;
                     }
                 }
@@ -634,24 +721,30 @@ fn main() {
                                     }
                                 }
                                 VirtualKeyCode::P => {
+                                    let caustic_save = sppm_state.as_ref().map(|s| s.caustic_buf.as_slice());
                                     #[cfg(feature = "denoise")]
                                     {
                                         let denoised_guard = denoised.lock().unwrap();
                                         if oidn_on && denoised_guard.len() == (win_w * win_h) as usize {
                                             let sc = 1.0 / samples.max(1) as f32;
-                                            let blended: Vec<Color> = accumulator.iter().zip(denoised_guard.iter())
-                                                .map(|(acc, den)| *den * denoise_blend + *acc * sc * (1.0 - denoise_blend))
+                                            let blended: Vec<Color> = accumulator.iter()
+                                                .zip(denoised_guard.iter())
+                                                .enumerate()
+                                                .map(|(i, (acc, den))| {
+                                                    let caus = caustic_save.map_or(Color::default(), |ca| ca[i]);
+                                                    *den * denoise_blend + (*acc * sc + caus) * (1.0 - denoise_blend)
+                                                })
                                                 .collect();
-                                            save_png(&blended, 1, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, Some(samples), None);
+                                            save_png(&blended, 1, None, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, Some(samples), None);
                                         } else {
                                             let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                            save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
+                                            save_png(&accumulator, samples, ps, caustic_save, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                         }
                                     }
                                     #[cfg(not(feature = "denoise"))]
                                     {
                                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                        save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
+                                        save_png(&accumulator, samples, ps, caustic_save, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                     }
                                 }
                                 VirtualKeyCode::L => {
@@ -722,7 +815,8 @@ fn main() {
                                     oidn_on = !oidn_on;
                                     if oidn_on && samples > 0 && !denoise_running.load(Ordering::Acquire) {
                                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                        spawn_denoiser(win_w, win_h, &accumulator, samples, ps,
+                                        let caustic = sppm_state.as_ref().map(|s| s.caustic_buf.as_slice());
+                                        spawn_denoiser(win_w, win_h, &accumulator, samples, ps, caustic,
                                             &aux_albedo, &aux_normal,
                                             &denoised, &denoise_running, &denoise_epoch);
                                     }
@@ -898,6 +992,18 @@ fn main() {
                         n_converged = adap_conv.iter().filter(|&&c| c).count();
                     }
 
+                    // SPPM photon pass: collect visible points for this iteration and
+                    // update per-pixel caustic estimates.
+                    if let Some(state) = &mut sppm_state {
+                        if let Some(src) = scene_photon_source(scene) {
+                            let vps = collect_visible_points(
+                                win_w, win_h, &camera, scene.world.as_ref(),
+                                samples - 1, strata, &state.pixels,
+                            );
+                            sppm_photon_pass(scene.world.as_ref(), &src, state, &vps);
+                        }
+                    }
+
                     // Build the aux buffers once per render sequence (first sample),
                     // so they are ready before the first OIDN invocation at sample 32.
                     #[cfg(feature = "denoise")]
@@ -911,7 +1017,8 @@ fn main() {
                     #[cfg(feature = "denoise")]
                     if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                        spawn_denoiser(win_w, win_h, &accumulator, samples, ps,
+                        let caustic = sppm_state.as_ref().map(|s| s.caustic_buf.as_slice());
+                        spawn_denoiser(win_w, win_h, &accumulator, samples, ps, caustic,
                             &aux_albedo, &aux_normal,
                             &denoised, &denoise_running, &denoise_epoch);
                     }
@@ -926,31 +1033,45 @@ fn main() {
                 let mut buffer = surface.buffer_mut().unwrap();
                 let sc = 1.0 / samples.max(1) as f32;
                 let buf: &mut [u32] = &mut buffer;
+                let caustic = sppm_state.as_ref().map(|s| s.caustic_buf.as_slice());
                 #[cfg(feature = "denoise")]
                 {
                     let denoised_guard = denoised.lock().unwrap();
                     let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
                     if use_denoised {
-                        buf.par_iter_mut()
-                            .zip(accumulator.par_iter())
-                            .zip(denoised_guard.par_iter())
-                            .zip(pixel_samples.par_iter())
-                            .for_each(|(((dst, &acc), &den), &n)| {
-                                let n_sc = if adaptive_on { n.max(1) as f32 } else { samples.max(1) as f32 };
-                                let raw = acc / n_sc;
-                                *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
-                            });
+                        if let Some(ca) = caustic {
+                            buf.par_iter_mut()
+                                .zip(accumulator.par_iter())
+                                .zip(denoised_guard.par_iter())
+                                .zip(pixel_samples.par_iter())
+                                .zip(ca.par_iter())
+                                .for_each(|((((dst, &acc), &den), &n), &caus)| {
+                                    let n_sc = if adaptive_on { n.max(1) as f32 } else { samples.max(1) as f32 };
+                                    let raw = acc / n_sc + caus;
+                                    *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
+                                });
+                        } else {
+                            buf.par_iter_mut()
+                                .zip(accumulator.par_iter())
+                                .zip(denoised_guard.par_iter())
+                                .zip(pixel_samples.par_iter())
+                                .for_each(|(((dst, &acc), &den), &n)| {
+                                    let n_sc = if adaptive_on { n.max(1) as f32 } else { samples.max(1) as f32 };
+                                    let raw = acc / n_sc;
+                                    *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
+                                });
+                        }
                     } else if adaptive_on {
-                        write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure, tonemapper);
+                        write_tonemap_adaptive(buf, &accumulator, &pixel_samples, caustic, exposure, tonemapper);
                     } else {
-                        write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
+                        write_tonemap(buf, &accumulator, sc, caustic, exposure, tonemapper);
                     }
                 }
                 #[cfg(not(feature = "denoise"))]
                 if adaptive_on {
-                    write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure, tonemapper);
+                    write_tonemap_adaptive(buf, &accumulator, &pixel_samples, caustic, exposure, tonemapper);
                 } else {
-                    write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
+                    write_tonemap(buf, &accumulator, sc, caustic, exposure, tonemapper);
                 }
                 buffer.present().unwrap();
             }

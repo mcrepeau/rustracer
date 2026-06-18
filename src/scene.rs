@@ -14,12 +14,19 @@ pub struct SceneData {
     pub max_samples:    u32,
     /// Enable caustic photon mapping for this scene.
     pub enable_caustics: bool,
+    /// Use SPPM (progressive) instead of the fixed-radius photon map.
+    pub use_sppm:        bool,
     /// Area-light emitter for the photon map when `Background` is not
     /// `Physical`.  Fields: (origin, U-extent, V-extent, emission colour).
     pub caustic_quad:          Option<(Point3, Vec3, Vec3, Color)>,
     /// Photon gather radius in world units.  Must match the scene's spatial
     /// scale: ~0.15 for unit-scale scenes, ~10 for 0–555 coordinate scenes.
+    /// Also used as the SPPM initial search radius.
     pub caustic_gather_radius: f32,
+    /// Photons emitted per SPPM iteration (ignored when use_sppm = false).
+    pub sppm_photons_per_iter: u32,
+    /// SPPM radius shrinkage parameter α ∈ (0, 1]; 2/3 is optimal.
+    pub sppm_alpha:            f32,
     /// Caustic photon map, rebuilt after every sun-direction change when enabled.
     pub photon_map:      Option<Arc<PhotonMap>>,
 }
@@ -27,8 +34,9 @@ pub struct SceneData {
 impl SceneData {
     /// Rebuild only the photon map, reusing the current world BVH.
     /// Call this after sun-direction changes.
+    /// No-op when `use_sppm = true` (SPPM state is managed by the render loop).
     pub fn rebuild_caustics(&mut self) {
-        if !self.enable_caustics { return; }
+        if !self.enable_caustics || self.use_sppm { return; }
         let r     = self.caustic_gather_radius;
         let world = Arc::clone(&self.world);
         if let Background::Physical { sun_dir, .. } = &self.background {

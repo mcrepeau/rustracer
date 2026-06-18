@@ -449,11 +449,14 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         background,
         name,
         cam_init,
-        max_samples:   file.max_samples,
+        max_samples:           file.max_samples,
         enable_caustics,
+        use_sppm:              false,
         caustic_quad:          None,
         caustic_gather_radius,
-        photon_map:    None,
+        sppm_photons_per_iter: 0,
+        sppm_alpha:            0.0,
+        photon_map:            None,
     };
     scene.rebuild_caustics();
     Ok(scene)

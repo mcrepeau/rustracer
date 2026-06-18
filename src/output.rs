@@ -109,6 +109,7 @@ pub fn save_png(
     accumulator:   &[Color],
     samples:       u32,
     pixel_samples: Option<&[u32]>,
+    caustic:       Option<&[Color]>,
     scene_name:    &str,
     width:         u32,
     height:        u32,
@@ -126,9 +127,11 @@ pub fn save_png(
         format!("render_{}_{:04}spp.png", slug, label)
     };
     let img = ImageBuffer::from_fn(width, height, |x, y| {
-        let i = (y * width + x) as usize;
-        let n = pixel_samples.map_or(samples, |ps| ps[i]).max(1);
-        let [r, g, b] = tone_map(accumulator[i], exposure / n as f32, tm);
+        let i   = (y * width + x) as usize;
+        let n   = pixel_samples.map_or(samples, |ps| ps[i]).max(1);
+        let raw = accumulator[i] / n as f32;
+        let c   = raw + caustic.map_or(Color::default(), |ca| ca[i]);
+        let [r, g, b] = tone_map(c, exposure, tm);
         Rgb([r, g, b])
     });
     match img.save(&path) {

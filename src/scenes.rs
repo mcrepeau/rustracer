@@ -177,8 +177,11 @@ pub fn build_random_scene() -> SceneData {
         },
         max_samples:         2000,
         enable_caustics:     true,
+        use_sppm:            false,
         caustic_quad:        None,
         caustic_gather_radius: 0.5,
+        sppm_photons_per_iter: 0,
+        sppm_alpha:            0.0,
         photon_map:          None,
     };
     scene.rebuild_caustics();
@@ -238,6 +241,7 @@ pub fn build_cornell_box() -> SceneData {
         },
         max_samples:    2000,
         enable_caustics:       true,
+        use_sppm:              true,
         caustic_quad:          Some((
             Point3::new(343.0, 554.0, 332.0),
             Vec3::new(-130.0, 0.0, 0.0),
@@ -245,6 +249,8 @@ pub fn build_cornell_box() -> SceneData {
             Color::new(15.0, 15.0, 15.0),
         )),
         caustic_gather_radius: 20.0,
+        sppm_photons_per_iter: 50_000,
+        sppm_alpha:            0.667,
         photon_map:            None,
     };
     scene.rebuild_caustics();
@@ -399,8 +405,11 @@ pub fn build_nextweek_scene() -> SceneData {
         },
         max_samples:    2000,
         enable_caustics:       true,
+        use_sppm:              true,
         caustic_quad:          Some(caustic_quad),
         caustic_gather_radius: 25.0,
+        sppm_photons_per_iter: 50_000,
+        sppm_alpha:            0.667,
         photon_map:            None,
     };
     scene.rebuild_caustics();
