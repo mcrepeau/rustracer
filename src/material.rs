@@ -467,30 +467,44 @@ impl Material for SSSMaterial {
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
 }
 
-fn uv_to_pixel(img: &RgbImage, u: f32, v: f32) -> (u32, u32) {
-    let u = u.clamp(0.0, 1.0);
-    let v = 1.0 - v.clamp(0.0, 1.0);  // images top-down, UV bottom-up
-    let x = ((u * img.width()  as f32) as u32).min(img.width()  - 1);
-    let y = ((v * img.height() as f32) as u32).min(img.height() - 1);
-    (x, y)
+/// Returns the 2×2 bilinear neighbourhood for `(u, v)` in texel space.
+/// Pixel centres are at half-integer positions; edges are clamped.
+/// Output: `(x0, y0, x1, y1, tx, ty)` — blend weights `tx,ty ∈ [0,1]`.
+fn bilinear_coords(img: &RgbImage, u: f32, v: f32) -> (u32, u32, u32, u32, f32, f32) {
+    let u  = u.clamp(0.0, 1.0);
+    let v  = 1.0 - v.clamp(0.0, 1.0);          // flip V: UV bottom-up, images top-down
+    let fx = (u * img.width()  as f32 - 0.5).clamp(0.0, (img.width()  - 1) as f32);
+    let fy = (v * img.height() as f32 - 0.5).clamp(0.0, (img.height() - 1) as f32);
+    let x0 = fx as u32;
+    let y0 = fy as u32;
+    let x1 = (x0 + 1).min(img.width()  - 1);
+    let y1 = (y0 + 1).min(img.height() - 1);
+    (x0, y0, x1, y1, fx - x0 as f32, fy - y0 as f32)
 }
 
 fn sample_srgb(img: &RgbImage, u: f32, v: f32) -> Color {
-    let (x, y) = uv_to_pixel(img, u, v);
-    let px = img.get_pixel(x, y);
+    let (x0, y0, x1, y1, tx, ty) = bilinear_coords(img, u, v);
     let lin = |c: u8| (c as f32 / 255.0).powf(2.2);
-    Color::new(lin(px[0]), lin(px[1]), lin(px[2]))
+    let px  = |x, y| { let p = img.get_pixel(x, y); Color::new(lin(p[0]), lin(p[1]), lin(p[2])) };
+    let c0  = px(x0, y0) * (1.0 - tx) + px(x1, y0) * tx;
+    let c1  = px(x0, y1) * (1.0 - tx) + px(x1, y1) * tx;
+    c0 * (1.0 - ty) + c1 * ty
 }
 
 fn sample_linear(img: &RgbImage, u: f32, v: f32) -> f32 {
-    let (x, y) = uv_to_pixel(img, u, v);
-    img.get_pixel(x, y)[0] as f32 / 255.0
+    let (x0, y0, x1, y1, tx, ty) = bilinear_coords(img, u, v);
+    let px = |x, y| img.get_pixel(x, y)[0] as f32 / 255.0;
+    let v0 = px(x0, y0) * (1.0 - tx) + px(x1, y0) * tx;
+    let v1 = px(x0, y1) * (1.0 - tx) + px(x1, y1) * tx;
+    v0 * (1.0 - ty) + v1 * ty
 }
 
 fn sample_rgb(img: &RgbImage, u: f32, v: f32) -> Color {
-    let (x, y) = uv_to_pixel(img, u, v);
-    let px = img.get_pixel(x, y);
-    Color::new(px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0)
+    let (x0, y0, x1, y1, tx, ty) = bilinear_coords(img, u, v);
+    let px = |x, y| { let p = img.get_pixel(x, y); Color::new(p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0) };
+    let c0 = px(x0, y0) * (1.0 - tx) + px(x1, y0) * tx;
+    let c1 = px(x0, y1) * (1.0 - tx) + px(x1, y1) * tx;
+    c0 * (1.0 - ty) + c1 * ty
 }
 
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
