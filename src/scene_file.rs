@@ -475,12 +475,13 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
             Arc::new(Dielectric { ir: ior }),
 
         MaterialConfig::SpectralDielectric { ior, dispersion } => {
-            // Convert (ior at ~546 nm, spread over visible) to Cauchy n(λ)=B+C/λ²
+            // Convert (ior at d-line, spread over visible) to Cauchy n(λ)=B+C/λ²
             // C determined from spread: Δn = C × (1/λ_b² − 1/λ_r²), λ in μm.
             // λ_b = 0.435 μm, λ_r = 0.700 μm → denominator ≈ 3.250 μm⁻².
             let cauchy_c = dispersion / 3.250;
-            // B so that n(550 nm) ≈ ior: B = ior − C / 0.550².
-            let cauchy_b = ior - cauchy_c / (0.550 * 0.550);
+            // B so that n(d-line, 587.56 nm) = ior: B = ior − C / 0.58756².
+            // The d-line (He 587.56 nm) is the standard reference for optical glass IOR.
+            let cauchy_b = ior - cauchy_c / (0.58756 * 0.58756);
             Arc::new(SpectralDielectric { cauchy_b, cauchy_c })
         }
 
