@@ -311,24 +311,25 @@ impl SppmState {
     #[cfg(test)]
     fn caustic_at(&self, i: usize) -> Color {
         if self.total_photons == 0 { return Color::default(); }
-        let p = &self.pixels[i];
+        let p      = &self.pixels[i];
         if p.n == 0.0 { return Color::default(); }
-        p.flux / (PI * p.radius * p.radius * self.total_photons as f32)
+        let n_iter = (self.total_photons / self.photons_per_iter as u64) as f32;
+        p.flux / (PI * p.radius * p.radius * n_iter)
     }
 
     fn refresh_caustic_buf(&mut self) {
-        let total = self.total_photons;
-        if total == 0 {
+        if self.total_photons == 0 {
             self.caustic_buf.fill(Color::default());
             return;
         }
+        let n_iter = (self.total_photons / self.photons_per_iter as u64) as f32;
         self.caustic_buf.par_iter_mut()
             .zip(self.pixels.par_iter())
             .for_each(|(c, px)| {
                 *c = if px.n == 0.0 {
                     Color::default()
                 } else {
-                    px.flux / (PI * px.radius * px.radius * total as f32)
+                    px.flux / (PI * px.radius * px.radius * n_iter)
                 };
             });
     }
@@ -714,16 +715,16 @@ mod tests {
 
     #[test]
     fn caustic_at_matches_formula() {
-        // L = Φ / (π R² · total_photons)
-        // With Φ.x = π, R = 1, N_total = 100: L.x = π / (π · 1 · 100) = 0.01
+        // L = Φ / (π R² · n_iters)   where n_iters = total_photons / photons_per_iter
+        // With Φ.x = π, R = 1, n_iters = 5000/1000 = 5: L.x = π / (π · 1 · 5) = 0.2
         let mut s           = SppmState::new(1, 1.0, 2.0 / 3.0, 1000);
-        s.total_photons     = 100;
+        s.total_photons     = 5000;
         s.pixels[0].flux    = Color::new(PI, 0.0, 0.0);
         s.pixels[0].n       = 1.0;
         s.pixels[0].radius  = 1.0;
 
         let l = s.caustic_at(0);
-        assert!(near(l.x, 0.01), "L.x = {} (expected 0.01)", l.x);
+        assert!(near(l.x, 0.2), "L.x = {} (expected 0.2)", l.x);
         assert!(near(l.y, 0.0));
         assert!(near(l.z, 0.0));
     }
