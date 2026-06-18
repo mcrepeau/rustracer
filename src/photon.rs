@@ -209,10 +209,11 @@ fn trace_photon(
     let mut power        = power;
     let mut spec_depth   = 0u32;
     let mut hit_spectral = false;
+    let wavelength       = rng.gen_range(380.0_f32..700.0);
 
     for _ in 0..12 {
         let mut ray = Ray::new_at_time(pos, dir, 0.0);
-        ray.wavelength = rng.gen_range(380.0_f32..700.0);
+        ray.wavelength = wavelength;
         let rec = world.hit(&ray, 0.001, f32::INFINITY)?;
         let sr  = rec.mat.scatter(&ray, &rec, rng)?;
 
