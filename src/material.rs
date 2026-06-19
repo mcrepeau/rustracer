@@ -60,8 +60,19 @@ impl BlackbodyLight {
 impl Material for BlackbodyLight {
     fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
     fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
-    fn emitted_at(&self, _u: f32, _v: f32, _p: Point3, lambda: f32) -> Color {
-        spectral_to_rgb(lambda) * (planck_raw(lambda, self.temp_k) * self.norm * self.intensity)
+    fn emitted_at(&self, _u: f32, _v: f32, _p: Point3, lambda: f32, spectral_weighted: bool) -> Color {
+        if spectral_weighted {
+            // CMF is already baked into the path throughput from the first spectral
+            // bounce — return scalar power only to avoid double-counting it.
+            let scalar = planck_raw(lambda, self.temp_k) * self.norm * self.intensity;
+            Color::new(scalar, scalar, scalar)
+        } else {
+            // Non-spectral path: the hero wavelength λ is irrelevant (no dispersive
+            // material was hit), so returning the per-λ value only adds variance
+            // without physical benefit.  avg_color is the zero-variance unbiased
+            // estimator — identical expectation, no firefly-clamping colour bias.
+            self.avg_color
+        }
     }
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
 }

@@ -16,9 +16,12 @@ pub trait Material: Send + Sync {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord>;
     fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color { Color::default() }
     /// Wavelength-aware emission for hero-wavelength spectral rendering.
-    /// The default delegates to `emitted()` so existing materials need no changes.
-    /// Override in spectrally-resolved emitters (e.g. `BlackbodyLight`).
-    fn emitted_at(&self, u: f32, v: f32, p: Point3, _lambda: f32) -> Color {
+    /// `spectral_weighted`: true when the ray's throughput already carries the
+    /// CMF weight `spectral_to_rgb(λ)` from a prior spectral bounce.  Spectral
+    /// emitters must NOT apply CMF again in that case — return scalar power only.
+    /// The default delegates to `emitted()` (flat RGB, no CMF) so non-spectral
+    /// emitters (DiffuseLight) work correctly for both spectral and plain paths.
+    fn emitted_at(&self, u: f32, v: f32, p: Point3, _lambda: f32, _spectral_weighted: bool) -> Color {
         self.emitted(u, v, p)
     }
     /// f(ωi, ωo) · cos(θi) — used to weight the PDF-sampled contribution.
