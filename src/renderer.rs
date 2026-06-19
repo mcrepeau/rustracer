@@ -341,7 +341,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                 //   1.0  — no area lights in the scene (no NEE at all).
                 let emit_w = if prev_specular || lights.objects.is_empty() { 1.0 }
                              else { prev_mis_w_brdf };
-                color += throughput * rec.mat.emitted_at(rec.u, rec.v, rec.p, ray.wavelength) * emit_w;
+                color += throughput * rec.mat.emitted_at(rec.u, rec.v, rec.p, ray.wavelength, ray.spectral_weighted) * emit_w;
 
                 let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
 
@@ -402,7 +402,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                                 let brdf  = rec.mat.scattering_pdf(&ray, &rec, &shadow);
                                 let mis_d = l_pdf + brdf; // balance heuristic denominator
                                 if mis_d > 0.0 && brdf > 0.0 {
-                                    let nee_emit = lrec.mat.emitted_at(lrec.u, lrec.v, lrec.p, ray.wavelength);
+                                    let nee_emit = lrec.mat.emitted_at(lrec.u, lrec.v, lrec.p, ray.wavelength, ray.spectral_weighted);
                                     color += throughput * sr.attenuation * brdf * nee_emit / mis_d;
                                 }
                             }

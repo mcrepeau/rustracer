@@ -2,7 +2,7 @@
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{BlackbodyLight, Dielectric, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SpectralMetal, SpectralMetalVariant, SSSMaterial};
+use crate::material::{BlackbodyLight, Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SpectralMetal, SpectralMetalVariant, SSSMaterial};
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
 use crate::scene::SceneData;
@@ -324,21 +324,12 @@ pub fn build_nextweek_scene() -> SceneData {
         Arc::new(Lambertian { texture: Color::new(0.7, 0.3, 0.1).into() }),
     ));
 
-    // Noise-driven patchy blue cloud inside a glass sphere (heterogeneous volume).
-    // Moved left to clear space for the two showcase rows.
-    let fog_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
-        Point3::new(200.0, 400.0, 500.0), 60.0,
-        Arc::new(Dielectric { ir: 1.5 }),
-    ));
-    list.objects.push(Arc::clone(&fog_boundary));
-    list.add(NoiseMedium::new(fog_boundary, Color::new(0.2, 0.4, 0.9), 3.0, 0.05, 0.07, 0.7));
-
     // Thin global mist (homogeneous constant-density medium).
     let mist_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
         Point3::new(0.0, 0.0, 0.0), 5000.0,
         Arc::new(Dielectric { ir: 1.5 }),
     ));
-    list.add(ConstantMedium::new(mist_boundary, 0.0001, Color::new(1.0, 1.0, 1.0), 0.0));
+    list.add(ConstantMedium::new(mist_boundary, 0.0003, Color::new(1.0, 1.0, 1.0), 0.0));
 
     // Spectral diamond: Tolkowsky-cut polyhedron with Cauchy dispersive IOR.
     // The 3200 K light produces warm-tinted rainbow fire inside the gem.
