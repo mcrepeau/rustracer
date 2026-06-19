@@ -817,7 +817,7 @@ fn main() {
                                     oidn_on = !oidn_on;
                                     if oidn_on && samples > 0 && !denoise_running.load(Ordering::Acquire) {
                                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                        let caustic = sppm_state.as_ref().map(|s| s.caustic_buf.as_slice());
+                                        let caustic = if photon_map_on { sppm_state.as_ref().map(|s| s.caustic_buf.as_slice()) } else { None };
                                         spawn_denoiser(win_w, win_h, &accumulator, samples, ps, caustic,
                                             &aux_albedo, &aux_normal,
                                             &denoised, &denoise_running, &denoise_epoch);
@@ -934,8 +934,8 @@ fn main() {
                         let pct = n_converged * 100 / adap_conv.len().max(1);
                         format!("  adaptive {pct}% conv")
                     } else { String::new() };
-                    let pm_str = if !photon_map_on && scene.photon_map.is_some() {
-                        "  [photon map OFF]"
+                    let pm_str = if !photon_map_on && (scene.photon_map.is_some() || sppm_state.is_some()) {
+                        "  [caustics OFF]"
                     } else { "" };
                     let tm_str = if tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
                     let cam_str = if cam_state_str.is_empty() {
@@ -1005,13 +1005,15 @@ fn main() {
 
                     // SPPM photon pass: collect visible points for this iteration and
                     // update per-pixel caustic estimates.
-                    if let Some(state) = &mut sppm_state {
-                        if let Some(src) = scene_photon_source(scene) {
-                            let vps = collect_visible_points(
-                                win_w, win_h, &camera, scene.world.as_ref(),
-                                samples - 1, strata, &state.pixels,
-                            );
-                            sppm_photon_pass(scene.world.as_ref(), &src, state, &vps);
+                    if photon_map_on {
+                        if let Some(state) = &mut sppm_state {
+                            if let Some(src) = scene_photon_source(scene) {
+                                let vps = collect_visible_points(
+                                    win_w, win_h, &camera, scene.world.as_ref(),
+                                    samples - 1, strata, &state.pixels,
+                                );
+                                sppm_photon_pass(scene.world.as_ref(), &src, state, &vps);
+                            }
                         }
                     }
 
@@ -1028,7 +1030,7 @@ fn main() {
                     #[cfg(feature = "denoise")]
                     if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                        let caustic = sppm_state.as_ref().map(|s| s.caustic_buf.as_slice());
+                        let caustic = if photon_map_on { sppm_state.as_ref().map(|s| s.caustic_buf.as_slice()) } else { None };
                         spawn_denoiser(win_w, win_h, &accumulator, samples, ps, caustic,
                             &aux_albedo, &aux_normal,
                             &denoised, &denoise_running, &denoise_epoch);
@@ -1044,7 +1046,7 @@ fn main() {
                 let mut buffer = surface.buffer_mut().unwrap();
                 let sc = 1.0 / samples.max(1) as f32;
                 let buf: &mut [u32] = &mut buffer;
-                let caustic = sppm_state.as_ref().map(|s| s.caustic_buf.as_slice());
+                let caustic = if photon_map_on { sppm_state.as_ref().map(|s| s.caustic_buf.as_slice()) } else { None };
                 #[cfg(feature = "denoise")]
                 {
                     let denoised_guard = denoised.lock().unwrap();
