@@ -1,0 +1,398 @@
+use std::sync::Arc;
+use crate::aabb::Aabb;
+use crate::hittable::{HitRecord, Hittable, HittableList};
+use crate::ray::Ray;
+
+const NUM_BUCKETS: usize = 12;
+
+type ObjsBoxes = (Vec<Arc<dyn Hittable>>, Vec<Aabb>);
+
+// 4-wide BVH node. AABBs stored SoA ([axis][child]) for SIMD intersection.
+struct QbvhNode {
+    min: [[f32; 4]; 3],
+    max: [[f32; 4]; 3],
+    // ≥ 0 → inner node at nodes[v]
+    // < 0, ≠ MIN → leaf primitive at objects[(-v - 1)]
+    // MIN → unused slot
+    children: [i32; 4],
+}
+
+pub struct BvhTree {
+    nodes:   Vec<QbvhNode>,
+    objects: Vec<Arc<dyn Hittable>>,
+    bbox:    Aabb,
+}
+
+fn surface_area(b: &Aabb) -> f32 {
+    let d = b.max - b.min;
+    2.0 * (d.x * d.y + d.y * d.z + d.z * d.x)
+}
+
+fn sah_partition(
+    objs:  &[Arc<dyn Hittable>],
+    boxes: &[Aabb],
+) -> (ObjsBoxes, ObjsBoxes) {
+    let span = objs.len();
+    debug_assert!(span >= 2);
+
+    let mut c_min = [f32::INFINITY;     3];
+    let mut c_max = [f32::NEG_INFINITY; 3];
+    for b in boxes {
+        for axis in 0..3 {
+            let c = (b.min[axis] + b.max[axis]) * 0.5;
+            c_min[axis] = c_min[axis].min(c);
+            c_max[axis] = c_max[axis].max(c);
+        }
+    }
+
+    let node_bbox = boxes.iter().copied().reduce(|a, b| Aabb::surrounding(&a, &b)).unwrap();
+    let node_sa   = surface_area(&node_bbox);
+
+    let mut best_cost  = f32::INFINITY;
+    let mut best_axis  = 0usize;
+    let mut best_split = 0usize;
+
+    for axis in 0..3usize {
+        let extent = c_max[axis] - c_min[axis];
+        if extent < 1e-6 { continue; }
+
+        let mut bucket_bbox  = [None::<Aabb>; NUM_BUCKETS];
+        let mut bucket_count = [0u32; NUM_BUCKETS];
+        for b in boxes {
+            let c  = (b.min[axis] + b.max[axis]) * 0.5;
+            let t  = (c - c_min[axis]) / extent;
+            let bi = ((NUM_BUCKETS as f32 * t) as usize).min(NUM_BUCKETS - 1);
+            bucket_count[bi] += 1;
+            bucket_bbox[bi]   = Some(match bucket_bbox[bi] {
+                None    => *b,
+                Some(a) => Aabb::surrounding(&a, b),
+            });
+        }
+
+        // Prefix sweep: left-side surface area and count for each split candidate.
+        let mut left_sa    = [0.0f32; NUM_BUCKETS];
+        let mut left_count = [0u32;   NUM_BUCKETS];
+        let mut acc_box: Option<Aabb> = None;
+        let mut acc_n = 0u32;
+        for i in 0..NUM_BUCKETS {
+            acc_n += bucket_count[i];
+            if let Some(b) = bucket_bbox[i] {
+                acc_box = Some(match acc_box { None => b, Some(a) => Aabb::surrounding(&a, &b) });
+            }
+            left_count[i] = acc_n;
+            left_sa[i]    = acc_box.map_or(0.0, |b| surface_area(&b));
+        }
+
+        // Single backward pass evaluates the right side without suffix arrays.
+        acc_box = None;
+        acc_n   = 0;
+        for split in (0..NUM_BUCKETS - 1).rev() {
+            acc_n += bucket_count[split + 1];
+            if let Some(b) = bucket_bbox[split + 1] {
+                acc_box = Some(match acc_box { None => b, Some(a) => Aabb::surrounding(&a, &b) });
+            }
+            let nl = left_count[split];
+            let nr = acc_n;
+            if nl == 0 || nr == 0 { continue; }
+            let right_sa = acc_box.map_or(0.0, |b| surface_area(&b));
+            let cost = 1.0 + (left_sa[split] * nl as f32 + right_sa * nr as f32) / node_sa;
+            if cost < best_cost { best_cost = cost; best_axis = axis; best_split = split; }
+        }
+    }
+
+    let extent = c_max[best_axis] - c_min[best_axis];
+    let bucket_id = |b: &Aabb| -> usize {
+        if extent < 1e-6 { return 0; }
+        let c = (b.min[best_axis] + b.max[best_axis]) * 0.5;
+        let t = (c - c_min[best_axis]) / extent;
+        ((NUM_BUCKETS as f32 * t) as usize).min(NUM_BUCKETS - 1)
+    };
+
+    // Sort indices by bucket; no Arc clones until the final gather.
+    let bid: Vec<usize> = boxes.iter().map(bucket_id).collect();
+    let mut order: Vec<usize> = (0..span).collect();
+    order.sort_by_key(|&i| bid[i]);
+    let mid_off = order.partition_point(|&i| bid[i] <= best_split);
+    let mid = if mid_off == 0 || mid_off == span { span / 2 } else { mid_off };
+
+    let (li, ri) = order.split_at(mid);
+    let lo: Vec<Arc<dyn Hittable>> = li.iter().map(|&i| Arc::clone(&objs[i])).collect();
+    let lb: Vec<Aabb>               = li.iter().map(|&i| boxes[i]).collect();
+    let ro: Vec<Arc<dyn Hittable>> = ri.iter().map(|&i| Arc::clone(&objs[i])).collect();
+    let rb: Vec<Aabb>               = ri.iter().map(|&i| boxes[i]).collect();
+    ((lo, lb), (ro, rb))
+}
+
+fn split_four(
+    objs:  &[Arc<dyn Hittable>],
+    boxes: &[Aabb],
+) -> Vec<ObjsBoxes> {
+    if objs.len() <= 4 {
+        return objs.iter().zip(boxes.iter())
+            .map(|(o, b)| (vec![Arc::clone(o)], vec![*b]))
+            .collect();
+    }
+    let ((lo, lb), (ro, rb)) = sah_partition(objs, boxes);
+    let mut groups = Vec::with_capacity(4);
+    for (sub_o, sub_b) in [(&lo[..], &lb[..]), (&ro[..], &rb[..])] {
+        if sub_o.len() < 2 {
+            groups.push((sub_o.iter().map(Arc::clone).collect(), sub_b.to_vec()));
+        } else {
+            let ((ll, lb2), (rl, rb2)) = sah_partition(sub_o, sub_b);
+            groups.push((ll, lb2));
+            groups.push((rl, rb2));
+        }
+    }
+    groups
+}
+
+impl QbvhNode {
+    fn from_children(children: [i32; 4], bboxes: &[Aabb; 4]) -> Self {
+        let mut min = [[0.0f32; 4]; 3];
+        let mut max = [[0.0f32; 4]; 3];
+        for c in 0..4 {
+            for axis in 0..3 {
+                min[axis][c] = bboxes[c].min[axis];
+                max[axis][c] = bboxes[c].max[axis];
+            }
+        }
+        Self { min, max, children }
+    }
+
+    fn sentinel() -> Self {
+        Self { min: [[0.0; 4]; 3], max: [[0.0; 4]; 3], children: [i32::MIN; 4] }
+    }
+}
+
+impl BvhTree {
+    pub fn from_list(list: HittableList) -> Self {
+        let objs = list.objects;
+        assert!(!objs.is_empty(), "BvhTree::from_list requires at least one object");
+        let boxes: Vec<Aabb> = objs.iter()
+            .map(|o| o.bounding_box().unwrap_or_default())
+            .collect();
+        let mut nodes   = Vec::with_capacity(objs.len());
+        let mut objects = Vec::with_capacity(objs.len());
+        let (root, bbox) = Self::build(&objs, &boxes, &mut nodes, &mut objects);
+        if root < 0 {
+            let mut children = [i32::MIN; 4];
+            children[0] = root;
+            let bboxes = [boxes[0], Aabb::default(), Aabb::default(), Aabb::default()];
+            nodes.push(QbvhNode::from_children(children, &bboxes));
+        }
+        Self { nodes, objects, bbox }
+    }
+
+    fn build(
+        objs:  &[Arc<dyn Hittable>],
+        boxes: &[Aabb],
+        nodes: &mut Vec<QbvhNode>,
+        prims: &mut Vec<Arc<dyn Hittable>>,
+    ) -> (i32, Aabb) {
+        if objs.len() == 1 {
+            let idx = prims.len() as i32;
+            prims.push(Arc::clone(&objs[0]));
+            return (-(idx + 1), boxes[0]);
+        }
+
+        let groups = split_four(objs, boxes);
+
+        let my_idx = nodes.len();
+        nodes.push(QbvhNode::sentinel());
+
+        let mut children  = [i32::MIN; 4];
+        let mut bboxes    = [Aabb::default(); 4];
+        let mut node_bbox: Option<Aabb> = None;
+
+        for (i, (g_objs, g_boxes)) in groups.into_iter().enumerate() {
+            let (child_data, child_bbox) = Self::build(&g_objs, &g_boxes, nodes, prims);
+            children[i] = child_data;
+            bboxes[i]   = child_bbox;
+            node_bbox   = Some(match node_bbox {
+                None    => child_bbox,
+                Some(b) => Aabb::surrounding(&b, &child_bbox),
+            });
+        }
+
+        nodes[my_idx] = QbvhNode::from_children(children, &bboxes);
+        (my_idx as i32, node_bbox.unwrap())
+    }
+}
+
+// Test all 4 child AABBs simultaneously using SSE2.
+// Returns (hit_mask, t_near) where bit c of hit_mask = 1 means child c was hit.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn test_children_sse(
+    node: &QbvhNode,
+    ro:   [f32; 3],
+    id:   [f32; 3],
+    t_min: f32,
+    t_max: f32,
+) -> (u32, [f32; 4]) {
+    use std::arch::x86_64::*;
+
+    // Build validity mask: bit c = 1 where children[c] != i32::MIN.
+    let ch       = _mm_loadu_si128(node.children.as_ptr() as *const __m128i);
+    let sentinel = _mm_set1_epi32(i32::MIN);
+    let invalid  = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(ch, sentinel))) as u32;
+    let valid    = (!invalid) & 0xf;
+
+    // Slab test: all 4 children in parallel, 3 axes.
+    let mut t0 = _mm_set1_ps(t_min);
+    let mut t1 = _mm_set1_ps(t_max);
+    for axis in 0..3usize {
+        let orig = _mm_set1_ps(ro[axis]);
+        let inv  = _mm_set1_ps(id[axis]);
+        let da = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(node.min[axis].as_ptr()), orig), inv);
+        let db = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(node.max[axis].as_ptr()), orig), inv);
+        t0 = _mm_max_ps(t0, _mm_min_ps(da, db));
+        t1 = _mm_min_ps(t1, _mm_max_ps(da, db));
+    }
+
+    // hit when t0 <= t1 (sign bit of 0xFFFFFFFF = 1, of 0x00000000 = 0)
+    let hit_mask = _mm_movemask_ps(_mm_cmple_ps(t0, t1)) as u32;
+
+    let mut t_near = [0.0f32; 4];
+    _mm_storeu_ps(t_near.as_mut_ptr(), t0);
+    (hit_mask & valid, t_near)
+}
+
+// Test all 4 child AABBs simultaneously using ARM NEON.
+// Returns (hit_mask, t_near) where bit c of hit_mask = 1 means child c was hit.
+// NEON has no movemask: instead AND each comparison lane with its bit-weight
+// (1/2/4/8) then horizontally sum to collapse into a 4-bit integer.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn test_children_neon(
+    node:  &QbvhNode,
+    ro:    [f32; 3],
+    id:    [f32; 3],
+    t_min: f32,
+    t_max: f32,
+) -> (u32, [f32; 4]) {
+    use std::arch::aarch64::*;
+
+    // Build validity mask: bit c = 1 where children[c] != i32::MIN.
+    let ch        = vld1q_s32(node.children.as_ptr());
+    let sentinel  = vdupq_n_s32(i32::MIN);
+    let eq_mask   = vceqq_s32(ch, sentinel);     // 0xFFFF…=sentinel=invalid
+    let lane_bits = [1u32, 2, 4, 8];
+    let weights   = vld1q_u32(lane_bits.as_ptr());
+    let invalid   = vaddvq_u32(vandq_u32(eq_mask, weights));
+    let valid     = (!invalid) & 0xf;
+
+    // Slab test: all 4 children in parallel, 3 axes.
+    let mut t0 = vdupq_n_f32(t_min);
+    let mut t1 = vdupq_n_f32(t_max);
+    for axis in 0..3usize {
+        let orig = vdupq_n_f32(ro[axis]);
+        let inv  = vdupq_n_f32(id[axis]);
+        let da   = vmulq_f32(vsubq_f32(vld1q_f32(node.min[axis].as_ptr()), orig), inv);
+        let db   = vmulq_f32(vsubq_f32(vld1q_f32(node.max[axis].as_ptr()), orig), inv);
+        t0 = vmaxq_f32(t0, vminq_f32(da, db));
+        t1 = vminq_f32(t1, vmaxq_f32(da, db));
+    }
+
+    // hit when t0 <= t1
+    let hit_mask = vaddvq_u32(vandq_u32(vcleq_f32(t0, t1), weights));
+
+    let mut t_near = [0.0f32; 4];
+    vst1q_f32(t_near.as_mut_ptr(), t0);
+    (hit_mask & valid, t_near)
+}
+
+// Scalar fallback for targets without SSE2 or NEON.
+#[allow(dead_code, clippy::needless_range_loop)]
+fn test_children_scalar(
+    node:  &QbvhNode,
+    ro:    [f32; 3],
+    id:    [f32; 3],
+    t_min: f32,
+    t_max: f32,
+) -> (u32, [f32; 4]) {
+    let mut mask   = 0u32;
+    let mut t_near = [0.0f32; 4];
+    for c in 0..4 {
+        if node.children[c] == i32::MIN { continue; }
+        let mut t0 = t_min;
+        let mut t1 = t_max;
+        for axis in 0..3 {
+            let da = (node.min[axis][c] - ro[axis]) * id[axis];
+            let db = (node.max[axis][c] - ro[axis]) * id[axis];
+            t0 = t0.max(da.min(db));
+            t1 = t1.min(da.max(db));
+        }
+        if t0 <= t1 { mask |= 1 << c; t_near[c] = t0; }
+    }
+    (mask, t_near)
+}
+
+impl Hittable for BvhTree {
+    #[allow(clippy::needless_range_loop)]
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
+        if self.nodes.is_empty() { return None; }
+
+        let mut stack = [0i32; 128];
+        let mut top   = 1usize;
+        let mut best: Option<HitRecord<'_>> = None;
+        let mut closest = t_max;
+
+        let ro = [r.origin.x,  r.origin.y,  r.origin.z];
+        let id = [r.inv_dir.x, r.inv_dir.y, r.inv_dir.z];
+
+        while top > 0 {
+            top -= 1;
+            let entry = stack[top];
+
+            if entry < 0 {
+                let prim_idx = (-entry - 1) as usize;
+                if let Some(rec) = self.objects[prim_idx].hit(r, t_min, closest) {
+                    closest = rec.t;
+                    best    = Some(rec);
+                }
+                continue;
+            }
+
+            let node = &self.nodes[entry as usize];
+
+            // 4-wide AABB test: SIMD on known architectures, scalar elsewhere.
+            #[cfg(target_arch = "x86_64")]
+            let (mask, t_near) = if is_x86_feature_detected!("sse2") {
+                unsafe { test_children_sse(node, ro, id, t_min, closest) }
+            } else {
+                test_children_scalar(node, ro, id, t_min, closest)
+            };
+            #[cfg(target_arch = "aarch64")]
+            let (mask, t_near) = unsafe { test_children_neon(node, ro, id, t_min, closest) };
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            let (mask, t_near) = test_children_scalar(node, ro, id, t_min, closest);
+
+            if mask == 0 { continue; }
+
+            // Collect hits sorted far-to-near so nearest is popped first.
+            let mut hits   = [(f32::INFINITY, i32::MIN); 4];
+            let mut n_hits = 0usize;
+            for c in 0..4 {
+                if mask & (1 << c) != 0 {
+                    hits[n_hits] = (t_near[c], node.children[c]);
+                    n_hits += 1;
+                }
+            }
+            hits[..n_hits].sort_unstable_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            for &(_, child) in &hits[..n_hits] {
+                stack[top] = child;
+                top += 1;
+            }
+        }
+
+        best
+    }
+
+    fn bounding_box(&self) -> Option<Aabb> {
+        if self.nodes.is_empty() { None } else { Some(self.bbox) }
+    }
+}
