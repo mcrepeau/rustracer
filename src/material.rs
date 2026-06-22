@@ -286,30 +286,103 @@ const METAL_SAMPLES: usize = 13;
 
 impl Material for SpectralMetal {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let n  = rec.normal;
-        let wi = r_in.direction.unit();
-        let reflected = wi.reflect(n);
-        let dir = if self.roughness > 0.0 {
-            (reflected + self.roughness * Vec3::random_in_unit_sphere(rng)).unit()
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
+        let cos_o = wo.dot(n);
+        if cos_o <= 0.0 { return None; }
+
+        let lambda = r_in.wavelength;
+
+        // Sample outgoing direction and record cos(wo, h) for Fresnel.
+        let (dir, cos_h) = if self.roughness == 0.0 {
+            // Perfect mirror: half-vector = normal, so cos_h = cos_o.
+            let wi = r_in.direction.unit().reflect(n);
+            (wi, cos_o)
         } else {
-            reflected
+            // GGX VNDF sampling (isotropic).
+            let alpha  = (self.roughness * self.roughness).max(1e-4);
+            let (t, b) = n.onb();
+            let wo_ts  = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+            let m_ts   = vndf_sample_aniso(wo_ts, alpha, alpha, rng.gen(), rng.gen());
+            let m      = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
+            let vo_h   = wo.dot(m).max(0.0);
+            let wi     = (2.0 * vo_h * m - wo).unit();
+            if wi.dot(n) <= 0.0 { return None; }
+            (wi, vo_h)
         };
+
         if dir.dot(n) <= 0.0 { return None; }
 
-        let lambda          = r_in.wavelength;
-        let (ior_n, ior_k)  = self.variant.ior_at(lambda);
-        let cos_theta       = (-wi).dot(n).clamp(0.0, 1.0);
-        let fresnel         = fresnel_conductor(cos_theta, ior_n, ior_k);
+        let (ior_n, ior_k) = self.variant.ior_at(lambda);
+        let fresnel = fresnel_conductor(cos_h, ior_n, ior_k);
+
+        // VNDF weight is F × G1(wi).  For a perfect mirror G1 = 1.
+        let g1_wi = if self.roughness == 0.0 {
+            1.0
+        } else {
+            let alpha = (self.roughness * self.roughness).max(1e-4);
+            smith_g1(dir.dot(n).max(0.0), alpha)
+        };
 
         let attenuation = if r_in.spectral_weighted {
-            Color::new(fresnel, fresnel, fresnel)
+            Color::new(fresnel * g1_wi, fresnel * g1_wi, fresnel * g1_wi)
         } else {
-            spectral_to_rgb(lambda) * fresnel
+            spectral_to_rgb(lambda) * (fresnel * g1_wi)
         };
         let mut scattered = Ray::scatter_from(rec.p, dir, r_in);
         if !r_in.spectral_weighted { scattered.spectral_weighted = true; }
 
         Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
+    }
+
+    /// GGX BRDF × cos_i at direction `wi`, with spectral conductor Fresnel.
+    /// Returns zero for smooth (roughness = 0) since the BRDF is a delta function.
+    fn specular_brdf_cos(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> Color {
+        if self.roughness == 0.0 { return Color::default(); }
+
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
+        let cos_o = wo.dot(n);
+        let cos_i = wi.dot(n);
+        if cos_o <= 0.0 || cos_i <= 0.0 { return Color::default(); }
+
+        let h    = (wo + wi).unit();
+        let wo_h = wo.dot(h).max(0.0);
+        let h_n  = h.dot(n).max(0.0);
+
+        let alpha = (self.roughness * self.roughness).max(1e-4);
+        let d     = ggx_ndf(h_n, alpha);
+        let g1_o  = smith_g1(cos_o, alpha);
+        let g1_i  = smith_g1(cos_i, alpha);
+
+        let lambda = r_in.wavelength;
+        let (ior_n, ior_k) = self.variant.ior_at(lambda);
+        let fresnel = fresnel_conductor(wo_h, ior_n, ior_k);
+
+        let val = d * fresnel * g1_o * g1_i / (4.0 * cos_o);
+
+        if r_in.spectral_weighted {
+            Color::new(val, val, val)
+        } else {
+            spectral_to_rgb(lambda) * val
+        }
+    }
+
+    /// VNDF sampling PDF for the scattered direction.
+    /// Returns zero for smooth metals (delta function).
+    fn specular_sampling_pdf(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> f32 {
+        if self.roughness == 0.0 { return 0.0; }
+
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
+        let cos_o = wo.dot(n);
+        if cos_o <= 0.0 || wi.dot(n) <= 0.0 { return 0.0; }
+
+        let h   = (wo + wi).unit();
+        let h_n = h.dot(n).max(0.0);
+
+        let alpha = (self.roughness * self.roughness).max(1e-4);
+        ggx_ndf(h_n, alpha) * smith_g1(cos_o, alpha) / (4.0 * cos_o)
     }
 
     fn is_spectral(&self)                              -> bool  { true }

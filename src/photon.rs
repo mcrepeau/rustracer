@@ -204,10 +204,11 @@ fn trace_photon(
     power:  Color,
     rng:    &mut SmallRng,
 ) -> Option<KdPhoton> {
-    let mut pos        = origin;
-    let mut dir        = dir;
-    let mut power      = power;
-    let mut spec_depth = 0u32;
+    let mut pos          = origin;
+    let mut dir          = dir;
+    let mut power        = power;
+    let mut spec_depth   = 0u32;
+    let mut hit_spectral = false;
 
     for _ in 0..12 {
         let mut ray = Ray::new_at_time(pos, dir, 0.0);
@@ -216,6 +217,7 @@ fn trace_photon(
         let sr  = rec.mat.scatter(&ray, &rec, rng)?;
 
         if sr.skip_pdf {
+            if rec.mat.is_spectral() { hit_spectral = true; }
             power     *= sr.attenuation;
             pos        = sr.ray.origin;
             dir        = sr.ray.direction;
@@ -227,7 +229,7 @@ fn trace_photon(
                 if lum > 15.0 { power *= 15.0 / lum; }
             }
         } else {
-            if spec_depth > 0 && rec.mat.can_receive_caustics() {
+            if spec_depth > 0 && hit_spectral && rec.mat.can_receive_caustics() {
                 let nor = rec.normal;
                 return Some(KdPhoton {
                     pos:   [rec.p.x, rec.p.y, rec.p.z],
