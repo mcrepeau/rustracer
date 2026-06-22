@@ -62,7 +62,7 @@ impl Hittable for Quad {
         Some(Aabb::new(min, max).pad())
     }
 
-    fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
+    fn pdf_value(&self, origin: Point3, dir: Vec3, _time: f32) -> f32 {
         let r = Ray::new(origin, dir);
         let Some(rec) = self.hit(&r, 0.001, f32::INFINITY) else { return 0.0; };
         let dist2 = (rec.p - origin).length_squared();
@@ -71,7 +71,7 @@ impl Hittable for Quad {
         dist2 / (cos_theta * self.area)
     }
 
-    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore) -> Vec3 {
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, _time: f32) -> Vec3 {
         let r1: f32 = rng.gen();
         let r2: f32 = rng.gen();
         let point = self.q + r1 * self.u + r2 * self.v;

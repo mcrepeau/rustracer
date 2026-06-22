@@ -5,16 +5,28 @@ use crate::ray::Ray;
 
 const NUM_BUCKETS: usize = 12;
 
+// 8 children per node when AVX2 is available, 4 otherwise.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+const QBVH_WIDTH: usize = 8;
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+const QBVH_WIDTH: usize = 4;
+
+// SAH split depth to reach QBVH_WIDTH leaves: log2(WIDTH).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+const QBVH_DEPTH: usize = 3;
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+const QBVH_DEPTH: usize = 2;
+
 type ObjsBoxes = (Vec<Arc<dyn Hittable>>, Vec<Aabb>);
 
-// 4-wide BVH node. AABBs stored SoA ([axis][child]) for SIMD intersection.
+// N-wide BVH node (N = QBVH_WIDTH). AABBs stored SoA ([axis][child]) for SIMD intersection.
 struct QbvhNode {
-    min: [[f32; 4]; 3],
-    max: [[f32; 4]; 3],
+    min:      [[f32; QBVH_WIDTH]; 3],
+    max:      [[f32; QBVH_WIDTH]; 3],
     // ≥ 0 → inner node at nodes[v]
     // < 0, ≠ MIN → leaf primitive at objects[(-v - 1)]
     // MIN → unused slot
-    children: [i32; 4],
+    children: [i32; QBVH_WIDTH],
 }
 
 pub struct BvhTree {
@@ -123,34 +135,40 @@ fn sah_partition(
     ((lo, lb), (ro, rb))
 }
 
-fn split_four(
-    objs:  &[Arc<dyn Hittable>],
-    boxes: &[Aabb],
-) -> Vec<ObjsBoxes> {
-    if objs.len() <= 4 {
+// Recursively split to produce up to 2^max_depth groups for a single QBVH node.
+fn split_recursive(
+    objs:      &[Arc<dyn Hittable>],
+    boxes:     &[Aabb],
+    depth:     usize,
+    max_depth: usize,
+    out:       &mut Vec<ObjsBoxes>,
+) {
+    if depth == max_depth || objs.len() <= 1 {
+        out.push((objs.iter().map(Arc::clone).collect(), boxes.to_vec()));
+        return;
+    }
+    let ((lo, lb), (ro, rb)) = sah_partition(objs, boxes);
+    split_recursive(&lo, &lb, depth + 1, max_depth, out);
+    split_recursive(&ro, &rb, depth + 1, max_depth, out);
+}
+
+// Produce up to QBVH_WIDTH SAH groups for one QBVH node.
+fn split_n(objs: &[Arc<dyn Hittable>], boxes: &[Aabb]) -> Vec<ObjsBoxes> {
+    if objs.len() <= QBVH_WIDTH {
         return objs.iter().zip(boxes.iter())
             .map(|(o, b)| (vec![Arc::clone(o)], vec![*b]))
             .collect();
     }
-    let ((lo, lb), (ro, rb)) = sah_partition(objs, boxes);
-    let mut groups = Vec::with_capacity(4);
-    for (sub_o, sub_b) in [(&lo[..], &lb[..]), (&ro[..], &rb[..])] {
-        if sub_o.len() < 2 {
-            groups.push((sub_o.iter().map(Arc::clone).collect(), sub_b.to_vec()));
-        } else {
-            let ((ll, lb2), (rl, rb2)) = sah_partition(sub_o, sub_b);
-            groups.push((ll, lb2));
-            groups.push((rl, rb2));
-        }
-    }
+    let mut groups = Vec::with_capacity(QBVH_WIDTH);
+    split_recursive(objs, boxes, 0, QBVH_DEPTH, &mut groups);
     groups
 }
 
 impl QbvhNode {
-    fn from_children(children: [i32; 4], bboxes: &[Aabb; 4]) -> Self {
-        let mut min = [[0.0f32; 4]; 3];
-        let mut max = [[0.0f32; 4]; 3];
-        for c in 0..4 {
+    fn from_children(children: [i32; QBVH_WIDTH], bboxes: &[Aabb; QBVH_WIDTH]) -> Self {
+        let mut min = [[0.0f32; QBVH_WIDTH]; 3];
+        let mut max = [[0.0f32; QBVH_WIDTH]; 3];
+        for c in 0..QBVH_WIDTH {
             for axis in 0..3 {
                 min[axis][c] = bboxes[c].min[axis];
                 max[axis][c] = bboxes[c].max[axis];
@@ -160,7 +178,11 @@ impl QbvhNode {
     }
 
     fn sentinel() -> Self {
-        Self { min: [[0.0; 4]; 3], max: [[0.0; 4]; 3], children: [i32::MIN; 4] }
+        Self {
+            min:      [[0.0; QBVH_WIDTH]; 3],
+            max:      [[0.0; QBVH_WIDTH]; 3],
+            children: [i32::MIN; QBVH_WIDTH],
+        }
     }
 }
 
@@ -175,9 +197,10 @@ impl BvhTree {
         let mut objects = Vec::with_capacity(objs.len());
         let (root, bbox) = Self::build(&objs, &boxes, &mut nodes, &mut objects);
         if root < 0 {
-            let mut children = [i32::MIN; 4];
+            let mut children = [i32::MIN; QBVH_WIDTH];
             children[0] = root;
-            let bboxes = [boxes[0], Aabb::default(), Aabb::default(), Aabb::default()];
+            let mut bboxes = [Aabb::default(); QBVH_WIDTH];
+            bboxes[0] = boxes[0];
             nodes.push(QbvhNode::from_children(children, &bboxes));
         }
         Self { nodes, objects, bbox }
@@ -195,13 +218,13 @@ impl BvhTree {
             return (-(idx + 1), boxes[0]);
         }
 
-        let groups = split_four(objs, boxes);
+        let groups = split_n(objs, boxes);
 
         let my_idx = nodes.len();
         nodes.push(QbvhNode::sentinel());
 
-        let mut children  = [i32::MIN; 4];
-        let mut bboxes    = [Aabb::default(); 4];
+        let mut children = [i32::MIN; QBVH_WIDTH];
+        let mut bboxes   = [Aabb::default(); QBVH_WIDTH];
         let mut node_bbox: Option<Aabb> = None;
 
         for (i, (g_objs, g_boxes)) in groups.into_iter().enumerate() {
@@ -219,14 +242,54 @@ impl BvhTree {
     }
 }
 
-// Test all 4 child AABBs simultaneously using SSE2.
+// Test all 8 child AABBs simultaneously using AVX2.
+// Returns (hit_mask, t_near) where bit c = 1 means child c was hit.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx,avx2")]
+unsafe fn test_children_avx2(
+    node:  &QbvhNode,
+    ro:    [f32; 3],
+    id:    [f32; 3],
+    t_min: f32,
+    t_max: f32,
+) -> (u32, [f32; 8]) {
+    use std::arch::x86_64::*;
+
+    // Build validity mask: bit c = 1 where children[c] != i32::MIN.
+    let ch       = _mm256_loadu_si256(node.children.as_ptr() as *const __m256i);
+    let sentinel = _mm256_set1_epi32(i32::MIN);
+    let invalid  = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(ch, sentinel))) as u32;
+    let valid    = (!invalid) & 0xff;
+
+    // Slab test: all 8 children in parallel, 3 axes.
+    let mut t0 = _mm256_set1_ps(t_min);
+    let mut t1 = _mm256_set1_ps(t_max);
+    for axis in 0..3usize {
+        let orig = _mm256_set1_ps(ro[axis]);
+        let inv  = _mm256_set1_ps(id[axis]);
+        let da   = _mm256_mul_ps(_mm256_sub_ps(_mm256_loadu_ps(node.min[axis].as_ptr()), orig), inv);
+        let db   = _mm256_mul_ps(_mm256_sub_ps(_mm256_loadu_ps(node.max[axis].as_ptr()), orig), inv);
+        t0 = _mm256_max_ps(t0, _mm256_min_ps(da, db));
+        t1 = _mm256_min_ps(t1, _mm256_max_ps(da, db));
+    }
+
+    // _CMP_LE_OQ = 18: t0 <= t1, ordered quiet (no FP exception on NaN)
+    let hit      = _mm256_cmp_ps::<18>(t0, t1);
+    let hit_mask = _mm256_movemask_ps(hit) as u32;
+
+    let mut t_near = [0.0f32; 8];
+    _mm256_storeu_ps(t_near.as_mut_ptr(), t0);
+    (hit_mask & valid, t_near)
+}
+
+// Test all 4 child AABBs simultaneously using SSE2 (x86_64 without AVX2).
 // Returns (hit_mask, t_near) where bit c of hit_mask = 1 means child c was hit.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
 #[target_feature(enable = "sse2")]
 unsafe fn test_children_sse(
-    node: &QbvhNode,
-    ro:   [f32; 3],
-    id:   [f32; 3],
+    node:  &QbvhNode,
+    ro:    [f32; 3],
+    id:    [f32; 3],
     t_min: f32,
     t_max: f32,
 ) -> (u32, [f32; 4]) {
@@ -250,7 +313,7 @@ unsafe fn test_children_sse(
         t1 = _mm_min_ps(t1, _mm_max_ps(da, db));
     }
 
-    // hit when t0 <= t1 (sign bit of 0xFFFFFFFF = 1, of 0x00000000 = 0)
+    // hit when t0 <= t1
     let hit_mask = _mm_movemask_ps(_mm_cmple_ps(t0, t1)) as u32;
 
     let mut t_near = [0.0f32; 4];
@@ -260,8 +323,8 @@ unsafe fn test_children_sse(
 
 // Test all 4 child AABBs simultaneously using ARM NEON.
 // Returns (hit_mask, t_near) where bit c of hit_mask = 1 means child c was hit.
-// NEON has no movemask: instead AND each comparison lane with its bit-weight
-// (1/2/4/8) then horizontally sum to collapse into a 4-bit integer.
+// NEON has no movemask: AND each comparison lane with its bit-weight (1/2/4/8)
+// then horizontally sum to collapse into a 4-bit integer.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn test_children_neon(
@@ -302,7 +365,7 @@ unsafe fn test_children_neon(
     (hit_mask & valid, t_near)
 }
 
-// Scalar fallback for targets without SSE2 or NEON.
+// Scalar fallback for targets without SIMD support.
 #[allow(dead_code, clippy::needless_range_loop)]
 fn test_children_scalar(
     node:  &QbvhNode,
@@ -310,10 +373,10 @@ fn test_children_scalar(
     id:    [f32; 3],
     t_min: f32,
     t_max: f32,
-) -> (u32, [f32; 4]) {
+) -> (u32, [f32; QBVH_WIDTH]) {
     let mut mask   = 0u32;
-    let mut t_near = [0.0f32; 4];
-    for c in 0..4 {
+    let mut t_near = [0.0f32; QBVH_WIDTH];
+    for c in 0..QBVH_WIDTH {
         if node.children[c] == i32::MIN { continue; }
         let mut t0 = t_min;
         let mut t1 = t_max;
@@ -356,13 +419,11 @@ impl Hittable for BvhTree {
 
             let node = &self.nodes[entry as usize];
 
-            // 4-wide AABB test: SIMD on known architectures, scalar elsewhere.
-            #[cfg(target_arch = "x86_64")]
-            let (mask, t_near) = if is_x86_feature_detected!("sse2") {
-                unsafe { test_children_sse(node, ro, id, t_min, closest) }
-            } else {
-                test_children_scalar(node, ro, id, t_min, closest)
-            };
+            // N-wide AABB test: compile-time selected SIMD path.
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            let (mask, t_near) = unsafe { test_children_avx2(node, ro, id, t_min, closest) };
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            let (mask, t_near) = unsafe { test_children_sse(node, ro, id, t_min, closest) };
             #[cfg(target_arch = "aarch64")]
             let (mask, t_near) = unsafe { test_children_neon(node, ro, id, t_min, closest) };
             #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -371,17 +432,15 @@ impl Hittable for BvhTree {
             if mask == 0 { continue; }
 
             // Collect hits sorted far-to-near so nearest is popped first.
-            let mut hits   = [(f32::INFINITY, i32::MIN); 4];
+            let mut hits   = [(f32::INFINITY, i32::MIN); QBVH_WIDTH];
             let mut n_hits = 0usize;
-            for c in 0..4 {
+            for c in 0..QBVH_WIDTH {
                 if mask & (1 << c) != 0 {
                     hits[n_hits] = (t_near[c], node.children[c]);
                     n_hits += 1;
                 }
             }
-            hits[..n_hits].sort_unstable_by(|a, b| {
-                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            hits[..n_hits].sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
 
             for &(_, child) in &hits[..n_hits] {
                 stack[top] = child;

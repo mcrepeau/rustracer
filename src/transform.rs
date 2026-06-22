@@ -58,7 +58,6 @@ fn mat_apply_t(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {
     )
 }
 
-#[allow(dead_code)]
 impl Rotate {
     fn with_matrix(object: Arc<dyn Hittable>, fwd: [[f32; 3]; 3]) -> Self {
         let bbox = object.bounding_box().map(|bb| {
@@ -84,15 +83,6 @@ impl Rotate {
         Self { object, fwd, bbox }
     }
 
-    pub fn around_x(object: Arc<dyn Hittable>, angle_deg: f32) -> Self {
-        let (s, c) = angle_deg.to_radians().sin_cos();
-        Self::with_matrix(object, [
-            [1.0, 0.0, 0.0],
-            [0.0,   c,  -s],
-            [0.0,   s,   c],
-        ])
-    }
-
     pub fn around_y(object: Arc<dyn Hittable>, angle_deg: f32) -> Self {
         let (s, c) = angle_deg.to_radians().sin_cos();
         Self::with_matrix(object, [
@@ -102,14 +92,6 @@ impl Rotate {
         ])
     }
 
-    pub fn around_z(object: Arc<dyn Hittable>, angle_deg: f32) -> Self {
-        let (s, c) = angle_deg.to_radians().sin_cos();
-        Self::with_matrix(object, [
-            [  c,  -s, 0.0],
-            [  s,   c, 0.0],
-            [0.0, 0.0, 1.0],
-        ])
-    }
 }
 
 impl Hittable for Rotate {
@@ -129,3 +111,4 @@ impl Hittable for Rotate {
 
     fn bounding_box(&self) -> Option<Aabb> { self.bbox }
 }
+

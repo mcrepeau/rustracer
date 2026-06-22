@@ -7,14 +7,12 @@ use crate::vec3::{Color, Point3};
 pub enum Texture {
     Solid(Color),
     Checker { scale: f32, even: Color, odd: Color },
-    #[allow(dead_code)]
     Image(Arc<RgbImage>),
     /// Marble-like Perlin noise: 0.5*(1 + sin(scale·p.z + 10·turb(p)))
     Noise { perlin: Arc<Perlin>, scale: f32 },
 }
 
 impl Texture {
-    #[allow(dead_code)]
     pub fn load(path: &str) -> Result<Self, image::ImageError> {
         Ok(Self::Image(Arc::new(image::open(path)?.into_rgb8())))
     }

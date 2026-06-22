@@ -14,10 +14,21 @@ pub struct ScatterRecord {
 
 pub trait Material: Send + Sync {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord>;
-    fn emitted(&self) -> Color { Color::default() }
+    fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color { Color::default() }
     /// f(ωi, ωo) · cos(θi) — used to weight the PDF-sampled contribution.
     /// Only called when skip_pdf = false.
     fn scattering_pdf(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _scattered: &Ray) -> f32 { 0.0 }
+    /// Unlit base colour of the surface in [0, 1], used as the OIDN albedo
+    /// auxiliary buffer.  Specular and transparent materials return white
+    /// (the default); the normal buffer still benefits those pixels.
+    #[cfg_attr(not(feature = "denoise"), allow(dead_code))]
+    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { Color::new(1.0, 1.0, 1.0) }
+    /// True for diffuse materials that should accumulate caustic photons.
+    /// Specular, transmissive, and emissive materials return false (default).
+    fn can_receive_caustics(&self) -> bool { false }
+    /// True if this material produces spectrally-boosted (3× single-channel)
+    /// attenuation that can spike photon power inside a refractive object.
+    fn is_spectral(&self) -> bool { false }
 }
 
 pub struct HitRecord<'a> {
@@ -42,11 +53,11 @@ pub trait Hittable: Send + Sync {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>>;
     fn bounding_box(&self) -> Option<Aabb>;
 
-    /// Solid-angle PDF for sampling this hittable from `origin` in direction `dir`.
-    fn pdf_value(&self, _origin: Point3, _dir: Vec3) -> f32 { 0.0 }
+    /// Solid-angle PDF for sampling this hittable from `origin` in direction `dir` at `time`.
+    fn pdf_value(&self, _origin: Point3, _dir: Vec3, _time: f32) -> f32 { 0.0 }
 
-    /// Generate a direction toward this hittable from `origin`.
-    fn pdf_generate(&self, _origin: Point3, _rng: &mut dyn RngCore) -> Vec3 {
+    /// Generate a direction toward this hittable from `origin` at `time`.
+    fn pdf_generate(&self, _origin: Point3, _rng: &mut dyn RngCore, _time: f32) -> Vec3 {
         Vec3::new(1.0, 0.0, 0.0)
     }
 }
@@ -62,10 +73,6 @@ impl HittableList {
         self.objects.push(Arc::new(obj));
     }
 
-    #[allow(dead_code)]
-    pub fn push_arc(&mut self, obj: Arc<dyn Hittable>) {
-        self.objects.push(obj);
-    }
 }
 
 impl Hittable for HittableList {
@@ -94,15 +101,15 @@ impl Hittable for HittableList {
         result
     }
 
-    fn pdf_value(&self, origin: Point3, dir: Vec3) -> f32 {
+    fn pdf_value(&self, origin: Point3, dir: Vec3, time: f32) -> f32 {
         if self.objects.is_empty() { return 0.0; }
         let weight = 1.0 / self.objects.len() as f32;
-        self.objects.iter().map(|o| weight * o.pdf_value(origin, dir)).sum()
+        self.objects.iter().map(|o| weight * o.pdf_value(origin, dir, time)).sum()
     }
 
-    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore) -> Vec3 {
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, time: f32) -> Vec3 {
         if self.objects.is_empty() { return Vec3::new(1.0, 0.0, 0.0); }
         let idx = (rng.next_u32() as usize) % self.objects.len();
-        self.objects[idx].pdf_generate(origin, rng)
+        self.objects[idx].pdf_generate(origin, rng, time)
     }
 }
