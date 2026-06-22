@@ -4,13 +4,13 @@ A physically-based path tracer built in Rust. It simulates how light actually be
 
 ## Gallery
 
-|                                       Random Spheres                                        |                                                 Cornell Box                                                  |
-|:-------------------------------------------------------------------------------------------:|:------------------------------------------------------------------------------------------------------------:|
-| ![Random Spheres](examples/render_random_spheres_2000spp.png) 2000 samples per pixel + OIDN | ![Cornell Box](examples/render_cornell_box_2000spp.png) 2000 samples per pixel with adaptive sampling + OIDN |
+|                                             Random Spheres                                             |                                           Cornell Box                                            |
+|:------------------------------------------------------------------------------------------------------:|:------------------------------------------------------------------------------------------------:|
+| ![Random Spheres](examples/render_random_spheres_5000spp.png) 5000 samples per pixel + AgX tonemapping | ![Cornell Box](examples/render_cornell_box_5000spp.png) 5000 samples per pixel + AgX tonemapping |
 
-|                                                Next Week                                                 |                                                                             Custom Scene (OBJ)                                                                             |
-|:--------------------------------------------------------------------------------------------------------:|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
-| ![Next Week](examples/render_next_week_2000spp.png) 2000 samples per pixel with adaptive sampling + OIDN | ![OBJ Loading](examples/render_obj_loading_2000spp.png) HDR background, 1 OBJ with texture mapping + 1 OBJ with spectral material - 2000 spp with adaptive sampling + OIDN |
+|                                Next Week                                |                                                                             Custom Scene (OBJ)                                                                             |
+|:-----------------------------------------------------------------------:|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
+| ![Next Week](examples/render_next_week_5000spp.png) 5000 samples per pixel + AgX tonemapping | ![OBJ Loading](examples/render_obj_loading_5000spp.png) HDR background, 1 OBJ with texture mapping + 1 OBJ with spectral material - 5000 samples per pixel + AgX tonemapping |
 
 ## Build & Run
 
