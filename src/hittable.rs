@@ -15,6 +15,12 @@ pub struct ScatterRecord {
 pub trait Material: Send + Sync {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord>;
     fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color { Color::default() }
+    /// Wavelength-aware emission for hero-wavelength spectral rendering.
+    /// The default delegates to `emitted()` so existing materials need no changes.
+    /// Override in spectrally-resolved emitters (e.g. `BlackbodyLight`).
+    fn emitted_at(&self, u: f32, v: f32, p: Point3, _lambda: f32) -> Color {
+        self.emitted(u, v, p)
+    }
     /// f(ωi, ωo) · cos(θi) — used to weight the PDF-sampled contribution.
     /// Only called when skip_pdf = false.
     fn scattering_pdf(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _scattered: &Ray) -> f32 { 0.0 }
@@ -29,6 +35,18 @@ pub trait Material: Send + Sync {
     /// True if this material produces spectrally-boosted (3× single-channel)
     /// attenuation that can spike photon power inside a refractive object.
     fn is_spectral(&self) -> bool { false }
+
+    /// Evaluate the full specular BRDF × cos(θ_i) for outgoing direction `wi`.
+    /// Returns a non-zero Color only for materials that implement specular NEE.
+    fn specular_brdf_cos(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _wi: Vec3) -> Color {
+        Color::default()
+    }
+
+    /// Sampling PDF of scatter() for direction `wi` (specular lobes only, weighted
+    /// by Russian-roulette probabilities).  Used for MIS with direct sun sampling.
+    fn specular_sampling_pdf(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _wi: Vec3) -> f32 {
+        0.0
+    }
 }
 
 pub struct HitRecord<'a> {

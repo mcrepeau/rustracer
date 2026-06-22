@@ -9,6 +9,7 @@ const CIE_START: f32   = 380.0;
 const CIE_STEP:  f32   = 5.0;
 
 #[rustfmt::skip]
+#[allow(clippy::excessive_precision)]
 static CIE_X: [f32; CIE_N] = [
     0.001368, 0.002236, 0.004243, 0.007650, 0.014310,
     0.023190, 0.043510, 0.077630, 0.134380, 0.214770,
@@ -43,6 +44,7 @@ static CIE_Y: [f32; CIE_N] = [
 ];
 
 #[rustfmt::skip]
+#[allow(clippy::excessive_precision)]
 static CIE_Z: [f32; CIE_N] = [
     0.006450, 0.010550, 0.020050, 0.036210, 0.067850,
     0.110200, 0.207400, 0.371300, 0.645600, 1.039050,
@@ -110,6 +112,77 @@ pub fn spectral_to_rgb(lambda: f32) -> Color {
     let n = norms();
     Color::new(r * n[0], g * n[1], b * n[2])
 }
+
+/// Planck spectral radiance, un-normalised.
+///
+/// Returns a relative power value proportional to B(λ, T).  To get a
+/// normalised weight (mean = 1 over [380, 700 nm]) divide by the mean
+/// of this function over that range — `BlackbodyLight::new` does this
+/// once at construction time and stores the reciprocal as a `norm` field.
+///
+/// `lambda_nm` in nanometres, `temp_k` in Kelvin.
+#[inline]
+pub fn planck_raw(lambda_nm: f32, temp_k: f32) -> f32 {
+    const HC_OVER_K: f32 = 14_388_000.0; // hc/k in nm·K
+    let x = HC_OVER_K / (lambda_nm * temp_k);
+    1.0 / (lambda_nm.powi(5) * (x.exp() - 1.0).max(1e-30))
+}
+
+// ── Spectral metal IOR tables (Johnson & Christy 1972) ────────────────────────
+// 13 samples at 25 nm intervals from 380 nm to 680 nm.
+
+const METAL_N:     usize = 13;
+const METAL_START: f32   = 380.0;
+const METAL_STEP:  f32   = 25.0;
+
+// Gold (Au) — characteristic interband edge ≈ 480–520 nm produces the warm yellow.
+#[rustfmt::skip] static GOLD_N:   [f32; METAL_N] = [1.69, 1.65, 1.54, 1.33, 0.97, 0.54, 0.30, 0.23, 0.20, 0.19, 0.18, 0.16, 0.16];
+#[rustfmt::skip] static GOLD_K:   [f32; METAL_N] = [1.91, 1.94, 1.95, 1.92, 1.80, 1.93, 2.41, 3.00, 3.56, 4.07, 4.56, 4.99, 5.41];
+// Copper (Cu) — similar edge, shifted toward the red; characteristic orange tint.
+#[rustfmt::skip] static COPPER_N: [f32; METAL_N] = [1.23, 1.21, 1.16, 1.10, 1.04, 0.88, 0.60, 0.38, 0.26, 0.22, 0.21, 0.20, 0.21];
+#[rustfmt::skip] static COPPER_K: [f32; METAL_N] = [2.00, 2.26, 2.49, 2.59, 2.64, 2.69, 2.84, 3.21, 3.70, 4.17, 4.64, 5.07, 5.48];
+// Silver (Ag) — nearly flat and very high reflectance across the visible; near-white.
+#[rustfmt::skip] static SILVER_N: [f32; METAL_N] = [0.18, 0.14, 0.12, 0.13, 0.13, 0.13, 0.14, 0.14, 0.15, 0.16, 0.16, 0.17, 0.17];
+#[rustfmt::skip] static SILVER_K: [f32; METAL_N] = [1.57, 2.01, 2.50, 3.02, 3.55, 4.05, 4.54, 5.02, 5.50, 5.98, 6.42, 6.84, 7.22];
+
+#[inline]
+fn interp_metal(ns: &[f32; METAL_N], ks: &[f32; METAL_N], lambda_nm: f32) -> (f32, f32) {
+    let t = ((lambda_nm - METAL_START) / METAL_STEP).clamp(0.0, (METAL_N - 1) as f32);
+    let i = (t as usize).min(METAL_N - 2);
+    let f = t - i as f32;
+    (ns[i] + f * (ns[i + 1] - ns[i]), ks[i] + f * (ks[i + 1] - ks[i]))
+}
+
+/// Complex IOR `(n, k)` for gold at `lambda_nm` (nanometres), from J&C 1972.
+pub fn gold_ior(lambda_nm:   f32) -> (f32, f32) { interp_metal(&GOLD_N,   &GOLD_K,   lambda_nm) }
+/// Complex IOR `(n, k)` for copper at `lambda_nm` (nanometres), from J&C 1972.
+pub fn copper_ior(lambda_nm: f32) -> (f32, f32) { interp_metal(&COPPER_N, &COPPER_K, lambda_nm) }
+/// Complex IOR `(n, k)` for silver at `lambda_nm` (nanometres), from J&C 1972.
+pub fn silver_ior(lambda_nm: f32) -> (f32, f32) { interp_metal(&SILVER_N, &SILVER_K, lambda_nm) }
+
+/// Exact Fresnel reflectance for a conductor (unpolarized, vacuum incidence).
+///
+/// `cos_theta_i` — cosine of the angle of incidence (1 = normal, 0 = grazing).
+/// `n`, `k`       — real and imaginary parts of the complex IOR at the relevant λ.
+#[inline]
+pub fn fresnel_conductor(cos_theta_i: f32, n: f32, k: f32) -> f32 {
+    let cos2 = cos_theta_i * cos_theta_i;
+    let sin2 = (1.0 - cos2).max(0.0);
+    let n2   = n * n;
+    let k2   = k * k;
+    let t0       = n2 - k2 - sin2;
+    let a2plusb2 = (t0 * t0 + 4.0 * n2 * k2).sqrt();
+    let t1       = a2plusb2 + cos2;
+    let a        = (0.5 * (a2plusb2 + t0)).max(0.0).sqrt();
+    let t2       = 2.0 * cos_theta_i * a;
+    let rs       = (t1 - t2) / (t1 + t2).max(1e-12);
+    let t3       = cos2 * a2plusb2 + sin2 * sin2;
+    let t4       = t2 * sin2;
+    let rp       = rs * (t3 - t4) / (t3 + t4).max(1e-12);
+    (0.5 * (rp + rs)).clamp(0.0, 1.0)
+}
+
+// ── Cauchy dispersion ─────────────────────────────────────────────────────────
 
 /// Cauchy dispersion equation: n(λ) = B + C/λ² (λ in **micrometres**).
 ///

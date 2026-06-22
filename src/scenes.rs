@@ -2,7 +2,7 @@
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{Dielectric, DiffuseLight, Lambertian, MarbleMaterial, Metal, PbrMaterial, PearlMaterial, SpectralDielectric, SSSMaterial};
+use crate::material::{BlackbodyLight, Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SpectralMetal, SpectralMetalVariant, SSSMaterial};
 use crate::perlin::Perlin;
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
@@ -17,9 +17,13 @@ use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-/// Creates a matched (world quad, light-sampler quad) pair with identical geometry.
+/// Creates a matched (world quad, light-sampler quad) pair with a DiffuseLight.
 fn emissive_quad(q: Point3, u: Vec3, v: Vec3, emit: Color) -> (Quad, Quad) {
-    let mat: Arc<dyn Material> = Arc::new(DiffuseLight { emit: emit.into() });
+    emissive_quad_mat(q, u, v, Arc::new(DiffuseLight { emit: emit.into() }))
+}
+
+/// Creates a matched (world quad, light-sampler quad) pair with an arbitrary material.
+fn emissive_quad_mat(q: Point3, u: Vec3, v: Vec3, mat: Arc<dyn Material>) -> (Quad, Quad) {
     let world   = Quad::new(q, u, v, Arc::clone(&mat));
     let sampler = Quad::new(q, u, v, mat);
     (world, sampler)
@@ -44,27 +48,20 @@ pub fn build_random_scene() -> SceneData {
         Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
     );
     let diamond: Arc<dyn Hittable> = Arc::new(diamond_obj);
-    // Noise-driven cloud — sits right among the main spheres, unmissable.
-    // turb()*0.5 ∈ [0, 0.34], median 0.063; threshold=0.05 keeps the top ~43%.
-    // density=8 → avg σ≈0.28, mean free path ~3.6 units, ~1.9 expected scatters across diameter.
-    let cloud_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
-        Point3::new(0.0, 1.5, 0.0), 3.5,
-        Arc::new(Lambertian { texture: Texture::from(Color::new(0.5, 0.5, 0.5)) }),
-    ));
-    let cloud: Arc<dyn Hittable> =
-        Arc::new(NoiseMedium::new(cloud_boundary, Color::new(1.0, 0.97, 0.90), 8.0, 0.6, 0.05, 0.85));
 
     let mut list = HittableList::new();
     list.objects.push(ground);
     list.objects.push(diamond);
-    list.objects.push(cloud);
 
     // Hero spheres
-    list.add(Sphere::new(Point3::new( 0.0, 1.0,  0.0), 1.0, Arc::new(Dielectric { ir: 1.5 })));
+    // Crown glass — dispersive under the physical sky; shows subtle spectral fringes.
+    list.add(Sphere::new(Point3::new( 0.0, 1.0,  0.0), 1.0, Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375 })));
     list.add(Sphere::new(Point3::new(-4.0, 1.0,  0.0), 1.0,
         Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() })));
-    list.add(Sphere::new(Point3::new( 4.0, 1.0,  0.0), 1.0,
-        Arc::new(PbrMaterial { albedo: Color::new(0.85, 0.65, 0.25), roughness: 0.25, metallic: 1.0, anisotropy: 0.85, ..Default::default() })));
+    // Spectral metals: physically accurate Fresnel from J&C 1972 IOR tables.
+    list.add(Sphere::new(Point3::new( 4.0, 1.0,  0.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold,   0.04))));
+    list.add(Sphere::new(Point3::new( 4.0, 1.0, -3.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Copper, 0.08))));
+    list.add(Sphere::new(Point3::new( 4.0, 1.0,  3.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Silver, 0.02))));
     list.add(Sphere::new(Point3::new(-2.0, 1.0, -2.0), 1.0,
         Arc::new(PearlMaterial {
             base_color:       Color::new(0.98, 0.93, 0.88),
@@ -86,46 +83,46 @@ pub fn build_random_scene() -> SceneData {
             ..Default::default()
         })));
 
-    // Glass marbles near the diamond.
-    // Two flavours:
-    //   MarbleMaterial  — Perlin swirl pattern visible through the glass.
-    //   SSSMaterial     — volumetric multiple scattering: soft coloured glow.
-    let marble_perlin = Arc::new(Perlin::new(&mut rng));
-    // Palette for MarbleMaterial swirl spheres (color1 = ribbon, color2 = clear base).
-    let marble_palette: &[(Color, Color)] = &[
-        (Color::new(0.05, 0.70, 0.15), Color::new(1.0, 1.0, 1.0)), // cat's-eye green
-        (Color::new(0.05, 0.15, 0.85), Color::new(1.0, 1.0, 1.0)), // cobalt blue
-        (Color::new(0.90, 0.35, 0.03), Color::new(1.0, 1.0, 1.0)), // amber
-        (Color::new(0.85, 0.03, 0.03), Color::new(1.0, 1.0, 1.0)), // ruby red
-        (Color::new(0.50, 0.05, 0.85), Color::new(1.0, 1.0, 1.0)), // violet
-        (Color::new(0.80, 0.65, 0.00), Color::new(1.0, 1.0, 1.0)), // gold
-        (Color::new(0.00, 0.70, 0.70), Color::new(1.0, 1.0, 1.0)), // teal
-        (Color::new(0.80, 0.10, 0.50), Color::new(1.0, 1.0, 1.0)), // magenta
-    ];
-    // Per-scatter scattering albedos for SSSMaterial (bright channel ~ 1, others < 1
-    // so absorption builds colour over ~2 scatters per diameter traversal).
+    // SSS marbles near the diamond — volumetric multiple scattering, soft coloured glow.
+    // Per-scatter albedos: bright channel ≈ 1, others < 1 so absorption builds
+    // colour over ~2 scatters per diameter traversal.
+    // Max channel capped at 0.97 so Russian roulette can terminate scatter paths.
+    // A channel of 1.0 gives survive probability = 1.0 forever → unbounded depth.
     let sss_colors: &[Color] = &[
-        Color::new(0.60, 1.00, 0.60),  // jade green
-        Color::new(0.40, 0.55, 1.00),  // cobalt blue
-        Color::new(1.00, 0.70, 0.15),  // amber
-        Color::new(1.00, 0.30, 0.20),  // ruby red
-        Color::new(0.55, 0.20, 1.00),  // violet
-        Color::new(1.00, 0.85, 0.30),  // gold
-        Color::new(0.20, 1.00, 0.85),  // teal
-        Color::new(1.00, 0.35, 0.70),  // rose
+        Color::new(0.55, 0.97, 0.55),  // jade green
+        Color::new(0.38, 0.52, 0.97),  // cobalt blue
+        Color::new(0.97, 0.68, 0.14),  // amber
+        Color::new(0.97, 0.28, 0.18),  // ruby red
+        Color::new(0.52, 0.18, 0.97),  // violet
+        Color::new(0.97, 0.82, 0.28),  // gold
+        Color::new(0.18, 0.97, 0.82),  // teal
+        Color::new(0.97, 0.33, 0.68),  // rose
     ];
-    // Dedicated SSS marbles dropped near the diamond â€” these showcase the organic
-    // translucent glow most clearly since they are large and well-lit.
+    // Beer-Lambert absorption per channel (per unit length).  Tuned for r=0.15 marbles
+    // (max path ≈ 0.30): sigma_a ≈ 3 → T ≈ 0.41, sigma_a ≈ 0.2 → T ≈ 0.94.
+    // High absorption in the complementary channels deepens the marble's colour.
+    let sss_sigma_a: &[Color] = &[
+        Color::new(3.0, 0.2, 3.0),  // jade:   absorb R+B, pass G
+        Color::new(3.0, 1.5, 0.2),  // cobalt: absorb R, moderate G, pass B
+        Color::new(0.2, 1.5, 4.0),  // amber:  absorb B strongly, moderate G, pass R
+        Color::new(0.2, 4.0, 4.0),  // ruby:   absorb G+B, pass R
+        Color::new(1.0, 4.0, 0.2),  // violet: absorb G, moderate R, pass B
+        Color::new(0.2, 0.5, 3.5),  // gold:   absorb B, pass R+G
+        Color::new(4.0, 0.2, 0.2),  // teal:   absorb R, pass G+B
+        Color::new(0.2, 3.5, 1.5),  // rose:   absorb G, moderate B, pass R
+    ];
+    // Dedicated SSS marbles clustered around the diamond on the ground.
     let dedicated_marbles: &[(usize, Point3)] = &[
-        (0, Point3::new(1.5,  8.0, -1.0)),
-        (1, Point3::new(2.5,  6.0, -2.0)),
-        (2, Point3::new(1.0, 10.0, -2.5)),
-        (3, Point3::new(3.0,  7.0, -1.5)),
-        (4, Point3::new(2.0,  9.0, -0.8)),
+        (0, Point3::new(1.5,  0.15, -1.0)),
+        (1, Point3::new(2.5,  0.15, -2.0)),
+        (2, Point3::new(1.0,  0.15, -2.5)),
+        (3, Point3::new(3.0,  0.15, -1.5)),
+        (4, Point3::new(2.0,  0.15, -0.8)),
     ];
     for &(idx, center) in dedicated_marbles {
         list.add(Sphere::new(center, 0.15, Arc::new(SSSMaterial {
             albedo:  sss_colors[idx],
+            sigma_a: sss_sigma_a[idx],
             ior:     1.5,
             density: 7.0,
             g:       0.30,
@@ -137,17 +134,26 @@ pub fn build_random_scene() -> SceneData {
             let cx = a as f32 + 0.9 * rng.gen::<f32>();
             let cz = b as f32 + 0.9 * rng.gen::<f32>();
             let ground_pos = Point3::new(cx, 0.2, cz);
-            if (ground_pos - Point3::new( 4.0, 0.2, 0.0)).length() < 1.2 { continue; }
-            if (ground_pos - Point3::new( 0.0, 0.2, 0.0)).length() < 1.2 { continue; }
-            if (ground_pos - Point3::new(-4.0, 0.2, 0.0)).length() < 1.2 { continue; }
+            // Keep small balls from spawning inside any hero object.
+            if (ground_pos - Point3::new( 4.0, 0.2,  0.0)).length() < 1.2 { continue; } // gold
+            if (ground_pos - Point3::new( 4.0, 0.2, -3.0)).length() < 1.2 { continue; } // copper
+            if (ground_pos - Point3::new( 4.0, 0.2,  3.0)).length() < 1.2 { continue; } // silver
+            if (ground_pos - Point3::new( 0.0, 0.2,  0.0)).length() < 1.2 { continue; } // glass
+            if (ground_pos - Point3::new(-4.0, 0.2,  0.0)).length() < 1.2 { continue; } // PBR
+            if (ground_pos - Point3::new(-2.0, 0.2, -2.0)).length() < 1.2 { continue; } // pearl
+            if (ground_pos - Point3::new( 2.0, 0.2,  2.0)).length() < 1.2 { continue; } // iridescent
+            if (ground_pos - Point3::new( 2.0, 0.2, -1.5)).length() < 1.2 { continue; } // diamond
             let choose: f32 = rng.gen();
-            let mat: Arc<dyn Material> = if choose < 0.40 {
-                let (color1, color2) = marble_palette[rng.gen_range(0..marble_palette.len())];
-                Arc::new(MarbleMaterial { ir: 1.5, color1, color2, scale: 8.0, perlin: Arc::clone(&marble_perlin) })
-            } else if choose < 0.60 {
-                let albedo  = sss_colors[rng.gen_range(0..sss_colors.len())];
-                let density = rng.gen_range(5.0_f32..9.0);
-                Arc::new(SSSMaterial { albedo, ior: 1.5, density, g: 0.30 })
+            let mat: Arc<dyn Material> = if choose < 0.60 {
+                let idx     = rng.gen_range(0..sss_colors.len());
+                let density = rng.gen_range(3.0_f32..9.0);
+                Arc::new(SSSMaterial {
+                    albedo:  sss_colors[idx],
+                    sigma_a: sss_sigma_a[idx],
+                    ior:     1.5,
+                    density,
+                    g:       0.30,
+                })
             } else if choose < 0.75 {
                 let albedo = Color::random(&mut rng) * Color::random(&mut rng);
                 let roughness: f32 = rng.gen_range(0.5..1.0);
@@ -190,11 +196,14 @@ pub fn build_cornell_box() -> SceneData {
     let white: Arc<dyn Material> = Arc::new(Lambertian { texture: Color::new(0.73, 0.73, 0.73).into() });
     let green: Arc<dyn Material> = Arc::new(Lambertian { texture: Color::new(0.12, 0.45, 0.15).into() });
 
-    let (world_light, sampler_light) = emissive_quad(
+    let (world_light, sampler_light) = emissive_quad_mat(
         Point3::new(343.0, 554.0, 332.0),
         Vec3::new(-130.0, 0.0, 0.0),
         Vec3::new(0.0, 0.0, -105.0),
-        Color::new(15.0, 15.0, 15.0),
+        // 6500 K (D65 daylight) — close to neutral white; spectral path tracer
+        // uses the Planck weight at each hero wavelength so the glass sphere
+        // produces a physically correct rainbow under this illuminant.
+        Arc::new(BlackbodyLight::new(6500.0, 15.0)),
     );
     let mut lights = HittableList::new();
     lights.add(sampler_light);
@@ -216,7 +225,16 @@ pub fn build_cornell_box() -> SceneData {
     let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
     list.objects.push(short);
 
-    list.add(Sphere::new(Point3::new(190.0, 90.0, 190.0), 80.0, Arc::new(Dielectric { ir: 1.5 })));
+    // Dense flint glass (B=1.612, C=0.00950 μm²): IOR ranges 1.620–1.678
+    // across the visible spectrum — high dispersion like an optical prism,
+    // producing visible rainbow fringes in the caustic and refraction.
+    list.add(Sphere::new(Point3::new(190.0, 245.0, 190.0), 80.0,
+        Arc::new(SpectralDielectric { cauchy_b: 1.612, cauchy_c: 0.00950 })));
+
+    // Gold sphere: conductor Fresnel from J&C 1972 IOR tables; warm reflections
+    // under the 6500 K BlackbodyLight reveal the spectral edge ≈ 480–520 nm.
+    list.add(Sphere::new(Point3::new(400.0, 80.0, 150.0), 80.0,
+        Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold, 0.0))));
 
     SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
@@ -281,7 +299,7 @@ pub fn build_nextweek_scene() -> SceneData {
     ));
     list.add(Sphere::new(
         Point3::new(0.0, 150.0, 145.0), 50.0,
-        Arc::new(Metal { albedo: Color::new(0.8, 0.8, 0.9), fuzz: 1.0 }),
+        Arc::new(PbrMaterial { albedo: Color::new(0.8, 0.8, 0.9), metallic: 1.0, roughness: 0.9, ..Default::default() }),
     ));
 
     let fog_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(

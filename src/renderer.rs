@@ -10,8 +10,13 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rayon::prelude::*;
 
+
 const MAX_DEPTH:     i32 = 50;
-const MAX_LUMINANCE: f32 = 10.0;
+/// Pre-clamp radiance to suppress fireflies while still letting the sun disc
+/// (~77 nits) through for ACES to compress.  ACES maps 100 → ~0.998 white.
+const MAX_LUMINANCE: f32 = 100.0;
+/// True solar angular radius ≈ 0.265° → cos(0.265° * π/180) ≈ 0.9999892.
+const COS_SUN_MAX:   f32 = 0.9999892;
 
 // ── Background ────────────────────────────────────────────────────────────────
 
@@ -82,8 +87,10 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
              - 0.2155*t + 2.4192).max(0.0);
 
     // Solar disc: rays within ~1.3° of sun and above horizon get a bright warm-white return
-    if cos_gamma > 0.9997 && sun.y > 0.0 && d.y > 0.0 {
-        let disc = yz * 80.0 * 0.05;
+    if cos_gamma > COS_SUN_MAX && sun.y > 0.0 && d.y > 0.0 {
+        // Brightness scaled proportionally to the smaller solid angle so total
+        // solar irradiance is preserved: old_Ω/new_Ω = 0.0003/0.0000108 ≈ 27.8.
+        let disc = yz * 111.0;
         return Color::new(disc, disc * 0.95, disc * 0.85);
     }
 
@@ -136,20 +143,59 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
     }
 }
 
+// ── Sun sampling helpers ──────────────────────────────────────────────────────
+
+/// Uniform solid-angle PDF for the solar disc cone; returns 0 outside the disc.
+/// The disc half-angle matches the `cos_gamma > 0.9997` threshold in preetham_sky.
+fn sun_pdf_value(dir: Vec3, background: Background) -> f32 {
+    use std::f32::consts::PI;
+    if let Background::Physical { sun_dir, .. } = background {
+        if sun_dir.y > 0.0 && dir.unit().dot(sun_dir.unit()) > COS_SUN_MAX {
+            return 1.0 / (2.0 * PI * (1.0 - COS_SUN_MAX));
+        }
+    }
+    0.0
+}
+
+/// Sample a direction uniformly within the solar disc cone around `axis` (unit).
+fn sample_sun_cone(axis: Vec3, cos_theta_max: f32, rng: &mut impl Rng) -> Vec3 {
+    use std::f32::consts::PI;
+    let r1: f32 = rng.gen();
+    let r2: f32 = rng.gen();
+    let cos_theta = 1.0 - r1 * (1.0 - cos_theta_max);
+    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+    let phi = 2.0 * PI * r2;
+    let up = if axis.x.abs() < 0.999 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+    let t  = axis.cross(up).unit();
+    let b  = axis.cross(t);
+    t * (sin_theta * phi.cos()) + b * (sin_theta * phi.sin()) + axis * cos_theta
+}
+
 // ── Path tracer ───────────────────────────────────────────────────────────────
 
 /// `bg_scale` is multiplied into the background sample only (not scene hits).
 pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: &HittableList, bg_scale: f32, photon_map: Option<&PhotonMap>, rng: &mut impl Rng) -> Color {
-    let mut throughput      = Color::new(1.0, 1.0, 1.0);
-    let mut color           = Color::default();
-    let mut ray             = *r;
-    let mut prev_specular   = true; // camera ray: always add full emission on first hit
-    let mut prev_mis_w_brdf = 1.0f32; // MIS weight for emission from the previous BRDF sample
+    let mut throughput           = Color::new(1.0, 1.0, 1.0);
+    let mut color                = Color::default();
+    let mut ray                  = *r;
+    let mut prev_specular        = true;  // camera ray: always add full emission on first hit
+    let mut prev_mis_w_brdf      = 1.0f32; // MIS weight for diffuse-bounce emission
+    let mut prev_spec_sun_weight = 1.0f32; // MIS weight for specular-bounce sun disc hit
 
     for depth in 0..MAX_DEPTH {
         match world.hit(&ray, 0.001, f32::INFINITY) {
             None => {
-                color += throughput * background.eval(ray.direction) * bg_scale;
+                // MIS weight for the background:
+                // - Not hitting sun disc (sun_pdf == 0): always full weight.
+                // - After a diffuse bounce (prev_specular = false): use prev_mis_w_brdf
+                //   (accounts for both area-light and sun NEE done on that bounce).
+                // - After a specular bounce (prev_specular = true): use prev_spec_sun_weight
+                //   (1.0 if no specular sun NEE was done, else p_vndf/(p_vndf+p_sun)).
+                let sun_pdf = sun_pdf_value(ray.direction, background);
+                let emit_w  = if sun_pdf == 0.0   { 1.0 }
+                              else if prev_specular { prev_spec_sun_weight }
+                              else                  { prev_mis_w_brdf };
+                color += throughput * background.eval(ray.direction) * bg_scale * emit_w;
                 break;
             }
             Some(rec) => {
@@ -164,11 +210,39 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                 //   1.0  — no area lights in the scene (no NEE at all).
                 let emit_w = if prev_specular || lights.objects.is_empty() { 1.0 }
                              else { prev_mis_w_brdf };
-                color += throughput * rec.mat.emitted(rec.u, rec.v, rec.p) * emit_w;
+                color += throughput * rec.mat.emitted_at(rec.u, rec.v, rec.p, ray.wavelength) * emit_w;
 
                 let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
 
                 if sr.skip_pdf {
+                    // ── Specular sun NEE ─────────────────────────────────────────
+                    // For smooth specular surfaces the BRDF-sampled ray almost never
+                    // hits the tiny solar disc.  We importance-sample the sun directly,
+                    // evaluate the specular BRDF in that direction, and MIS-weight both
+                    // the NEE contribution and the continuing BRDF-sample path.
+                    prev_spec_sun_weight = 1.0; // reset; updated below if NEE fires
+                    if let Background::Physical { sun_dir, .. } = background {
+                        if sun_dir.y > 0.0 {
+                            use std::f32::consts::PI;
+                            let p_sun      = 1.0 / (2.0 * PI * (1.0 - COS_SUN_MAX));
+                            let sun_u      = sun_dir.unit();
+                            let sun_sample = sample_sun_cone(sun_u, COS_SUN_MAX, rng);
+                            let sun_shadow = Ray::new_at_time(rec.p, sun_sample, ray.time);
+                            if !world.any_hit(&sun_shadow, 0.001, f32::INFINITY) {
+                                let brdf_cos = rec.mat.specular_brdf_cos(&ray, &rec, sun_sample);
+                                if brdf_cos.x > 0.0 || brdf_cos.y > 0.0 || brdf_cos.z > 0.0 {
+                                    let p_mat     = rec.mat.specular_sampling_pdf(&ray, &rec, sun_sample);
+                                    let sun_color = background.eval(sun_sample);
+                                    color += throughput * brdf_cos * sun_color / (p_sun + p_mat);
+                                }
+                            }
+                            // MIS weight for the BRDF-sampled ray that might hit the sun disc.
+                            let p_mat_brdf = rec.mat.specular_sampling_pdf(&ray, &rec, sr.ray.direction);
+                            if p_mat_brdf > 0.0 {
+                                prev_spec_sun_weight = p_mat_brdf / (p_mat_brdf + p_sun);
+                            }
+                        }
+                    }
                     throughput      *= sr.attenuation;
                     ray              = sr.ray;
                     prev_specular    = true;
@@ -178,7 +252,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     // surface. The photon map stores only caustic paths (at least one
                     // specular bounce), so there is no double-counting with NEE below.
                     if let Some(pm) = photon_map {
-                        let irr = pm.irradiance(rec.p);
+                        let irr = pm.irradiance(rec.p, rec.normal);
                         if irr.x > 0.0 || irr.y > 0.0 || irr.z > 0.0 {
                             let alb = rec.mat.albedo_hint(rec.u, rec.v, rec.p);
                             color += throughput * alb * irr;
@@ -198,8 +272,32 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                                 let brdf  = rec.mat.scattering_pdf(&ray, &rec, &shadow);
                                 let mis_d = l_pdf + brdf; // balance heuristic denominator
                                 if mis_d > 0.0 && brdf > 0.0 {
-                                    let nee_emit = lrec.mat.emitted(lrec.u, lrec.v, lrec.p);
+                                    let nee_emit = lrec.mat.emitted_at(lrec.u, lrec.v, lrec.p, ray.wavelength);
                                     color += throughput * sr.attenuation * brdf * nee_emit / mis_d;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Sun NEE: directly sample the solar disc ──────────────────
+                    // Independent of area lights — the sun is a directional source
+                    // at infinity, not part of `lights`.  Shadow test with t_max=∞
+                    // correctly occludes finite geometry between the surface and sky.
+                    if let Background::Physical { sun_dir, .. } = background {
+                        if sun_dir.y > 0.0 {
+                            use std::f32::consts::PI;
+                            let sun_u      = sun_dir.unit();
+                            let sun_sample = sample_sun_cone(sun_u, COS_SUN_MAX, rng);
+                            let sun_shadow = Ray::new_at_time(rec.p, sun_sample, ray.time);
+                            if !world.any_hit(&sun_shadow, 0.001, f32::INFINITY) {
+                                let brdf = rec.mat.scattering_pdf(&ray, &rec, &sun_shadow);
+                                if brdf > 0.0 {
+                                    let sun_pdf   = 1.0 / (2.0 * PI * (1.0 - COS_SUN_MAX));
+                                    let sun_color = background.eval(sun_sample);
+                                    let area_pdf  = if lights.objects.is_empty() { 0.0 }
+                                                    else { lights.pdf_value(rec.p, sun_sample, ray.time) };
+                                    let mis_d = sun_pdf + brdf + area_pdf;
+                                    color += throughput * sr.attenuation * brdf * sun_color / mis_d;
                                 }
                             }
                         }
@@ -216,8 +314,12 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: Background, lights: 
                     let scat_pdf  = rec.mat.scattering_pdf(&ray, &rec, &scattered);
                     if scat_pdf <= 0.0 { break; }
 
-                    let nee_pdf_for_ind = if lights.objects.is_empty() { 0.0 }
-                                         else { lights.pdf_value(rec.p, ind_dir, ray.time) };
+                    let nee_pdf_for_ind = {
+                        let area = if lights.objects.is_empty() { 0.0 }
+                                   else { lights.pdf_value(rec.p, ind_dir, ray.time) };
+                        let sun  = sun_pdf_value(ind_dir, background);
+                        area + sun
+                    };
                     prev_mis_w_brdf = pdf_val / (pdf_val + nee_pdf_for_ind).max(1e-8);
 
                     throughput    *= sr.attenuation * (scat_pdf / pdf_val);
@@ -304,9 +406,11 @@ pub fn render_aux_pass(
 
 /// Render one sample pass into `scratch` in parallel.
 /// `strata` = floor(sqrt(max_samples)); controls the stratified-sampling grid size.
+/// `converged`: optional per-pixel mask — `true` pixels are skipped (scratch written as black).
 #[allow(clippy::too_many_arguments)]
 pub fn render_tiles(
     scratch:     &mut [Color],
+    converged:   Option<&[bool]>,
     sample_idx:  u32,
     strata:      u32,
     width:       u32,
@@ -329,38 +433,66 @@ pub fn render_tiles(
         _                                => clear_pearl_sun_dir(),
     }
 
-    scratch.par_iter_mut().enumerate().for_each(|(i, out)| {
-        let row = i / w;
-        let col = i % w;
-            let mut rng = SmallRng::seed_from_u64(
-                (i as u64).wrapping_mul(6364136223846793005)
-                    ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
-            );
-            let ray_y = height - 1 - row as u32;
+    // Tile the image into 16×16 blocks so that rays within a tile share BVH
+    // cache lines.  Tiles are non-overlapping, so parallel writes are safe.
+    // The pointer is carried as usize (which is Send+Sync) to avoid the
+    // raw-pointer Sync restriction, then cast back inside each closure call.
+    const TILE: usize = 16;
+    let h = height as usize;
+    let tiles_x = w.div_ceil(TILE);
+    let tiles_y = h.div_ceil(TILE);
+    // SAFETY: tiles partition the image without overlap; each pixel is written
+    // by exactly one tile iteration.
+    let buf_ptr: usize = scratch.as_mut_ptr() as usize;
 
-            // Stratified pixel sampling: map sample_idx into a strata×strata grid.
-            // A per-pixel cyclic offset (Fibonacci hash) ensures neighboring pixels
-            // visit strata in different orders, avoiding spatial correlation.
-            let (u_jitter, v_jitter) = if strata2 > 0 && sample_idx < strata2 {
-                let offset = (i as u32).wrapping_mul(0x9E3779B9) % strata2;
-                let s  = (sample_idx + offset) % strata2;
-                let sx = s % strata;
-                let sy = s / strata;
-                (
-                    (sx as f32 + rng.gen::<f32>()) / strata_f,
-                    (sy as f32 + rng.gen::<f32>()) / strata_f,
-                )
-            } else {
-                (rng.gen::<f32>(), rng.gen::<f32>())
-            };
+    (0..tiles_x * tiles_y).into_par_iter().for_each(move |tile_idx| {
+        let base = buf_ptr as *mut Color;
+        let tile_r = tile_idx / tiles_x;
+        let tile_c = tile_idx % tiles_x;
+        let col0   = tile_c * TILE;
+        let row0   = tile_r * TILE;
+        let col1   = (col0 + TILE).min(w);
+        let row1   = (row0 + TILE).min(h);
 
-            let u = (col as f32 + u_jitter) / w_denom;
-            let v = (ray_y as f32 + v_jitter) / h_denom;
-        let mut cam_ray = camera.get_ray(u, v, &mut rng);
-        // Sample a hero wavelength uniformly over the visible spectrum.
-        // Spectral materials (dispersive glass, thin-film pearl) read this
-        // from the ray; non-spectral materials ignore it.
-        cam_ray.wavelength = rng.gen_range(380.0_f32..700.0);
-        *out = ray_color(&cam_ray, world, background, lights, bg_scale, photon_map, &mut rng);
+        for row in row0..row1 {
+            for col in col0..col1 {
+                let i = row * w + col;
+                if converged.is_some_and(|c| c[i]) {
+                    // SAFETY: same non-overlapping guarantee as active pixels.
+                    unsafe { *base.add(i) = Color::default(); }
+                    continue;
+                }
+                let mut rng = SmallRng::seed_from_u64(
+                    (i as u64).wrapping_mul(6364136223846793005)
+                        ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
+                );
+                let ray_y = height - 1 - row as u32;
+
+                // Stratified pixel sampling: map sample_idx into a strata×strata grid.
+                // A per-pixel cyclic offset (Fibonacci hash) ensures neighboring pixels
+                // visit strata in different orders, avoiding spatial correlation.
+                let (u_jitter, v_jitter) = if strata2 > 0 {
+                    let offset = (i as u32).wrapping_mul(0x9E3779B9) % strata2;
+                    let s  = (sample_idx + offset) % strata2;
+                    let sx = s % strata;
+                    let sy = s / strata;
+                    (
+                        (sx as f32 + rng.gen::<f32>()) / strata_f,
+                        (sy as f32 + rng.gen::<f32>()) / strata_f,
+                    )
+                } else {
+                    (rng.gen::<f32>(), rng.gen::<f32>())
+                };
+
+                let u = (col as f32 + u_jitter) / w_denom;
+                let v = (ray_y as f32 + v_jitter) / h_denom;
+                let mut cam_ray = camera.get_ray(u, v, &mut rng);
+                // Sample a hero wavelength uniformly over the visible spectrum.
+                cam_ray.wavelength = rng.gen_range(380.0_f32..700.0);
+                let color = ray_color(&cam_ray, world, background, lights, bg_scale, photon_map, &mut rng);
+                // SAFETY: each (row, col) maps to a unique index; tiles are non-overlapping.
+                unsafe { *base.add(i) = color; }
+            }
+        }
     });
 }

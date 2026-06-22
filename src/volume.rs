@@ -1,6 +1,8 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable, Material, ScatterRecord};
 use crate::perlin::Perlin;
@@ -89,7 +91,14 @@ impl Hittable for ConstantMedium {
         let ray_length  = r.direction.length();
         let dist_inside = (rec2.t - rec1.t) * ray_length;
 
-        let random   = rand::thread_rng().gen::<f32>().max(f32::EPSILON);
+        // Seed from ray state so each path sample gets a distinct sequence
+        // without requiring rng to be threaded through Hittable::hit().
+        let mut vol_rng = SmallRng::seed_from_u64(
+            (r.origin.x.to_bits() as u64).wrapping_mul(6364136223846793005)
+                ^ (r.origin.y.to_bits() as u64).wrapping_mul(0x9E3779B97F4A7C15)
+                ^ r.wavelength.to_bits() as u64,
+        );
+        let random   = vol_rng.gen::<f32>().max(f32::EPSILON);
         let hit_dist = self.neg_inv_density * random.ln();
         if hit_dist > dist_inside { return None; }
 
@@ -104,6 +113,8 @@ impl Hittable for ConstantMedium {
             front_face: true,
         })
     }
+
+    fn any_hit(&self, _r: &Ray, _t_min: f32, _t_max: f32) -> bool { false }
 
     fn bounding_box(&self) -> Option<Aabb> {
         self.boundary.bounding_box()
@@ -160,7 +171,11 @@ impl Hittable for NoiseMedium {
 
         let ray_length = r.direction.length();
         let inv_maj    = 1.0 / (self.density_scale * ray_length);
-        let mut rng    = rand::thread_rng();
+        let mut rng    = SmallRng::seed_from_u64(
+            (r.origin.x.to_bits() as u64).wrapping_mul(6364136223846793005)
+                ^ (r.origin.y.to_bits() as u64).wrapping_mul(0x9E3779B97F4A7C15)
+                ^ r.wavelength.to_bits() as u64,
+        );
         let mut t      = rec1.t;
 
         loop {
@@ -181,6 +196,8 @@ impl Hittable for NoiseMedium {
             }
         }
     }
+
+    fn any_hit(&self, _r: &Ray, _t_min: f32, _t_max: f32) -> bool { false }
 
     fn bounding_box(&self) -> Option<Aabb> {
         self.boundary.bounding_box()
