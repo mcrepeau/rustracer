@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target/
+
+# Render output (keep curated examples/)
+*.png
+*.exr
+!examples/*.png
+!examples/*.exr
+
+# macOS
+.DS_Store
+
+# Claude Code session data
+.claude/
+
+# Miscellaneous
+path/

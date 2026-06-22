@@ -451,7 +451,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         cam_init,
         max_samples:   file.max_samples,
         enable_caustics,
-        caustic_quad:          None,
+        caustic_quad:          file.lights.first().map(|lc| (p3(lc.corner), v3(lc.u), v3(lc.v), col(lc.color))),
         caustic_gather_radius,
         photon_map:    None,
     };

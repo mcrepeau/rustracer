@@ -219,11 +219,10 @@ pub fn build_cornell_box() -> SceneData {
     let short = Arc::new(Translate::new(short, Vec3::new(130.0, 0.0, 65.0))) as Arc<dyn Hittable>;
     list.objects.push(short);
 
-    // Dense flint glass (B=1.612, C=0.00950 μm²): IOR ranges 1.620–1.678
-    // across the visible spectrum — high dispersion like an optical prism,
-    // producing visible rainbow fringes in the caustic and refraction.
+    // Crown glass (B=1.507, C=0.00375 μm²): IOR ranges 1.510–1.525 across
+    // the visible spectrum — low dispersion, tight achromatic caustic.
     list.add(Sphere::new(Point3::new(190.0, 245.0, 190.0), 80.0,
-        Arc::new(SpectralDielectric { cauchy_b: 1.612, cauchy_c: 0.00950, ..Default::default() })));
+        Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375, ..Default::default() })));
 
     SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
@@ -243,7 +242,7 @@ pub fn build_cornell_box() -> SceneData {
             Vec3::new(0.0, 0.0, -105.0),
             Color::new(15.0, 15.0, 15.0),
         )),
-        caustic_gather_radius: 20.0,
+        caustic_gather_radius: 8.0,
         photon_map:            None,
     }
 }
@@ -469,24 +468,70 @@ pub fn build_benchmark_scene() -> SceneData {
     let mut list   = HittableList::new();
     let mut lights = HittableList::new();
 
-    // Ground: large checker sphere (stresses texture evaluation)
-    list.add(Sphere::new(
-        Point3::new(0.0, -1000.0, 0.0), 1000.0,
-        Arc::new(Lambertian { texture: Texture::Checker {
-            scale: 1.0,
-            even:  Color::new(0.15, 0.15, 0.15),
-            odd:   Color::new(0.85, 0.85, 0.85),
-        }}),
-    ));
+    // Room materials — saturated so they read clearly under warm dusk sky light
+    let floor_mat: Arc<dyn Material> = Arc::new(Lambertian { texture: Texture::Checker {
+        scale: 0.8,
+        even:  Color::new(0.12, 0.12, 0.12),
+        odd:   Color::new(0.88, 0.88, 0.88),
+    }});
+    let white: Arc<dyn Material>  = Arc::new(Lambertian { texture: Color::new(0.80, 0.80, 0.80).into() });
+    let wall_l: Arc<dyn Material> = Arc::new(Lambertian { texture: Color::new(0.65, 0.10, 0.05).into() });
+    let wall_r: Arc<dyn Material> = Arc::new(Lambertian { texture: Color::new(0.05, 0.15, 0.65).into() });
 
-    // Flint glass sphere — high dispersion (B=1.612, C=0.00950 µm²), caustic source
+    // Room bounds: x ∈ [−5, 5], y ∈ [0, 5], z ∈ [−2, 9]
+
+    // Floor
+    list.add(Quad::new(Point3::new(-5.0, 0.0, -2.0), Vec3::new(10.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 11.0), floor_mat));
+    // Left wall (warm red)
+    list.add(Quad::new(Point3::new(-5.0, 0.0, -2.0), Vec3::new(0.0, 0.0, 11.0), Vec3::new(0.0, 5.0, 0.0), wall_l));
+    // Right wall (cool blue)
+    list.add(Quad::new(Point3::new( 5.0, 0.0, -2.0), Vec3::new(0.0, 0.0, 11.0), Vec3::new(0.0, 5.0, 0.0), wall_r));
+
+    // Back wall: four panels around a window opening at x ∈ [−2, 2], y ∈ [1.2, 4.2].
+    // Dusk sun shines through this opening and hits the glass sphere head-on.
+    list.add(Quad::new(Point3::new(-5.0, 0.0,  9.0), Vec3::new(10.0, 0.0, 0.0), Vec3::new(0.0, 1.2, 0.0), Arc::clone(&white))); // sill
+    list.add(Quad::new(Point3::new(-5.0, 4.2,  9.0), Vec3::new(10.0, 0.0, 0.0), Vec3::new(0.0, 0.8, 0.0), Arc::clone(&white))); // lintel
+    list.add(Quad::new(Point3::new(-5.0, 1.2,  9.0), Vec3::new( 3.0, 0.0, 0.0), Vec3::new(0.0, 3.0, 0.0), Arc::clone(&white))); // left jamb
+    list.add(Quad::new(Point3::new( 2.0, 1.2,  9.0), Vec3::new( 3.0, 0.0, 0.0), Vec3::new(0.0, 3.0, 0.0), Arc::clone(&white))); // right jamb
+
+    // Ceiling: white panels surrounding the BlackbodyLight panel (x ∈ [−1.5, 1.5], z ∈ [−0.5, 2.5])
+    list.add(Quad::new(Point3::new(-5.0, 5.0, -2.0), Vec3::new(10.0, 0.0, 0.0), Vec3::new(0.0, 0.0,  1.5), Arc::clone(&white))); // front
+    list.add(Quad::new(Point3::new(-5.0, 5.0,  2.5), Vec3::new(10.0, 0.0, 0.0), Vec3::new(0.0, 0.0,  6.5), Arc::clone(&white))); // back
+    list.add(Quad::new(Point3::new(-5.0, 5.0, -0.5), Vec3::new( 3.5, 0.0, 0.0), Vec3::new(0.0, 0.0,  3.0), Arc::clone(&white))); // left
+    list.add(Quad::new(Point3::new( 1.5, 5.0, -0.5), Vec3::new( 3.5, 0.0, 0.0), Vec3::new(0.0, 0.0,  3.0), Arc::clone(&white))); // right
+
+    // BlackbodyLight ceiling panel — area NEE + spectral emission weighting
+    let (world_light, sampler_light) = emissive_quad_mat(
+        Point3::new(-1.5, 5.0, -0.5),
+        Vec3::new(3.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 3.0),
+        Arc::new(BlackbodyLight::new(6500.0, 8.0)),
+    );
+    lights.add(sampler_light);
+    list.add(world_light);
+
+    // Flint glass sphere — centered on the window axis so dusk photons travel through
+    // and hit it directly.  Bottom touches the floor; caustic falls toward the camera.
     list.add(Sphere::new(
-        Point3::new(-2.2, 1.5, 0.0), 1.5,
+        Point3::new(0.0, 1.5, 2.5), 1.5,
         Arc::new(SpectralDielectric { cauchy_b: 1.612, cauchy_c: 0.00950, ..Default::default() }),
     ));
 
-    // Brushed gold PBR sphere as a 128×128 UV triangle mesh (32 768 triangles)
-    // Stresses BVH traversal, tangent-space shading, and GGX microfacet evaluation
+    // White marble sphere — SSS with warm absorption tint, exercises volumetric scattering
+    // Symmetric to the gold sphere on the left side of the room.
+    // Density scaled to radius 1.2: density = 2 scatters/diameter / (2 × 1.2) ≈ 0.85.
+    list.add(Sphere::new(
+        Point3::new(-3.0, 1.2, 1.0), 1.2,
+        Arc::new(SSSMaterial {
+            albedo:  Color::new(0.90, 0.87, 0.82),
+            sigma_a: Color::new(0.10, 0.08, 0.05),
+            ior:     1.5,
+            density: 0.85,
+            g:       0.30,
+        }),
+    ));
+
+    // Brushed gold PBR sphere — 128×128 UV mesh (32 768 triangles), stresses BVH + GGX
     let gold: Arc<dyn Material> = Arc::new(PbrMaterial {
         albedo:    Color::new(1.0, 0.78, 0.34),
         roughness: 0.25,
@@ -494,31 +539,22 @@ pub fn build_benchmark_scene() -> SceneData {
         ..Default::default()
     });
     list.objects.push(make_uv_sphere_mesh(
-        Point3::new(2.6, 1.2, 0.0), 1.2, 128, 128, gold,
+        Point3::new(3.0, 1.2, 1.0), 1.2, 128, 128, gold,
     ));
-
-    // Overhead BlackbodyLight — exercises area NEE and spectral emission weighting
-    let (world_light, sampler_light) = emissive_quad_mat(
-        Point3::new(-2.0, 6.5, -1.5),
-        Vec3::new(4.0, 0.0, 0.0),
-        Vec3::new(0.0, 0.0, 3.0),
-        Arc::new(BlackbodyLight::new(6500.0, 10.0)),
-    );
-    lights.add(sampler_light);
-    list.add(world_light);
 
     SceneData {
         world:      Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
         lights,
-        // Physical sky with sun — exercises sun NEE and Preetham sky evaluation
+        // Dusk sun at ~10° elevation, directly behind the scene, shining through the window.
+        // High turbidity gives warm orange-red sky and soft shadows.
         background: Background::Physical {
-            sun_dir:   Vec3::new(-0.35, 0.80, 0.30).unit(),
-            turbidity: 2.0,
+            sun_dir:   Vec3::new(0.0, 0.18, 1.0).unit(),
+            turbidity: 4.5,
         },
         name:       "Benchmark",
         cam_init:   SceneCameraParams {
-            pos:             Point3::new(0.0, 2.8, -9.0),
-            lookat:          Point3::new(0.2, 1.5, 0.0),
+            pos:             Point3::new(0.0, 3.4, -9.0),
+            lookat:          Point3::new(0.0, 2.247, 1.1993),
             vfov:            36.0,
             aperture:        0.0,
             focus_dist:      10.0,

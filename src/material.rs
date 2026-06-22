@@ -244,18 +244,14 @@ impl Default for SpectralDielectric {
 impl Material for SpectralDielectric {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let ior = cauchy_ior(r_in.wavelength, self.cauchy_b, self.cauchy_c);
-        let (direction, reflected) = dielectric_boundary(ior, r_in, rec, rng);
+        let (direction, _reflected) = dielectric_boundary(ior, r_in, rec, rng);
 
-        // Apply the CMF weight exactly once per path: on the first refraction.
-        // Subsequent refractions use (1,1,1) so the weight doesn't compound.
-        // Reflections are always achromatic — Fresnel reflectance is nearly flat
-        // across the visible spectrum.
-        let weight_this_refraction = !reflected && !r_in.spectral_weighted;
-        let mut attenuation = if weight_this_refraction {
-            spectral_to_rgb(r_in.wavelength)
-        } else {
-            Color::new(1.0, 1.0, 1.0)
-        };
+        // Glass only affects direction (Cauchy dispersion), not amplitude.
+        // The CMF weight is NOT applied here — that keeps diffuse surfaces and
+        // photon-map caustics downstream of glass white instead of rainbow-tinted
+        // by the camera sample's random wavelength.  spectral_weighted stays as-is
+        // so SpectralMetal and BlackbodyLight on the same path are unaffected.
+        let mut attenuation = Color::new(1.0, 1.0, 1.0);
 
         // Beer-Lambert absorption: applied on every interior segment (exit or TIR).
         // rec.t is the chord length since the last boundary event, so absorption
@@ -267,8 +263,7 @@ impl Material for SpectralDielectric {
             attenuation.z *= (-self.absorption.z * d).exp();
         }
 
-        let mut scattered = Ray::scatter_from(rec.p, direction, r_in);
-        if weight_this_refraction { scattered.spectral_weighted = true; }
+        let scattered = Ray::scatter_from(rec.p, direction, r_in);
         Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
     }
 

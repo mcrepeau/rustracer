@@ -24,6 +24,11 @@ pub struct SceneData {
     pub photon_map:      Option<Arc<PhotonMap>>,
 }
 
+/// Number of photons traced when building the caustic photon map.
+/// Higher values produce smoother caustics at the cost of longer build time.
+/// 200_000 ≈ 1–2 s, 500_000 ≈ 3–5 s, 1_000_000 ≈ 8–10 s.
+const CAUSTIC_PHOTON_COUNT: u32 = 500_000;
+
 impl SceneData {
     /// Rebuild only the photon map, reusing the current world BVH.
     /// Call this after sun-direction changes.
@@ -41,11 +46,11 @@ impl SceneData {
             let power_dir = (sun_dir + perp * 0.04).unit();
             let sun_color = self.background.eval(power_dir) * std::f32::consts::PI;
             self.photon_map = Some(Arc::new(
-                PhotonMap::build(world.as_ref(), sun_dir, sun_color, 200_000, r)
+                PhotonMap::build(world.as_ref(), sun_dir, sun_color, CAUSTIC_PHOTON_COUNT, r)
             ));
         } else if let Some((origin, u, v, color)) = self.caustic_quad {
             self.photon_map = Some(Arc::new(
-                PhotonMap::build_from_quad(world.as_ref(), origin, u, v, color, 200_000, r)
+                PhotonMap::build_from_quad(world.as_ref(), origin, u, v, color, CAUSTIC_PHOTON_COUNT, r)
             ));
         }
     }

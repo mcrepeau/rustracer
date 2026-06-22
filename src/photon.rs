@@ -65,6 +65,7 @@ impl PhotonMap {
             })
             .collect();
 
+        photons.shrink_to_fit();
         kd_build(&mut photons);
         Self::from_nodes(photons, gather_radius)
     }
@@ -99,6 +100,7 @@ impl PhotonMap {
             })
             .collect();
 
+        photons.shrink_to_fit();
         kd_build(&mut photons);
         Self::from_nodes(photons, gather_radius)
     }

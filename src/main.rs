@@ -85,39 +85,26 @@ fn run_bench() {
     const SAMPLES: u32 = 128;
 
     let threads = rayon::current_num_threads();
-    println!("rustracer benchmark — {}×{}  {} threads  {} samples ({} warmup)\n",
-        WIDTH, HEIGHT, threads, SAMPLES, WARMUP);
-
-    let header = format!("{:<20}  {:>7}  {:>9}  {:>11}  {:>8}",
-        "Scene", "Samples", "Total", "ms/sample", "Mpx/s");
-    println!("{}", header);
-    println!("{}", "─".repeat(header.len()));
-
-    let builders: &[fn() -> SceneData] = &[
-        build_benchmark_scene,
-        build_random_scene,
-        build_cornell_box,
-        build_nextweek_scene,
-    ];
+    println!("rustracer benchmark — {}×{}  {} threads\n", WIDTH, HEIGHT, threads);
 
     let mut scratch: Vec<Color> = Vec::new();
-    for build in builders {
-        let mut scene = build();
-        scene.rebuild_caustics();
-        print!("  {:<18}  building…\r", scene.name);
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+    let mut scene = build_benchmark_scene();
 
-        bench_scene(&scene, &mut scratch, WARMUP);
+    print!("Building scene… "); let _ = std::io::Write::flush(&mut std::io::stdout());
+    scene.rebuild_caustics();
+    println!("done.");
 
-        let elapsed  = bench_scene(&scene, &mut scratch, SAMPLES);
-        let secs     = elapsed.as_secs_f64();
-        let ms_per_s = secs * 1000.0 / SAMPLES as f64;
-        let mpx_s    = (WIDTH as f64 * HEIGHT as f64 * SAMPLES as f64) / (secs * 1e6);
+    print!("Warming up…     "); let _ = std::io::Write::flush(&mut std::io::stdout());
+    bench_scene(&scene, &mut scratch, WARMUP);
+    println!("done.\n");
 
-        println!("  {:<18}  {:>7}  {:>7.3}s  {:>9.1} ms  {:>7.2}",
-            scene.name, SAMPLES, secs, ms_per_s, mpx_s);
-    }
-    println!("\nDone.");
+    let elapsed  = bench_scene(&scene, &mut scratch, SAMPLES);
+    let secs     = elapsed.as_secs_f64();
+    let ms_per_s = secs * 1000.0 / SAMPLES as f64;
+    let mpx_s    = (WIDTH as f64 * HEIGHT as f64 * SAMPLES as f64) / (secs * 1e6);
+
+    println!("Score: {:.2} Mpx/s  ({} samples, {:.1} ms/sample, {:.1}s total)",
+        mpx_s, SAMPLES, ms_per_s, secs);
 }
 
 // ── Headless render ───────────────────────────────────────────────────────────
@@ -130,7 +117,9 @@ struct RenderArgs {
     exposure:   f32,
     output:     Option<String>,
     tonemapper: ToneMapper,
-    adaptive:   bool,
+    adaptive:         bool,
+    convergence_pct:  f32,
+    no_photon_map:    bool,
     #[cfg(feature = "denoise")]
     denoise:    bool,
 }
@@ -138,14 +127,16 @@ struct RenderArgs {
 impl Default for RenderArgs {
     fn default() -> Self {
         Self {
-            scene:      "random".to_string(),
-            samples:    None,
-            width:      WIDTH,
-            height:     HEIGHT,
-            exposure:   1.0,
-            output:     None,
-            tonemapper: ToneMapper::AgX,
-            adaptive:   false,
+            scene:           "random".to_string(),
+            samples:         None,
+            width:           WIDTH,
+            height:          HEIGHT,
+            exposure:        1.0,
+            output:          None,
+            tonemapper:      ToneMapper::AgX,
+            adaptive:        false,
+            convergence_pct: 99.0,
+            no_photon_map:   false,
             #[cfg(feature = "denoise")]
             denoise:    false,
         }
@@ -188,13 +179,15 @@ fn print_help() {
     println!("RENDER OPTIONS:");
     println!("  --scene <name>       benchmark|0  random|1  cornell|2  nextweek|3  <path.toml>");
     println!("                       Default: random");
-    println!("  --samples <n>        Samples per pixel / adaptive max (default: scene maximum)");
+    println!("  --samples <n>        Samples per pixel (default: scene maximum; unused with --adaptive)");
     println!("  --width  <n>         Output width  in pixels (default: {WIDTH})");
     println!("  --height <n>         Output height in pixels (default: {HEIGHT})");
     println!("  --exposure <f>       Exposure multiplier     (default: 1.0)");
     println!("  --output <path>      Output PNG path (default: auto-generated)");
     println!("  --tonemapper <name>  agx or aces             (default: agx)");
-    println!("  --adaptive           Adaptive sampling: stop per-pixel when converged");
+    println!("  --adaptive           Adaptive sampling: run until convergence target is reached");
+    println!("  --convergence <pct>  Convergence target in %% (default: 99.0; requires --adaptive)");
+    println!("  --no-photon-map      Disable caustic photon map (faster, no caustics)");
     #[cfg(feature = "denoise")]
     println!("  --denoise            Run OIDN after render and save denoised PNG");
 }
@@ -218,7 +211,10 @@ fn parse_render_args() -> Result<RenderArgs, String> {
                 "aces" => ToneMapper::Aces,
                 s      => return Err(format!("Unknown tonemapper '{s}': use agx or aces")),
             },
-            "--adaptive"   => r.adaptive = true,
+            "--adaptive"      => r.adaptive      = true,
+            "--convergence"   => r.convergence_pct = val!().parse::<f32>()
+                .map_err(|e| format!("--convergence: {e}"))?.clamp(0.0, 100.0),
+            "--no-photon-map" => r.no_photon_map = true,
             "--denoise"    => {
                 #[cfg(feature = "denoise")]
                 { r.denoise = true; }
@@ -245,7 +241,7 @@ fn run_render(args: RenderArgs) {
             },
         }
     };
-    scene.rebuild_caustics();
+    if !args.no_photon_map { scene.rebuild_caustics(); }
 
     let samples_max = args.samples.unwrap_or(scene.max_samples);
     let strata      = compute_strata(samples_max);
@@ -262,96 +258,54 @@ fn run_render(args: RenderArgs) {
     println!("Scene:      {}", scene.name);
     println!("Resolution: {}×{}", args.width, args.height);
     if args.adaptive {
-        println!("Samples:    adaptive  (max {samples_max} spp)");
+        println!("Samples:    adaptive  (target: {:.1}% convergence)", args.convergence_pct);
     } else {
         println!("Samples:    {samples_max}  (strata {strata}×{strata})");
     }
     println!("Tonemapper: {tm_name}  exposure {:.2}", args.exposure);
+    if args.no_photon_map { println!("Photon map: off"); }
     #[cfg(feature = "denoise")]
     if args.denoise { println!("Denoiser:   OIDN"); }
     println!();
 
     let t0 = Instant::now();
 
-    let adaptive = args.adaptive;
+    let adaptive        = args.adaptive;
+    let convergence_pct = args.convergence_pct;
     let mut pixel_samples = if adaptive { vec![0u32;   n_px] } else { Vec::new() };
     let mut var_m2_lum    = if adaptive { vec![0.0f32; n_px] } else { Vec::new() };
     let mut adap_conv     = if adaptive { vec![false;  n_px] } else { Vec::new() };
     let mut n_converged   = 0usize;
-    let lum = |c: Color| c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
 
     let mut s = 0u32;
-    while s < samples_max {
+    loop {
+        if !adaptive && s >= samples_max { break; }
+
         render_tiles(&mut scratch,
                      if adaptive { Some(adap_conv.as_slice()) } else { None },
                      s, strata, args.width, args.height, &camera,
                      scene.world.as_ref(), &scene.background,
                      &scene.lights, 1.0, scene.photon_map.as_deref());
 
-        if adaptive {
-            accumulator.par_iter_mut()
-                .zip(scratch.par_iter())
-                .zip(var_m2_lum.par_iter_mut())
-                .zip(pixel_samples.par_iter_mut())
-                .zip(adap_conv.par_iter())
-                .for_each(|((((a, &sc), m2), n), &conv)| {
-                    if conv { return; }
-                    let old_n    = *n;
-                    let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
-                    let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
-                        let sc_lum = lum(sc);
-                        let ratio  = sc_lum / old_mean;
-                        if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
-                    } else { sc };
-                    *a  += sc;
-                    *n  += 1;
-                    let sc_lum   = lum(sc);
-                    let new_mean = lum(*a) / *n as f32;
-                    *m2 += (sc_lum - old_mean) * (sc_lum - new_mean);
-                });
-        } else {
-            // Non-adaptive: no per-pixel tracking needed; use global sample count for firefly clamp.
-            let cur = s;
-            accumulator.par_iter_mut()
-                .zip(scratch.par_iter())
-                .for_each(|(a, &sc)| {
-                    let old_mean = if cur > 0 { lum(*a) / cur as f32 } else { 0.0 };
-                    let sc = if cur >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
-                        let sc_lum = lum(sc);
-                        let ratio  = sc_lum / old_mean;
-                        if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
-                    } else { sc };
-                    *a += sc;
-                });
-        }
+        accumulate_sample(&mut accumulator, &scratch, s,
+                          &mut pixel_samples, &mut var_m2_lum, &adap_conv);
         s += 1;
 
         if adaptive && s >= MIN_ADAPTIVE_SAMPLES {
-            adap_conv.par_iter_mut()
-                .zip(pixel_samples.par_iter())
-                .zip(var_m2_lum.par_iter())
-                .zip(accumulator.par_iter())
-                .for_each(|(((conv, &n), &m2), &acc)| {
-                    if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
-                    let mean_lum = lum(acc) / n as f32;
-                    if mean_lum < 1e-4 { *conv = true; return; }
-                    let variance = m2 / (n - 1).max(1) as f32;
-                    let std_err  = (variance / n as f32).sqrt();
-                    if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
-                });
-            n_converged = adap_conv.iter().filter(|&&c| c).count();
+            n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2_lum, &accumulator);
         }
 
+        let target_reached = n_converged as f32 >= n_px as f32 * convergence_pct / 100.0;
         let print_now = if adaptive {
-            s.is_multiple_of(5) || s == samples_max || n_converged == n_px
+            s.is_multiple_of(5) || target_reached
         } else {
             s % 5 == 4 || s == samples_max - 1
         };
         if print_now {
             let elapsed = t0.elapsed().as_secs_f64();
             if adaptive {
-                let pct = n_converged * 100 / n_px.max(1);
-                print!("\r  {s:>5}/{samples_max} spp  {pct:>3}% converged  {elapsed:5.0}s  ");
+                let pct = n_converged as f32 * 100.0 / n_px.max(1) as f32;
+                print!("\r  {s:>5} spp  {pct:>5.1}% converged  {elapsed:5.0}s  ");
             } else {
                 let done   = s;
                 let eta    = if done < samples_max { elapsed / done as f64 * (samples_max - done) as f64 } else { 0.0 };
@@ -362,7 +316,7 @@ fn run_render(args: RenderArgs) {
             }
             let _ = std::io::Write::flush(&mut std::io::stdout());
         }
-        if adaptive && n_converged == n_px { break; }
+        if adaptive && target_reached { break; }
     }
     let actual_spp        = s;
     let pixel_samples_opt = if adaptive { Some(pixel_samples) } else { None };
@@ -384,7 +338,7 @@ fn run_render(args: RenderArgs) {
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let (alb, nrm) = render_aux_pass(args.width, args.height, &camera,
                                          scene.world.as_ref(), &scene.background);
-        let spp_label = pixel_samples_opt.as_ref().map(|_| samples_max).unwrap_or(actual_spp);
+        let spp_label = actual_spp;
         match denoise::denoise_rgb(args.width, args.height, color, alb, nrm) {
             Some(denoised) => {
                 let denoised_path = args.output.clone().unwrap_or_else(|| {
@@ -404,13 +358,82 @@ fn run_render(args: RenderArgs) {
 
     // ── Raw PNG save ──────────────────────────────────────────────────────────
     let ps    = pixel_samples_opt.as_deref();
-    let label = pixel_samples_opt.as_ref().map(|_| samples_max);
+    let label: Option<u32> = None;
     save_png(&accumulator, actual_spp, ps, scene.name,
              args.width, args.height, args.exposure, args.tonemapper,
              label, args.output.as_deref());
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
+
+fn luminance(c: Color) -> f32 { c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722 }
+
+/// Accumulates one rendered sample into the accumulator with firefly clamping.
+/// When `pixel_samples` is non-empty, per-pixel adaptive bookkeeping is updated;
+/// otherwise the global `cur_sample` count is used for the clamp threshold.
+fn accumulate_sample(
+    accumulator:   &mut [Color],
+    scratch:       &[Color],
+    cur_sample:    u32,
+    pixel_samples: &mut [u32],
+    var_m2_lum:    &mut [f32],
+    adap_conv:     &[bool],
+) {
+    if pixel_samples.is_empty() {
+        accumulator.par_iter_mut()
+            .zip(scratch.par_iter())
+            .for_each(|(a, &sc)| {
+                let old_mean = if cur_sample > 0 { luminance(*a) / cur_sample as f32 } else { 0.0 };
+                let sc = if cur_sample >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
+                    let ratio = luminance(sc) / old_mean;
+                    if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
+                } else { sc };
+                *a += sc;
+            });
+    } else {
+        accumulator.par_iter_mut()
+            .zip(scratch.par_iter())
+            .zip(var_m2_lum.par_iter_mut())
+            .zip(pixel_samples.par_iter_mut())
+            .zip(adap_conv.par_iter())
+            .for_each(|((((a, &sc), m2), n), &conv)| {
+                if conv { return; }
+                let old_n    = *n;
+                let old_mean = if old_n > 0 { luminance(*a) / old_n as f32 } else { 0.0 };
+                let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
+                    let ratio = luminance(sc) / old_mean;
+                    if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
+                } else { sc };
+                *a  += sc;
+                *n  += 1;
+                let sc_lum   = luminance(sc);
+                let new_mean = luminance(*a) / *n as f32;
+                *m2 += (sc_lum - old_mean) * (sc_lum - new_mean);
+            });
+    }
+}
+
+/// Updates per-pixel convergence flags and returns the count of converged pixels.
+fn mark_converged(
+    adap_conv:     &mut [bool],
+    pixel_samples: &[u32],
+    var_m2_lum:    &[f32],
+    accumulator:   &[Color],
+) -> usize {
+    adap_conv.par_iter_mut()
+        .zip(pixel_samples.par_iter())
+        .zip(var_m2_lum.par_iter())
+        .zip(accumulator.par_iter())
+        .for_each(|(((conv, &n), &m2), &acc)| {
+            if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
+            let mean_lum = luminance(acc) / n as f32;
+            if mean_lum < 1e-4 { *conv = true; return; }
+            let variance = m2 / (n - 1).max(1) as f32;
+            let std_err  = (variance / n as f32).sqrt();
+            if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
+        });
+    adap_conv.iter().filter(|&&c| c).count()
+}
 
 fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, exposure: f32, tm: ToneMapper) {
     buf.par_iter_mut()
@@ -479,6 +502,10 @@ fn spawn_denoiser(
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 fn main() {
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(2 * 1024 * 1024)
+        .build_global()
+        .unwrap();
     match std::env::args().nth(1).as_deref() {
         Some("--bench")  => { run_bench(); return; }
         Some("--help") | Some("-h") => { print_help(); return; }
@@ -493,14 +520,14 @@ fn main() {
     }
 
     println!("Building scenes…");
+    println!("Scene 0: Benchmark (32 768-triangle mesh + spectral glass + caustics)");
+    let s_bench = build_benchmark_scene();
     println!("Scene 1: Random Spheres");
     let s1 = build_random_scene();
     println!("Scene 2: Cornell Box");
     let s2 = build_cornell_box();
     println!("Scene 3: Next Week");
     let s3 = build_nextweek_scene();
-    println!("Scene 0: Benchmark (32 768-triangle mesh + spectral glass + caustics)");
-    let s_bench = build_benchmark_scene();
     let mut scenes: Vec<SceneData> = vec![s1, s2, s3];
 
     // Scene 4: hot-reloadable file scene
@@ -758,11 +785,18 @@ fn main() {
                                 #[cfg(feature = "denoise")]
                                 VirtualKeyCode::N => {
                                     oidn_on = !oidn_on;
-                                    if oidn_on && samples > 0 && !denoise_running.load(Ordering::Acquire) {
-                                        let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
-                                        spawn_denoiser(win_w, win_h, &accumulator, samples, ps,
-                                            &aux_albedo, &aux_normal,
-                                            &denoised, &denoise_running, &denoise_epoch);
+                                    if oidn_on {
+                                        if samples > 0 && !denoise_running.load(Ordering::Acquire) {
+                                            let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                                            spawn_denoiser(win_w, win_h, &accumulator, samples, ps,
+                                                &aux_albedo, &aux_normal,
+                                                &denoised, &denoise_running, &denoise_epoch);
+                                        }
+                                    } else {
+                                        // Free denoised output and aux buffers when OIDN is turned off.
+                                        *denoised.lock().unwrap() = Vec::new();
+                                        aux_albedo = Vec::new();
+                                        aux_normal = Vec::new();
                                     }
                                     window.request_redraw();
                                 }
@@ -915,65 +949,18 @@ fn main() {
                                  scene.world.as_ref(), &scene.background, &scene.lights, bg_scale,
                                  pm);
 
-                    let lum = |c: Color| c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
-                    if adaptive_on {
-                        accumulator.par_iter_mut()
-                            .zip(scratch.par_iter())
-                            .zip(var_m2_lum.par_iter_mut())
-                            .zip(pixel_samples.par_iter_mut())
-                            .zip(adap_conv.par_iter())
-                            .for_each(|((((a, &s), m2), n), &conv)| {
-                                if conv { return; }
-                                let old_n    = *n;
-                                let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
-                                let s = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
-                                    let s_lum = lum(s);
-                                    let ratio = s_lum / old_mean;
-                                    if ratio > FIREFLY_CLAMP { s * (FIREFLY_CLAMP / ratio) } else { s }
-                                } else { s };
-                                *a += s;
-                                *n += 1;
-                                let s_lum    = lum(s);
-                                let new_mean = lum(*a) / *n as f32;
-                                *m2 += (s_lum - old_mean) * (s_lum - new_mean);
-                            });
-                    } else {
-                        let cur = samples;
-                        accumulator.par_iter_mut()
-                            .zip(scratch.par_iter())
-                            .for_each(|(a, &s)| {
-                                let old_mean = if cur > 0 { lum(*a) / cur as f32 } else { 0.0 };
-                                let s = if cur >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
-                                    let s_lum = lum(s);
-                                    let ratio = s_lum / old_mean;
-                                    if ratio > FIREFLY_CLAMP { s * (FIREFLY_CLAMP / ratio) } else { s }
-                                } else { s };
-                                *a += s;
-                            });
-                    }
+                    accumulate_sample(&mut accumulator, &scratch, samples,
+                                      &mut pixel_samples, &mut var_m2_lum, &adap_conv);
                     samples += 1;
 
-                    // Mark pixels as converged when relative std error < threshold.
                     if adaptive_on && samples >= MIN_ADAPTIVE_SAMPLES {
-                        adap_conv.par_iter_mut()
-                            .zip(pixel_samples.par_iter())
-                            .zip(var_m2_lum.par_iter())
-                            .zip(accumulator.par_iter())
-                            .for_each(|(((conv, &n), &m2), &acc)| {
-                                if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
-                                let mean_lum = lum(acc) / n as f32;
-                                if mean_lum < 1e-4 { *conv = true; return; }
-                                let variance = m2 / (n - 1).max(1) as f32;
-                                let std_err  = (variance / n as f32).sqrt();
-                                if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
-                            });
-                        n_converged = adap_conv.iter().filter(|&&c| c).count();
+                        n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2_lum, &accumulator);
                     }
 
                     // Build the aux buffers once per render sequence (first sample),
                     // so they are ready before the first OIDN invocation at sample 32.
                     #[cfg(feature = "denoise")]
-                    if samples == 1 {
+                    if oidn_on && samples == 1 {
                         let (alb, nrm) = render_aux_pass(win_w, win_h, &camera,
                                                          scene.world.as_ref(), &scene.background);
                         aux_albedo = alb;

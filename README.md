@@ -24,13 +24,14 @@ cargo run --release -- --bench             # performance benchmark
 
 ```
 --scene <name>       random | cornell | nextweek | <path.toml>
---samples <n>        samples per pixel (default: scene maximum)
---width  <n>         output width  in pixels (default: 1280)
---height <n>         output height in pixels (default: 720)
+--samples <n>        samples per pixel (default: scene maximum; unused with --adaptive)
+--width  <n>         output width  in pixels (default: 1200)
+--height <n>         output height in pixels (default: 800)
 --exposure <f>       exposure multiplier (default: 1.0)
 --output <path>      output PNG path (default: auto-generated)
 --tonemapper <name>  agx or aces (default: agx)
---adaptive           stop per-pixel when converged
+--adaptive           adaptive sampling: run until the convergence target is reached
+--convergence <pct>  convergence target in % (default: 99.0; requires --adaptive)
 --denoise            run OIDN after render (requires denoise feature)
 ```
 
@@ -95,7 +96,7 @@ Path tracing is expensive — every pixel needs thousands of ray-scene intersect
 
 - **QBVH (8-wide Bounding Volume Hierarchy)** — the scene is wrapped in a tree of axis-aligned bounding boxes. Ray traversal tests 8 child nodes simultaneously using AVX2 SIMD instructions, with a 4-wide SSE2/NEON fallback on other hardware. Shadow rays use a faster `any_hit()` variant that exits at the first hit.
 - **Parallelised tile rendering** via Rayon — the image is divided into tiles, each rendered by a separate CPU thread simultaneously
-- **Adaptive sampling** — tiles that have already converged (low luminance variance) are skipped in subsequent passes, concentrating samples where they're still needed
+- **Adaptive sampling** — pixels that have already converged (low luminance variance) are skipped in subsequent passes, concentrating samples where they're still needed. In headless mode, rendering stops once a configurable percentage of pixels have converged (default 99%), rather than at a fixed SPP count.
 
 ### Caustics (Photon Mapping)
 
@@ -244,7 +245,7 @@ material.metallic      = 0.0    # fallback if no metallic map
 - Environment map importance sampling uses a 2D CDF (row marginal × per-row conditional) built from luminance × sin θ. Sampling is a two-level binary search (`partition_point`) with sub-pixel jitter; the solid-angle PDF `p_ω = L·W·H·inv_total / (2π²)` is used for MIS weighting against the BRDF PDF.
 - Shading normals from normal maps feed all PDF and BRDF evaluation paths (`scattering_pdf`, `specular_brdf_cos`, `specular_sampling_pdf`, `CosinePdf`), not just scatter direction — keeping MIS weights consistent with the actual scattering geometry.
 - Photon kd-tree is built with `select_nth_unstable_by` (in-place median partition, O(N log N)); queries recurse with split-plane pruning (O(√N) average for range queries)
-- Adaptive sampling tracks per-pixel luminance variance (Welford online algorithm); pixels below the relative convergence threshold are skipped in subsequent passes
+- Adaptive sampling tracks per-pixel luminance variance (Welford online algorithm); pixels below the relative convergence threshold (`ADAPTIVE_THRESHOLD`) are skipped in subsequent passes. In headless mode the render exits once the `--convergence` percentage of pixels have converged (default 99%), rather than at a fixed SPP ceiling — 100% is intentionally avoided since a small number of high-variance pixels (near caustics, light edges) converge orders of magnitude slower than the rest.
 - OIDN runs on a background thread; its result is blended into the display buffer without blocking the render loop
 - Environment maps are loaded with no memory cap — files of any size are supported
 - Normal map tangents are computed in a two-pass algorithm: first accumulate per-face tangents into per-vertex accumulators, then normalise and Gram-Schmidt orthogonalise at shade time
