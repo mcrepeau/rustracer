@@ -91,6 +91,92 @@ impl Hittable for Quad {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hittable::ScatterRecord;
+
+    struct DummyMat;
+    impl Material for DummyMat {
+        fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+    }
+
+    // Unit quad in the XY plane: q=(0,0,0), u=(1,0,0), v=(0,1,0).
+    // Normal = u×v = (0,0,1). Occupies [0,1]×[0,1] at z=0.
+    fn unit_quad() -> Quad {
+        Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Arc::new(DummyMat),
+        )
+    }
+
+    fn shoot(q: &Quad, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32) -> Option<HitRecord<'_>> {
+        let r = Ray::new(Point3::new(ox, oy, oz), Vec3::new(dx, dy, dz));
+        q.hit(&r, 0.001, f32::INFINITY)
+    }
+
+    #[test]
+    fn quad_hit_returns_correct_t() {
+        // Ray from z=3 aimed at quad center — should hit at exactly t=3.
+        let q = unit_quad();
+        let rec = shoot(&q, 0.5, 0.5, 3.0, 0.0, 0.0, -1.0).expect("should hit");
+        assert!((rec.t - 3.0).abs() < 1e-5, "t = {}", rec.t);
+    }
+
+    #[test]
+    fn quad_hit_returns_correct_uv() {
+        let q = unit_quad();
+        let rec = shoot(&q, 0.25, 0.75, 1.0, 0.0, 0.0, -1.0).expect("should hit");
+        assert!((rec.u - 0.25).abs() < 1e-5, "u = {}", rec.u);
+        assert!((rec.v - 0.75).abs() < 1e-5, "v = {}", rec.v);
+    }
+
+    #[test]
+    fn quad_hit_corners() {
+        let q = unit_quad();
+        // All four corners should hit (UV coordinates exactly on boundary).
+        for (ox, oy) in [(0.0f32, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+            assert!(shoot(&q, ox, oy, 1.0, 0.0, 0.0, -1.0).is_some(),
+                "corner ({ox}, {oy}) should hit");
+        }
+    }
+
+    #[test]
+    fn quad_miss_outside_u() {
+        let q = unit_quad();
+        assert!(shoot(&q, 1.01, 0.5, 1.0, 0.0, 0.0, -1.0).is_none());
+    }
+
+    #[test]
+    fn quad_miss_outside_v() {
+        let q = unit_quad();
+        assert!(shoot(&q, 0.5, -0.01, 1.0, 0.0, 0.0, -1.0).is_none());
+    }
+
+    #[test]
+    fn quad_miss_parallel_ray() {
+        let q = unit_quad();
+        // Ray in the XY plane — parallel to the quad, denom ≈ 0.
+        assert!(shoot(&q, 0.5, 0.5, 0.0, 1.0, 0.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn quad_front_face_orientation() {
+        // Ray from +z (normal side) → front_face=true, normal points toward ray origin.
+        let q = unit_quad();
+        let rec = shoot(&q, 0.5, 0.5, 1.0, 0.0, 0.0, -1.0).expect("should hit");
+        assert!(rec.front_face, "ray from normal side should be front face");
+        assert!(rec.normal.dot(Vec3::new(0.0, 0.0, 1.0)) > 0.0, "normal should face +z");
+
+        // Ray from −z (back side) → front_face=false.
+        let q2 = unit_quad();
+        let rec2 = shoot(&q2, 0.5, 0.5, -1.0, 0.0, 0.0, 1.0).expect("should hit");
+        assert!(!rec2.front_face, "ray from back side should not be front face");
+    }
+}
+
 pub fn make_box(p0: Point3, p1: Point3, mat: Arc<dyn Material>) -> HittableList {
     let mut sides = HittableList::new();
     let min = Point3::new(p0.x.min(p1.x), p0.y.min(p1.y), p0.z.min(p1.z));

@@ -482,6 +482,10 @@ impl Material for SSSMaterial {
 /// - `clearcoat_roughness`: roughness of the coat surface (default ~0.03).
 /// - `film_thickness`: thin-film thickness in nm (0 = achromatic; 400–800 for vivid colours).
 /// - `film_ior`: IOR of the thin film (default 1.5 for common dielectric coats).
+/// - `sheen`: weight of the grazing-angle retroreflective lobe [0–1], for cloth and velvet.
+/// - `sheen_tint`: 0 = white sheen, 1 = sheen tinted toward the base albedo (default 0.5).
+/// - `emission`: RGB emission colour (linear); multiplied by `emission_strength`.
+/// - `emission_strength`: scale factor for the emission (0 = dark, default).
 pub struct PbrMaterial {
     pub albedo:              Color,
     pub roughness:           f32,
@@ -492,6 +496,10 @@ pub struct PbrMaterial {
     pub clearcoat_roughness: f32,
     pub film_thickness:      f32,
     pub film_ior:            f32,
+    pub sheen:               f32,
+    pub sheen_tint:          f32,
+    pub emission:            Color,
+    pub emission_strength:   f32,
 }
 
 impl Default for PbrMaterial {
@@ -506,6 +514,10 @@ impl Default for PbrMaterial {
             clearcoat_roughness: 0.03,
             film_thickness:      0.0,
             film_ior:            1.5,
+            sheen:               0.0,
+            sheen_tint:          0.5,
+            emission:            Color::default(),
+            emission_strength:   0.0,
         }
     }
 }
@@ -609,16 +621,35 @@ impl Material for PbrMaterial {
                     skip_pdf:    true,
                 })
             } else {
-                // ── Diffuse Lambertian (dielectrics only) ─────────────────────
+                // ── Diffuse Lambertian + Sheen ────────────────────────────────
                 // skip_pdf: false — the integrator samples a cosine-weighted direction
                 // and calls scattering_pdf(); rec.normal here is a throwaway placeholder.
+                //
+                // Sheen is a retroreflective grazing lobe for cloth/velvet (Disney 2012).
+                // scattering_pdf() returns cos_i/π so attenuation must equal π × f_total:
+                //   attenuation = albedo*(1−m) + π·sheen·C_sheen·F_H
+                // where F_H = (1−cos_o)^5 uses the view angle as proxy for the half-angle,
+                // correctly peaking at grazing incidence without requiring wi at scatter time.
+                let sheen_attn = if self.sheen > 0.0 && self.metallic < 0.999 {
+                    let luma = 0.2126 * self.albedo.x + 0.7152 * self.albedo.y + 0.0722 * self.albedo.z;
+                    let c_tint = if luma > 1e-6 { self.albedo / luma } else { Color::new(1.0, 1.0, 1.0) };
+                    let sheen_color = Color::new(1.0, 1.0, 1.0) * (1.0 - self.sheen_tint) + c_tint * self.sheen_tint;
+                    let f_h = (1.0 - cos_o).powi(5);
+                    sheen_color * (self.sheen * (1.0 - self.metallic) * f_h * PI)
+                } else {
+                    Color::default()
+                };
                 Some(ScatterRecord {
-                    attenuation: self.albedo * ((1.0 - self.metallic) / ((1.0 - p_spec) * (1.0 - p_coat))),
+                    attenuation: (self.albedo * (1.0 - self.metallic) + sheen_attn) / ((1.0 - p_spec) * (1.0 - p_coat)),
                     ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
                     skip_pdf:    false,
                 })
             }
         }
+    }
+
+    fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color {
+        self.emission * self.emission_strength
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
@@ -969,4 +1000,129 @@ impl Material for PearlMaterial {
 
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.base_color }
     fn can_receive_caustics(&self) -> bool { true }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    fn luma(c: Color) -> f32 {
+        0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z
+    }
+
+    // ── GGX NDF ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ggx_ndf_integrates_to_one() {
+        // ∫_hemisphere D(cos_h, α) · cos_h · dω = 1  for any α > 0.
+        // Integrate analytically over φ (gives 2π) and numerically over θ ∈ [0, π/2].
+        for &alpha in &[0.1f32, 0.3, 0.7, 1.0] {
+            let n       = 1000usize;
+            let d_theta = std::f32::consts::FRAC_PI_2 / n as f32;
+            let mut sum = 0.0f64;
+            for i in 0..n {
+                let theta = (i as f32 + 0.5) * d_theta;
+                let cos_h = theta.cos();
+                let sin_h = theta.sin();
+                sum += ggx_ndf(cos_h, alpha) as f64
+                    * cos_h as f64
+                    * sin_h as f64
+                    * d_theta as f64
+                    * 2.0 * std::f64::consts::PI;
+            }
+            assert!((sum - 1.0).abs() < 0.01,
+                "GGX NDF integral at α={alpha} = {sum:.4} (expected 1.0)");
+        }
+    }
+
+    // ── Smith G1 ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn smith_g1_is_in_unit_range() {
+        for &alpha in &[0.01f32, 0.1, 0.3, 0.5, 0.8, 1.0] {
+            for &cos_theta in &[0.01f32, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {
+                let g = smith_g1(cos_theta, alpha);
+                assert!(g >= 0.0 && g <= 1.0,
+                    "smith_g1({cos_theta}, {alpha}) = {g:.4} is outside [0, 1]");
+            }
+        }
+    }
+
+    #[test]
+    fn smith_g1_smooth_limit_is_one() {
+        // At α→0 (perfectly smooth surface): G1 = 2cos / (cos + sqrt(α²+(1−α²)cos²)) → 1.
+        for &cos_theta in &[0.1f32, 0.5, 0.9, 1.0] {
+            let g = smith_g1(cos_theta, 1e-6);
+            assert!((g - 1.0).abs() < 1e-4,
+                "smooth G1(cos={cos_theta}, α≈0) = {g:.5} (expected 1.0)");
+        }
+    }
+
+    // ── White furnace (PbrMaterial) ───────────────────────────────────────────
+
+    // Calls scatter() n times at normal incidence and returns the mean attenuation luminance.
+    // For metallic paths (skip_pdf=true), attenuation is already the full Monte Carlo weight.
+    fn white_furnace_mean(mat: &PbrMaterial, n: usize, rng: &mut SmallRng) -> f64 {
+        let ray = Ray::new(
+            Point3::new(0.0, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        let rec = HitRecord {
+            p:          Point3::new(0.0, 0.0, 0.0),
+            normal:     Vec3::new(0.0, 0.0, -1.0), // outward normal faces toward ray origin
+            mat,
+            t: 1.0, u: 0.0, v: 0.0,
+            front_face: true,
+        };
+        let mut sum   = 0.0f64;
+        let mut count = 0usize;
+        for _ in 0..n {
+            if let Some(sr) = mat.scatter(&ray, &rec, rng) {
+                sum   += luma(sr.attenuation) as f64;
+                count += 1;
+            }
+        }
+        if count == 0 { return 0.0; }
+        sum / count as f64
+    }
+
+    #[test]
+    fn white_furnace_metallic_no_energy_gain() {
+        // F·G1(wi) ≤ 1 must hold at every roughness — single-scattering GGX
+        // loses energy at high roughness (expected) but must never gain it.
+        for &roughness in &[0.1f32, 0.5, 0.9] {
+            let mat = PbrMaterial {
+                albedo:    Color::new(1.0, 1.0, 1.0),
+                metallic:  1.0,
+                roughness,
+                clearcoat: 0.0,
+                sheen:     0.0,
+                ..PbrMaterial::default()
+            };
+            let mut rng  = SmallRng::seed_from_u64(42);
+            let mean = white_furnace_mean(&mat, 8000, &mut rng);
+            assert!(mean <= 1.0 + 1e-6,
+                "white metallic furnace (roughness={roughness}) mean={mean:.4} — energy gain");
+        }
+    }
+
+    #[test]
+    fn white_furnace_smooth_metallic_is_nearly_lossless() {
+        // At low roughness and normal incidence, G1(wi)≈1, so E[F·G1]≈1.
+        // A mirror-like white metal should return almost all incident energy.
+        let mat = PbrMaterial {
+            albedo:    Color::new(1.0, 1.0, 1.0),
+            metallic:  1.0,
+            roughness: 0.05,
+            clearcoat: 0.0,
+            sheen:     0.0,
+            ..PbrMaterial::default()
+        };
+        let mut rng  = SmallRng::seed_from_u64(123);
+        let mean = white_furnace_mean(&mat, 8000, &mut rng);
+        assert!(mean > 0.95, "smooth white metallic furnace mean={mean:.4} — too lossy");
+        assert!(mean <= 1.0 + 1e-6, "smooth white metallic furnace mean={mean:.4} — energy gain");
+    }
 }

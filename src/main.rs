@@ -12,6 +12,8 @@ mod onb;
 mod pdf;
 mod sphere;
 mod quad;
+mod triangle;
+mod mesh;
 mod cylinder;
 mod cone;
 mod disk;

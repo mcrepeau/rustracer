@@ -2,8 +2,7 @@
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
-use crate::material::{BlackbodyLight, Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SpectralMetal, SpectralMetalVariant, SSSMaterial};
-use crate::perlin::Perlin;
+use crate::material::{BlackbodyLight, Dielectric, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric, SpectralMetal, SpectralMetalVariant, SSSMaterial};
 use crate::quad::{Quad, make_box};
 use crate::renderer::Background;
 use crate::scene::SceneData;
@@ -17,11 +16,6 @@ use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-/// Creates a matched (world quad, light-sampler quad) pair with a DiffuseLight.
-fn emissive_quad(q: Point3, u: Vec3, v: Vec3, emit: Color) -> (Quad, Quad) {
-    emissive_quad_mat(q, u, v, Arc::new(DiffuseLight { emit: emit.into() }))
-}
-
 /// Creates a matched (world quad, light-sampler quad) pair with an arbitrary material.
 fn emissive_quad_mat(q: Point3, u: Vec3, v: Vec3, mat: Arc<dyn Material>) -> (Quad, Quad) {
     let world   = Quad::new(q, u, v, Arc::clone(&mat));
@@ -30,6 +24,7 @@ fn emissive_quad_mat(q: Point3, u: Vec3, v: Vec3, mat: Arc<dyn Material>) -> (Qu
 }
 
 pub fn build_random_scene() -> SceneData {
+    use std::f32::consts::PI;
     let mut rng = rand::thread_rng();
 
     let ground: Arc<dyn Hittable> = Arc::new(Sphere::new(
@@ -40,54 +35,53 @@ pub fn build_random_scene() -> SceneData {
             odd:   Color::new(0.9, 0.9, 0.9),
         }}),
     ));
+
+    // Diamond at the centre of the scene.
     let diamond_r   = 0.7_f32;
     let diamond_pav = diamond_r * 40.75_f32.to_radians().tan();
-    let diamond_obj = Diamond::new(
-        Point3::new(2.0, diamond_pav, -1.5),
+    let diamond: Arc<dyn Hittable> = Arc::new(Diamond::new(
+        Point3::new(0.0, diamond_pav, 0.0),
         diamond_r,
         Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
-    );
-    let diamond: Arc<dyn Hittable> = Arc::new(diamond_obj);
+    ));
 
     let mut list = HittableList::new();
     list.objects.push(ground);
     list.objects.push(diamond);
 
-    // Hero spheres
-    // Crown glass — dispersive under the physical sky; shows subtle spectral fringes.
-    list.add(Sphere::new(Point3::new( 0.0, 1.0,  0.0), 1.0, Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375 })));
-    list.add(Sphere::new(Point3::new(-4.0, 1.0,  0.0), 1.0,
-        Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() })));
-    // Spectral metals: physically accurate Fresnel from J&C 1972 IOR tables.
-    list.add(Sphere::new(Point3::new( 4.0, 1.0,  0.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold,   0.04))));
-    list.add(Sphere::new(Point3::new( 4.0, 1.0, -3.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Copper, 0.08))));
-    list.add(Sphere::new(Point3::new( 4.0, 1.0,  3.0), 1.0, Arc::new(SpectralMetal::new(SpectralMetalVariant::Silver, 0.02))));
-    list.add(Sphere::new(Point3::new(-2.0, 1.0, -2.0), 1.0,
+    // ── Hero spheres in a circle around the diamond ───────────────────────────────
+    // Seven materials evenly distributed at radius HERO_R, one per 2π/7 radians.
+    const HERO_R: f32 = 4.0;
+    let hero_mats: Vec<Arc<dyn Material>> = vec![
+        Arc::new(SpectralDielectric { cauchy_b: 1.507, cauchy_c: 0.00375 }),       // crown glass
+        Arc::new(PbrMaterial { albedo: Color::new(0.4, 0.2, 0.1), roughness: 0.85, ..Default::default() }), // rough terracotta
+        Arc::new(SpectralMetal::new(SpectralMetalVariant::Gold,   0.04)),
+        Arc::new(SpectralMetal::new(SpectralMetalVariant::Copper, 0.08)),
+        Arc::new(SpectralMetal::new(SpectralMetalVariant::Silver, 0.02)),
         Arc::new(PearlMaterial {
-            base_color:       Color::new(0.98, 0.93, 0.88),
-            ior:              1.56,
-            film_thickness:   450.0,
-            orient_strength:  0.30,
-            film_scale:       5.0,
-            luster_roughness: 0.05,
-        })));
-    // Iridescent clearcoat: near-black base under a thin-film dielectric coat.
-    // Orbit the camera to watch the rainbow cycle across the surface.
-    list.add(Sphere::new(Point3::new(2.0, 1.0, 2.0), 1.0,
-        Arc::new(PbrMaterial {
-            albedo: Color::new(0.02, 0.01, 0.03),
-            roughness: 0.6,
-            clearcoat: 0.9,
-            film_thickness: 480.0,
-            film_ior: 1.45,
+            base_color: Color::new(0.98, 0.93, 0.88), ior: 1.56,
+            film_thickness: 450.0, orient_strength: 0.30,
+            film_scale: 5.0, luster_roughness: 0.05,
+        }),
+        Arc::new(PbrMaterial {                                                       // iridescent clearcoat
+            albedo: Color::new(0.02, 0.01, 0.03), roughness: 0.6,
+            clearcoat: 0.9, clearcoat_roughness: 0.03,
+            film_thickness: 480.0, film_ior: 1.45,
             ..Default::default()
-        })));
+        }),
+    ];
+    let n = hero_mats.len();
+    for (k, mat) in hero_mats.into_iter().enumerate() {
+        let angle = k as f32 * 2.0 * PI / n as f32;
+        list.add(Sphere::new(
+            Point3::new(HERO_R * angle.cos(), 1.0, HERO_R * angle.sin()),
+            1.0, mat,
+        ));
+    }
 
-    // SSS marbles near the diamond — volumetric multiple scattering, soft coloured glow.
-    // Per-scatter albedos: bright channel ≈ 1, others < 1 so absorption builds
-    // colour over ~2 scatters per diameter traversal.
-    // Max channel capped at 0.97 so Russian roulette can terminate scatter paths.
-    // A channel of 1.0 gives survive probability = 1.0 forever → unbounded depth.
+    // ── Random small spheres outside the hero circle ──────────────────────────────
+    // Exclusion radius: HERO_R + hero sphere radius (1) + random sphere radius (0.2) + clearance.
+    const EXCL_R: f32 = HERO_R + 1.5;
     let sss_colors: &[Color] = &[
         Color::new(0.55, 0.97, 0.55),  // jade green
         Color::new(0.38, 0.52, 0.97),  // cobalt blue
@@ -98,9 +92,6 @@ pub fn build_random_scene() -> SceneData {
         Color::new(0.18, 0.97, 0.82),  // teal
         Color::new(0.97, 0.33, 0.68),  // rose
     ];
-    // Beer-Lambert absorption per channel (per unit length).  Tuned for r=0.15 marbles
-    // (max path ≈ 0.30): sigma_a ≈ 3 → T ≈ 0.41, sigma_a ≈ 0.2 → T ≈ 0.94.
-    // High absorption in the complementary channels deepens the marble's colour.
     let sss_sigma_a: &[Color] = &[
         Color::new(3.0, 0.2, 3.0),  // jade:   absorb R+B, pass G
         Color::new(3.0, 1.5, 0.2),  // cobalt: absorb R, moderate G, pass B
@@ -111,80 +102,46 @@ pub fn build_random_scene() -> SceneData {
         Color::new(4.0, 0.2, 0.2),  // teal:   absorb R, pass G+B
         Color::new(0.2, 3.5, 1.5),  // rose:   absorb G, moderate B, pass R
     ];
-    // Dedicated SSS marbles clustered around the diamond on the ground.
-    let dedicated_marbles: &[(usize, Point3)] = &[
-        (0, Point3::new(1.5,  0.15, -1.0)),
-        (1, Point3::new(2.5,  0.15, -2.0)),
-        (2, Point3::new(1.0,  0.15, -2.5)),
-        (3, Point3::new(3.0,  0.15, -1.5)),
-        (4, Point3::new(2.0,  0.15, -0.8)),
-    ];
-    for &(idx, center) in dedicated_marbles {
-        list.add(Sphere::new(center, 0.15, Arc::new(SSSMaterial {
-            albedo:  sss_colors[idx],
-            sigma_a: sss_sigma_a[idx],
-            ior:     1.5,
-            density: 7.0,
-            g:       0.30,
-        })));
-    }
-
     for a in -15i32..15 {
         for b in -15i32..15 {
             let cx = a as f32 + 0.9 * rng.gen::<f32>();
             let cz = b as f32 + 0.9 * rng.gen::<f32>();
-            let ground_pos = Point3::new(cx, 0.2, cz);
-            // Keep small balls from spawning inside any hero object.
-            if (ground_pos - Point3::new( 4.0, 0.2,  0.0)).length() < 1.2 { continue; } // gold
-            if (ground_pos - Point3::new( 4.0, 0.2, -3.0)).length() < 1.2 { continue; } // copper
-            if (ground_pos - Point3::new( 4.0, 0.2,  3.0)).length() < 1.2 { continue; } // silver
-            if (ground_pos - Point3::new( 0.0, 0.2,  0.0)).length() < 1.2 { continue; } // glass
-            if (ground_pos - Point3::new(-4.0, 0.2,  0.0)).length() < 1.2 { continue; } // PBR
-            if (ground_pos - Point3::new(-2.0, 0.2, -2.0)).length() < 1.2 { continue; } // pearl
-            if (ground_pos - Point3::new( 2.0, 0.2,  2.0)).length() < 1.2 { continue; } // iridescent
-            if (ground_pos - Point3::new( 2.0, 0.2, -1.5)).length() < 1.2 { continue; } // diamond
+            if (cx * cx + cz * cz).sqrt() < EXCL_R { continue; }
             let choose: f32 = rng.gen();
             let mat: Arc<dyn Material> = if choose < 0.60 {
                 let idx     = rng.gen_range(0..sss_colors.len());
                 let density = rng.gen_range(3.0_f32..9.0);
-                Arc::new(SSSMaterial {
-                    albedo:  sss_colors[idx],
-                    sigma_a: sss_sigma_a[idx],
-                    ior:     1.5,
-                    density,
-                    g:       0.30,
-                })
+                Arc::new(SSSMaterial { albedo: sss_colors[idx], sigma_a: sss_sigma_a[idx], ior: 1.5, density, g: 0.30 })
             } else if choose < 0.75 {
-                let albedo = Color::random(&mut rng) * Color::random(&mut rng);
-                let roughness: f32 = rng.gen_range(0.5..1.0);
+                let albedo    = Color::random(&mut rng) * Color::random(&mut rng);
+                let roughness = rng.gen_range(0.5_f32..1.0);
                 Arc::new(PbrMaterial { albedo, roughness, ..Default::default() })
             } else if choose < 0.92 {
                 let albedo    = Color::random_range(0.5, 1.0, &mut rng);
-                let roughness: f32 = rng.gen_range(0.0..0.5);
+                let roughness = rng.gen_range(0.0_f32..0.5);
                 Arc::new(PbrMaterial { albedo, roughness, metallic: 1.0, ..Default::default() })
             } else {
                 Arc::new(Dielectric { ir: 1.5 })
             };
-            let center = Point3::new(cx, 0.2, cz);
-            list.add(Sphere::new(center, 0.2, mat));
+            list.add(Sphere::new(Point3::new(cx, 0.2, cz), 0.2, mat));
         }
     }
 
     let mut scene = SceneData {
-        world:          Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
-        lights:         HittableList::new(),
-        background:     Background::Physical { sun_dir: Vec3::new(-0.4, 0.9, -0.3).unit(), turbidity: 3.0 },
-        name:           "Random Spheres",
-        cam_init:       SceneCameraParams {
+        world:               Arc::new(BvhTree::from_list(list)) as Arc<dyn Hittable>,
+        lights:              HittableList::new(),
+        background:          Background::Physical { sun_dir: Vec3::new(-0.4, 0.9, -0.3).unit(), turbidity: 3.0 },
+        name:                "Random Spheres",
+        cam_init:            SceneCameraParams {
             pos: Point3::new(13.0, 2.0, 3.0), lookat: Point3::new(0.0, 0.0, 0.0),
             vfov: 20.0, aperture: 0.1, focus_dist: 10.0, move_speed: 0.3,
             aperture_blades: 6,
         },
-        max_samples:    2000,
-        enable_caustics:       true,
-        caustic_quad:          None,
+        max_samples:         2000,
+        enable_caustics:     true,
+        caustic_quad:        None,
         caustic_gather_radius: 0.5,
-        photon_map:            None,
+        photon_map:          None,
     };
     scene.rebuild_caustics();
     scene
@@ -266,6 +223,7 @@ pub fn build_nextweek_scene() -> SceneData {
     let mut rng = SmallRng::seed_from_u64(42);
     let mut list = HittableList::new();
 
+    // Ground terrain: 20×20 grid of random-height boxes.
     let ground_mat: Arc<dyn Material> =
         Arc::new(Lambertian { texture: Color::new(0.48, 0.83, 0.53).into() });
     let mut ground_boxes = HittableList::new();
@@ -284,51 +242,95 @@ pub fn build_nextweek_scene() -> SceneData {
     }
     list.add(BvhTree::from_list(ground_boxes));
 
-    let (light_world, light_sampler) = emissive_quad(
+    // Warm-tungsten area light (3 200 K blackbody).  The physically-based SPD
+    // gives dispersive materials (diamond, glass) a warm-biased rainbow fire
+    // compared to the neutral-white DiffuseLight.
+    let (light_world, light_sampler) = emissive_quad_mat(
         Point3::new(123.0, 554.0, 147.0),
         Vec3::new(300.0,   0.0,   0.0),
         Vec3::new(  0.0,   0.0, 265.0),
-        Color::new(7.0, 7.0, 7.0),
+        Arc::new(BlackbodyLight::new(3200.0, 7.0)),
     );
     let mut lights = HittableList::new();
     lights.add(light_sampler);
     list.add(light_world);
 
+    // ── Row 1: spectral metal + SSS (z = 100) ────────────────────────────────────
+    // Silver: physically-based conductor Fresnel from Johnson & Christy 1972 IOR tables.
+    list.add(Sphere::new(Point3::new(210.0, 150.0, 100.0), 50.0,
+        Arc::new(SpectralMetal::new(SpectralMetalVariant::Silver, 0.01))));
+    // SSS jade: volumetric multiple scattering with Beer-Lambert absorption.
+    // density=7 ≈ 2 scatters per diameter; sigma_a absorbs R+B, transmitting green.
+    list.add(Sphere::new(Point3::new(470.0, 150.0, 100.0), 50.0,
+        Arc::new(SSSMaterial {
+            albedo:  Color::new(0.55, 0.97, 0.55),
+            sigma_a: Color::new(3.0, 0.2, 3.0),
+            ior:     1.5,
+            density: 7.0,
+            g:       0.3,
+        })));
+
+    // ── Row 2: PBR material showcase (z = 225) ───────────────────────────────────
+    // Velvet: sheen=1 brightens grazing incidence; sheen_tint=0.3 keeps the
+    // rim mostly white against the deep violet base.
+    list.add(Sphere::new(Point3::new( 80.0, 150.0, 225.0), 50.0,
+        Arc::new(PbrMaterial {
+            albedo:     Color::new(0.08, 0.04, 0.18),
+            roughness:  0.9,
+            sheen:      1.0,
+            sheen_tint: 0.3,
+            ..Default::default()
+        })));
+    // Brushed aluminium: anisotropic GGX streaks the highlight tangentially.
+    list.add(Sphere::new(Point3::new(340.0, 150.0, 225.0), 50.0,
+        Arc::new(PbrMaterial {
+            albedo:           Color::new(0.78, 0.78, 0.80),
+            roughness:        0.3,
+            metallic:         1.0,
+            anisotropy:       0.8,
+            anisotropy_angle: 0.0,
+            ..Default::default()
+        })));
+    // Iridescent clearcoat: near-black base under a thin-film dielectric coat
+    // whose interference colour cycles through the spectrum with viewing angle.
+    list.add(Sphere::new(Point3::new(470.0, 150.0, 225.0), 50.0,
+        Arc::new(PbrMaterial {
+            albedo:              Color::new(0.02, 0.01, 0.03),
+            roughness:           0.05,
+            clearcoat:           1.0,
+            clearcoat_roughness: 0.03,
+            film_thickness:      480.0,
+            film_ior:            1.45,
+            ..Default::default()
+        })));
+
+    // ── Existing showcase objects ─────────────────────────────────────────────────
+
+    // Motion-blurred orange Lambertian sphere (demonstrates motion blur).
     let c0 = Point3::new(400.0, 400.0, 200.0);
     list.add(Sphere::new_moving(
         c0, c0 + Vec3::new(30.0, 0.0, 0.0), 50.0,
         Arc::new(Lambertian { texture: Color::new(0.7, 0.3, 0.1).into() }),
     ));
 
-    list.add(Sphere::new(
-        Point3::new(260.0, 150.0, 45.0), 50.0,
-        Arc::new(Dielectric { ir: 1.5 }),
-    ));
-    list.add(Sphere::new(
-        Point3::new(0.0, 150.0, 145.0), 50.0,
-        Arc::new(PbrMaterial { albedo: Color::new(0.8, 0.8, 0.9), metallic: 1.0, roughness: 0.9, ..Default::default() }),
-    ));
-
+    // Noise-driven patchy blue cloud inside a glass sphere (heterogeneous volume).
+    // Moved left to clear space for the two showcase rows.
     let fog_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
-        Point3::new(360.0, 150.0, 145.0), 70.0,
+        Point3::new(-80.0, 150.0, 300.0), 70.0,
         Arc::new(Dielectric { ir: 1.5 }),
     ));
     list.objects.push(Arc::clone(&fog_boundary));
-    // Noise-driven volume: patchy blue cloud inside the glass sphere.
-    // turb()*0.5 is empirically distributed in [0, 0.34] with median 0.063.
-    // threshold=0.07 ≈ median → roughly half the sphere is empty (clear glass), half is blue cloud.
-    // density=3.0 puts the mean effective density around 0.12, giving ~12 expected scatters/ray.
     list.add(NoiseMedium::new(fog_boundary, Color::new(0.2, 0.4, 0.9), 3.0, 0.05, 0.07, 0.7));
 
+    // Thin global mist (homogeneous constant-density medium).
     let mist_boundary: Arc<dyn Hittable> = Arc::new(Sphere::new(
         Point3::new(0.0, 0.0, 0.0), 5000.0,
         Arc::new(Dielectric { ir: 1.5 }),
     ));
     list.add(ConstantMedium::new(mist_boundary, 0.0001, Color::new(1.0, 1.0, 1.0), 0.0));
 
-    // Diamond â€” large gem floating directly below the area light.
-    // Radius 100 fills the space between the ceiling and the scene objects.
-    // Positioned at x=200, z=200 to clear the perlin sphere at (220,280,300).
+    // Spectral diamond: Tolkowsky-cut polyhedron with Cauchy dispersive IOR.
+    // The 3200 K light produces warm-tinted rainbow fire inside the gem.
     let diamond_r = 100.0_f32;
     list.objects.push(Arc::new(Diamond::new(
         Point3::new(200.0, 430.0, 200.0),
@@ -336,20 +338,7 @@ pub fn build_nextweek_scene() -> SceneData {
         Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
     )) as Arc<dyn Hittable>);
 
-    // Pearl â€” Akoya-style cream pearl.  film_thickness=450 nm gives a rose-pink
-    // orient at normal incidence cycling through blue and green at oblique angles.
-    list.add(Sphere::new(
-        Point3::new(400.0, 150.0, 270.0), 50.0,
-        Arc::new(PearlMaterial {
-            base_color:       Color::new(0.98, 0.93, 0.88),
-            ior:              1.56,
-            film_thickness:   450.0,
-            orient_strength:  0.30,
-            film_scale:       0.10,
-            luster_roughness: 0.05,
-        }),
-    ));
-
+    // Earth texture (textured Lambertian).
     let earth_tex = Texture::load("assets/earthmap.jpg")
         .unwrap_or_else(|_| Texture::Checker {
             scale: 2.0,
@@ -361,12 +350,21 @@ pub fn build_nextweek_scene() -> SceneData {
         Arc::new(Lambertian { texture: earth_tex }),
     ));
 
-    let perlin = Arc::new(Perlin::new(&mut rng));
+    // Emissive PBR: rough dark metal that self-illuminates like molten rock.
+    // Not added to `lights` — picked up by BRDF sampling only.
     list.add(Sphere::new(
         Point3::new(220.0, 280.0, 300.0), 80.0,
-        Arc::new(Lambertian { texture: Texture::Noise { perlin, scale: 0.2 } }),
+        Arc::new(PbrMaterial {
+            albedo:            Color::new(0.15, 0.05, 0.02),
+            roughness:         0.7,
+            metallic:          0.8,
+            emission:          Color::new(1.0, 0.35, 0.02),
+            emission_strength: 8.0,
+            ..Default::default()
+        }),
     ));
 
+    // Cloud of 1 000 white diffuse micro-spheres (BVH stress test).
     let white: Arc<dyn Material> =
         Arc::new(Lambertian { texture: Color::new(0.73, 0.73, 0.73).into() });
     let mut cluster = HittableList::new();
@@ -386,7 +384,7 @@ pub fn build_nextweek_scene() -> SceneData {
     let cluster: Arc<dyn Hittable> = Arc::new(Translate::new(cluster, Vec3::new(-100.0, 270.0, 395.0)));
     list.objects.push(cluster);
 
-    // Light quad geometry â€” reused as the photon-map emitter for caustics.
+    // Caustic quad geometry mirrors the area light for photon-map emission.
     let caustic_quad = (
         Point3::new(123.0, 554.0, 147.0),
         Vec3::new(300.0,   0.0,   0.0),
@@ -401,7 +399,7 @@ pub fn build_nextweek_scene() -> SceneData {
         name:       "Next Week",
         cam_init:   SceneCameraParams {
             pos:             Point3::new(478.0, 278.0, -600.0),
-            lookat:          Point3::new(278.0, 278.0,    0.0),
+            lookat:          Point3::new(278.0, 200.0,  150.0),
             vfov:            40.0,
             aperture:        0.0,
             focus_dist:      10.0,
@@ -414,8 +412,6 @@ pub fn build_nextweek_scene() -> SceneData {
         caustic_gather_radius: 25.0,
         photon_map:            None,
     };
-    // Static scene: rebuild() is never called from tick(), so build the
-    // photon map once here at construction time.
     scene.rebuild_caustics();
     scene
 }

@@ -107,6 +107,9 @@ pub enum ShapeConfig {
         #[serde(default = "default_wave_scale")]
         wave_scale: f32,
     },
+    /// OBJ mesh file — path relative to the working directory.
+    /// Material is applied to all triangles.
+    Mesh { path: String },
     // ── Volume shapes — `material` field is ignored; color+density are inline ──
     /// Uniform-density participating medium enclosed in a sphere.
     /// `g`: Henyey-Greenstein asymmetry (0 = isotropic, 0.85 = cloud droplets).
@@ -187,6 +190,14 @@ pub enum MaterialConfig {
         film_thickness: f32,
         #[serde(default = "default_film_ior")]
         film_ior: f32,
+        #[serde(default)]
+        sheen: f32,
+        #[serde(default = "default_sheen_tint")]
+        sheen_tint: f32,
+        #[serde(default)]
+        emission: [f32; 3],
+        #[serde(default)]
+        emission_strength: f32,
     },
     Pearl {
         #[serde(default = "default_pearl_color")]
@@ -213,6 +224,7 @@ fn default_film_thickness()     -> f32 { 450.0 }
 fn default_orient_strength()    -> f32 { 0.30 }
 fn default_film_scale()         -> f32 { 3.0 }
 fn default_luster_roughness()   -> f32 { 0.05 }
+fn default_sheen_tint()         -> f32 { 0.5 }
 
 /// A quad that emits light — added to both the world and the NEE light list.
 #[derive(Deserialize)]
@@ -332,6 +344,9 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
                         Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
+                    ShapeConfig::Mesh { path } =>
+                        crate::mesh::load_obj(&path, mat)
+                            .map_err(|e| format!("objects[{i}]: {e}"))?,
                     _ => unreachable!(), // volume variants handled above
                 }
             }
@@ -412,10 +427,13 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
             Arc::new(DiffuseLight { emit: Texture::from(col(color)) }),
 
         MaterialConfig::Pbr { albedo, metallic, roughness, anisotropy, anisotropy_angle,
-                              clearcoat, clearcoat_roughness, film_thickness, film_ior } =>
+                              clearcoat, clearcoat_roughness, film_thickness, film_ior,
+                              sheen, sheen_tint, emission, emission_strength } =>
             Arc::new(PbrMaterial { albedo: col(albedo), metallic, roughness,
                                    anisotropy, anisotropy_angle,
-                                   clearcoat, clearcoat_roughness, film_thickness, film_ior }),
+                                   clearcoat, clearcoat_roughness, film_thickness, film_ior,
+                                   sheen, sheen_tint,
+                                   emission: col(emission), emission_strength }),
 
         MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale, luster_roughness } =>
             Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale, luster_roughness }),
