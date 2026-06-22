@@ -341,7 +341,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                 //   1.0  — no area lights in the scene (no NEE at all).
                 let emit_w = if prev_specular || lights.objects.is_empty() { 1.0 }
                              else { prev_mis_w_brdf };
-                color += throughput * rec.mat.emitted_at(rec.u, rec.v, rec.p, ray.wavelength) * emit_w;
+                color += throughput * rec.mat.emitted_at(rec.u, rec.v, rec.p, ray.wavelength, ray.spectral_weighted) * emit_w;
 
                 let Some(sr) = rec.mat.scatter(&ray, &rec, rng) else { break; };
 
@@ -364,12 +364,15 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                                 if brdf_cos.x > 0.0 || brdf_cos.y > 0.0 || brdf_cos.z > 0.0 {
                                     let p_mat     = rec.mat.specular_sampling_pdf(&ray, &rec, sun_sample);
                                     let sun_color = background.eval(sun_sample);
-                                    color += throughput * brdf_cos * sun_color / (p_sun + p_mat);
+                                    let mis_d = p_sun * p_sun + p_mat * p_mat;
+                                    if mis_d > 0.0 {
+                                        color += throughput * brdf_cos * sun_color * p_sun / mis_d;
+                                    }
                                 }
                             }
                             let p_mat_brdf = rec.mat.specular_sampling_pdf(&ray, &rec, sr.ray.direction);
                             if p_mat_brdf > 0.0 {
-                                prev_spec_sun_weight = p_mat_brdf / (p_mat_brdf + p_sun);
+                                prev_spec_sun_weight = (p_mat_brdf * p_mat_brdf) / (p_mat_brdf * p_mat_brdf + p_sun * p_sun).max(1e-8);
                             }
                         }
                     }
@@ -400,10 +403,10 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                             if !world.any_hit(&shadow, 0.001, lrec.t * (1.0 - 1e-4)) {
                                 let l_pdf = lpdf.value(light_dir);
                                 let brdf  = rec.mat.scattering_pdf(&ray, &rec, &shadow);
-                                let mis_d = l_pdf + brdf; // balance heuristic denominator
+                                let mis_d = l_pdf * l_pdf + brdf * brdf;
                                 if mis_d > 0.0 && brdf > 0.0 {
-                                    let nee_emit = lrec.mat.emitted_at(lrec.u, lrec.v, lrec.p, ray.wavelength);
-                                    color += throughput * sr.attenuation * brdf * nee_emit / mis_d;
+                                    let nee_emit = lrec.mat.emitted_at(lrec.u, lrec.v, lrec.p, ray.wavelength, ray.spectral_weighted);
+                                    color += throughput * sr.attenuation * brdf * l_pdf * nee_emit / mis_d;
                                 }
                             }
                         }
@@ -426,8 +429,8 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                                     let sun_color = background.eval(sun_sample);
                                     let area_pdf  = if lights.objects.is_empty() { 0.0 }
                                                     else { lights.pdf_value(rec.p, sun_sample, ray.time) };
-                                    let mis_d     = sun_pdf + brdf + area_pdf;
-                                    color += throughput * sr.attenuation * brdf * sun_color / mis_d;
+                                    let mis_d     = sun_pdf * sun_pdf + brdf * brdf + area_pdf * area_pdf;
+                                    color += throughput * sr.attenuation * brdf * sun_pdf * sun_color / mis_d;
                                 }
                             }
                         }
@@ -447,8 +450,8 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                                     let area_pdf = if lights.objects.is_empty() { 0.0 }
                                                    else { lights.pdf_value(rec.p, env_dir, ray.time) };
                                     let env_color = background.eval(env_dir);
-                                    color += throughput * sr.attenuation * brdf * env_color
-                                        / (env_pdf + brdf + area_pdf);
+                                    let mis_d = env_pdf * env_pdf + brdf * brdf + area_pdf * area_pdf;
+                                    color += throughput * sr.attenuation * brdf * env_pdf * env_color / mis_d;
                                 }
                             }
                         }
@@ -457,7 +460,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                     // ── Indirect lighting: cosine-weighted BRDF sample ────────────
                     // Also compute the MIS weight for the case where this ray hits a
                     // light next iteration: w_brdf = p_brdf / (p_brdf + p_nee).
-                    let cpdf     = CosinePdf::new(rec.normal);
+                    let cpdf     = CosinePdf::new(rec.mat.shading_normal(&rec));
                     let ind_dir  = cpdf.generate(rng);
                     let pdf_val  = cpdf.value(ind_dir);
                     if pdf_val <= 0.0 { break; }
@@ -472,7 +475,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                         let env  = env_pdf_value(ind_dir, background);
                         area + sun + env
                     };
-                    prev_mis_w_brdf = pdf_val / (pdf_val + nee_pdf_for_ind).max(1e-8);
+                    prev_mis_w_brdf = (pdf_val * pdf_val) / (pdf_val * pdf_val + nee_pdf_for_ind * nee_pdf_for_ind).max(1e-8);
 
                     throughput    *= sr.attenuation * (scat_pdf / pdf_val);
                     ray            = scattered;

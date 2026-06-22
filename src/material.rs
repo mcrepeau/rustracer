@@ -60,8 +60,19 @@ impl BlackbodyLight {
 impl Material for BlackbodyLight {
     fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
     fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
-    fn emitted_at(&self, _u: f32, _v: f32, _p: Point3, lambda: f32) -> Color {
-        spectral_to_rgb(lambda) * (planck_raw(lambda, self.temp_k) * self.norm * self.intensity)
+    fn emitted_at(&self, _u: f32, _v: f32, _p: Point3, lambda: f32, spectral_weighted: bool) -> Color {
+        if spectral_weighted {
+            // CMF is already baked into the path throughput from the first spectral
+            // bounce — return scalar power only to avoid double-counting it.
+            let scalar = planck_raw(lambda, self.temp_k) * self.norm * self.intensity;
+            Color::new(scalar, scalar, scalar)
+        } else {
+            // Non-spectral path: the hero wavelength λ is irrelevant (no dispersive
+            // material was hit), so returning the per-λ value only adds variance
+            // without physical benefit.  avg_color is the zero-variance unbiased
+            // estimator — identical expectation, no firefly-clamping colour bias.
+            self.avg_color
+        }
     }
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
 }
@@ -213,9 +224,21 @@ impl Material for Dielectric {
 /// - Crown glass:  cauchy_b ≈ 1.507, cauchy_c ≈ 0.00375
 /// - Dense flint:  cauchy_b ≈ 1.612, cauchy_c ≈ 0.00950
 /// - Diamond:      cauchy_b ≈ 2.395, cauchy_c ≈ 0.00585
+///
+/// `absorption` is a per-unit-length Beer-Lambert coefficient (RGB, scene units).
+/// Applied once per interior segment — accumulates correctly across TIR bounces.
+/// `[0,0,0]` = clear glass. Example: `[0.05, 0.01, 0.0]` gives an amber tint
+/// that deepens with thickness.
 pub struct SpectralDielectric {
-    pub cauchy_b: f32,
-    pub cauchy_c: f32,
+    pub cauchy_b:   f32,
+    pub cauchy_c:   f32,
+    pub absorption: Color,
+}
+
+impl Default for SpectralDielectric {
+    fn default() -> Self {
+        Self { cauchy_b: 1.5, cauchy_c: 0.0, absorption: Color::new(0.0, 0.0, 0.0) }
+    }
 }
 
 impl Material for SpectralDielectric {
@@ -228,11 +251,22 @@ impl Material for SpectralDielectric {
         // Reflections are always achromatic — Fresnel reflectance is nearly flat
         // across the visible spectrum.
         let weight_this_refraction = !reflected && !r_in.spectral_weighted;
-        let attenuation = if weight_this_refraction {
+        let mut attenuation = if weight_this_refraction {
             spectral_to_rgb(r_in.wavelength)
         } else {
             Color::new(1.0, 1.0, 1.0)
         };
+
+        // Beer-Lambert absorption: applied on every interior segment (exit or TIR).
+        // rec.t is the chord length since the last boundary event, so absorption
+        // accumulates correctly across multiple TIR bounces inside the medium.
+        if !rec.front_face {
+            let d = rec.t;
+            attenuation.x *= (-self.absorption.x * d).exp();
+            attenuation.y *= (-self.absorption.y * d).exp();
+            attenuation.z *= (-self.absorption.z * d).exp();
+        }
+
         let mut scattered = Ray::scatter_from(rec.p, direction, r_in);
         if weight_this_refraction { scattered.spectral_weighted = true; }
         Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
@@ -467,30 +501,44 @@ impl Material for SSSMaterial {
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
 }
 
-fn uv_to_pixel(img: &RgbImage, u: f32, v: f32) -> (u32, u32) {
-    let u = u.clamp(0.0, 1.0);
-    let v = 1.0 - v.clamp(0.0, 1.0);  // images top-down, UV bottom-up
-    let x = ((u * img.width()  as f32) as u32).min(img.width()  - 1);
-    let y = ((v * img.height() as f32) as u32).min(img.height() - 1);
-    (x, y)
+/// Returns the 2×2 bilinear neighbourhood for `(u, v)` in texel space.
+/// Pixel centres are at half-integer positions; edges are clamped.
+/// Output: `(x0, y0, x1, y1, tx, ty)` — blend weights `tx,ty ∈ [0,1]`.
+fn bilinear_coords(img: &RgbImage, u: f32, v: f32) -> (u32, u32, u32, u32, f32, f32) {
+    let u  = u.clamp(0.0, 1.0);
+    let v  = 1.0 - v.clamp(0.0, 1.0);          // flip V: UV bottom-up, images top-down
+    let fx = (u * img.width()  as f32 - 0.5).clamp(0.0, (img.width()  - 1) as f32);
+    let fy = (v * img.height() as f32 - 0.5).clamp(0.0, (img.height() - 1) as f32);
+    let x0 = fx as u32;
+    let y0 = fy as u32;
+    let x1 = (x0 + 1).min(img.width()  - 1);
+    let y1 = (y0 + 1).min(img.height() - 1);
+    (x0, y0, x1, y1, fx - x0 as f32, fy - y0 as f32)
 }
 
 fn sample_srgb(img: &RgbImage, u: f32, v: f32) -> Color {
-    let (x, y) = uv_to_pixel(img, u, v);
-    let px = img.get_pixel(x, y);
+    let (x0, y0, x1, y1, tx, ty) = bilinear_coords(img, u, v);
     let lin = |c: u8| (c as f32 / 255.0).powf(2.2);
-    Color::new(lin(px[0]), lin(px[1]), lin(px[2]))
+    let px  = |x, y| { let p = img.get_pixel(x, y); Color::new(lin(p[0]), lin(p[1]), lin(p[2])) };
+    let c0  = px(x0, y0) * (1.0 - tx) + px(x1, y0) * tx;
+    let c1  = px(x0, y1) * (1.0 - tx) + px(x1, y1) * tx;
+    c0 * (1.0 - ty) + c1 * ty
 }
 
 fn sample_linear(img: &RgbImage, u: f32, v: f32) -> f32 {
-    let (x, y) = uv_to_pixel(img, u, v);
-    img.get_pixel(x, y)[0] as f32 / 255.0
+    let (x0, y0, x1, y1, tx, ty) = bilinear_coords(img, u, v);
+    let px = |x, y| img.get_pixel(x, y)[0] as f32 / 255.0;
+    let v0 = px(x0, y0) * (1.0 - tx) + px(x1, y0) * tx;
+    let v1 = px(x0, y1) * (1.0 - tx) + px(x1, y1) * tx;
+    v0 * (1.0 - ty) + v1 * ty
 }
 
 fn sample_rgb(img: &RgbImage, u: f32, v: f32) -> Color {
-    let (x, y) = uv_to_pixel(img, u, v);
-    let px = img.get_pixel(x, y);
-    Color::new(px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0)
+    let (x0, y0, x1, y1, tx, ty) = bilinear_coords(img, u, v);
+    let px = |x, y| { let p = img.get_pixel(x, y); Color::new(p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0) };
+    let c0 = px(x0, y0) * (1.0 - tx) + px(x1, y0) * tx;
+    let c1 = px(x0, y1) * (1.0 - tx) + px(x1, y1) * tx;
+    c0 * (1.0 - ty) + c1 * ty
 }
 
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
@@ -562,6 +610,20 @@ impl Default for PbrMaterial {
 }
 
 impl PbrMaterial {
+    fn tbn_normal(&self, rec: &HitRecord<'_>) -> Vec3 {
+        if let Some(tex) = &self.normal_tex {
+            if rec.tangent.length_squared() > 1e-6 {
+                let raw  = sample_rgb(tex, rec.u, rec.v);
+                let ts_n = Vec3::new(raw.x * 2.0 - 1.0, raw.y * 2.0 - 1.0, raw.z * 2.0 - 1.0);
+                let ng   = rec.normal;
+                let t    = rec.tangent;
+                let b    = ng.cross(t);
+                return (t * ts_n.x + b * ts_n.y + ng * ts_n.z).unit();
+            }
+        }
+        rec.normal
+    }
+
     fn albedo_at(&self, u: f32, v: f32) -> Color {
         let c = self.albedo_tex.as_ref().map_or(self.albedo, |t| sample_srgb(t, u, v));
         match &self.ao_tex {
@@ -578,22 +640,12 @@ impl PbrMaterial {
 }
 
 impl Material for PbrMaterial {
+    fn shading_normal(&self, rec: &HitRecord<'_>) -> Vec3 {
+        self.tbn_normal(rec)
+    }
+
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        // Apply normal map if present and the hit point has a valid tangent.
-        let n = if let Some(tex) = &self.normal_tex {
-            if rec.tangent.length_squared() > 1e-6 {
-                let raw  = sample_rgb(tex, rec.u, rec.v);
-                let ts_n = Vec3::new(raw.x * 2.0 - 1.0, raw.y * 2.0 - 1.0, raw.z * 2.0 - 1.0);
-                let ng   = rec.normal;
-                let t    = rec.tangent;
-                let b    = ng.cross(t);
-                (t * ts_n.x + b * ts_n.y + ng * ts_n.z).unit()
-            } else {
-                rec.normal
-            }
-        } else {
-            rec.normal
-        };
+        let n = self.tbn_normal(rec);
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         if cos_o <= 0.0 { return None; }
@@ -725,12 +777,12 @@ impl Material for PbrMaterial {
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
-        let cosine = rec.normal.dot(scattered.direction.unit());
+        let cosine = self.tbn_normal(rec).dot(scattered.direction.unit());
         (cosine / PI).max(0.0)
     }
 
     fn specular_brdf_cos(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> Color {
-        let n     = rec.normal;
+        let n     = self.tbn_normal(rec);
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         let cos_i = wi.dot(n);
@@ -786,7 +838,7 @@ impl Material for PbrMaterial {
     }
 
     fn specular_sampling_pdf(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> f32 {
-        let n     = rec.normal;
+        let n     = self.tbn_normal(rec);
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         let cos_i = wi.dot(n);

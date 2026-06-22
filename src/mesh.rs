@@ -43,9 +43,9 @@ pub fn load_obj(path: &str, mat: Arc<dyn Material>) -> Result<Arc<dyn Hittable>,
                 let denom = du1 * dv2 - dv1 * du2;
                 if denom.abs() < 1e-8 { continue; }
                 let t = (e1 * dv2 - e2 * dv1) * (1.0 / denom);
-                tangent_sum[i0] = tangent_sum[i0] + t;
-                tangent_sum[i1] = tangent_sum[i1] + t;
-                tangent_sum[i2] = tangent_sum[i2] + t;
+                tangent_sum[i0] += t;
+                tangent_sum[i1] += t;
+                tangent_sum[i2] += t;
             }
         }
         let get_tan = |i: usize| {

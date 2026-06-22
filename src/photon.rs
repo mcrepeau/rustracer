@@ -17,6 +17,7 @@ struct KdPhoton {
 }
 
 const DISK_R: f32 = 20.0;
+pub const PHOTON_MAX_DEPTH: i32 = 12;
 
 /// Balanced-kd-tree caustic photon map with surface-normal hemisphere filtering.
 ///
@@ -209,10 +210,11 @@ fn trace_photon(
     let mut power        = power;
     let mut spec_depth   = 0u32;
     let mut hit_spectral = false;
+    let wavelength       = rng.gen_range(380.0_f32..700.0);
 
-    for _ in 0..12 {
+    for _ in 0..PHOTON_MAX_DEPTH {
         let mut ray = Ray::new_at_time(pos, dir, 0.0);
-        ray.wavelength = rng.gen_range(380.0_f32..700.0);
+        ray.wavelength = wavelength;
         let rec = world.hit(&ray, 0.001, f32::INFINITY)?;
         let sr  = rec.mat.scatter(&ray, &rec, rng)?;
 
@@ -222,14 +224,11 @@ fn trace_photon(
             pos        = sr.ray.origin;
             dir        = sr.ray.direction;
             spec_depth += 1;
-
-            // Clamp spectral spikes from compounding single-channel bounces.
-            if rec.mat.is_spectral() {
-                let lum = 0.2126 * power.x + 0.7152 * power.y + 0.0722 * power.z;
-                if lum > 15.0 { power *= 15.0 / lum; }
-            }
         } else {
             if spec_depth > 0 && hit_spectral && rec.mat.can_receive_caustics() {
+                // Clamp spectral spikes once at storage, not per bounce.
+                let lum = 0.2126 * power.x + 0.7152 * power.y + 0.0722 * power.z;
+                if lum > 15.0 { power *= 15.0 / lum; }
                 let nor = rec.normal;
                 return Some(KdPhoton {
                     pos:   [rec.p.x, rec.p.y, rec.p.z],

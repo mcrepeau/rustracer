@@ -2,6 +2,16 @@
 
 A physically-based path tracer built in Rust. It simulates how light actually behaves — bouncing, refracting, and scattering through a scene — to produce photorealistic images. It runs interactively in a window and can also render to PNG in headless mode.
 
+## Gallery
+
+|                                       Random Spheres                                        |                                                 Cornell Box                                                  |
+|:-------------------------------------------------------------------------------------------:|:------------------------------------------------------------------------------------------------------------:|
+| ![Random Spheres](examples/render_random_spheres_2000spp.png) 2000 samples per pixel + OIDN | ![Cornell Box](examples/render_cornell_box_2000spp.png) 2000 samples per pixel with adaptive sampling + OIDN |
+
+|                                                Next Week                                                 |                                                                             Custom Scene (OBJ)                                                                             |
+|:--------------------------------------------------------------------------------------------------------:|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
+| ![Next Week](examples/render_next_week_2000spp.png) 2000 samples per pixel with adaptive sampling + OIDN | ![OBJ Loading](examples/render_obj_loading_2000spp.png) HDR background, 1 OBJ with texture mapping + 1 OBJ with spectral material - 2000 spp with adaptive sampling + OIDN |
+
 ## Build & Run
 
 ```sh
@@ -50,6 +60,8 @@ Press **N** in-app to toggle denoising. The denoiser runs on a background thread
 | Arrows | Rotate sun (Physical sky scenes) |
 | T | Toggle tonemapper (AgX / ACES) |
 | V | Toggle adaptive sampling |
+| M | Toggle photon map (caustics on/off) |
+| L | Print current camera position to terminal (TOML format for scene.toml) |
 | P | Save PNG |
 | Enter | Pause / resume rendering |
 | N | Toggle OIDN denoising (`denoise` feature) |
@@ -119,7 +131,7 @@ type = "env_map"
 path = "assets/sunset_puresky_4k.hdr"
 ```
 
-> **Note:** Environment maps currently light the scene via indirect rays only — there is no importance sampling toward bright regions of the map. Diffuse surfaces under an env map therefore converge more slowly than under a physical sky (which uses NEE). Well-lit glossy and specular surfaces converge fast regardless.
+Environment maps are importance-sampled using a 2D hierarchical CDF built from pixel luminance, weighted by sin θ to compensate for the equirectangular Jacobian. At each diffuse bounce, NEE explicitly samples the most likely directions in the env map, so diffuse surfaces converge at roughly the same rate as under the physical sky.
 
 ### Materials
 
@@ -215,7 +227,7 @@ material.metallic      = 0.0    # fallback if no metallic map
 
 ## Scenes
 
-1. **Random Spheres** — Physical sky, large checkerboard ground, eight hero spheres showcasing different material types (gold, copper, and silver SpectralMetal; SpectralDielectric diamond; PBR; subsurface scattering; pearl; iridescent), plus roughly 350 small randomly placed diffuse, glass, and SSS balls. Spectral-material caustics are projected onto the ground by the sun.
+1. **Random Spheres** — Physical sky, large checkerboard ground. A glowing emissive PBR ember sits at the centre, casting warm orange light on the ring of seven hero spheres surrounding it: SpectralDielectric crown glass, rough terracotta PBR, Gold SpectralMetal, a NoiseMedium Perlin-cloud trapped inside a glass sphere, SSSMaterial jade, pearl, and an iridescent clearcoat PBR. About 350 small randomly placed diffuse, glass, and SSS balls fill the background. Spectral-material caustics are projected onto the ground by the sun.
 
 2. **Cornell Box** — The classic renderer benchmark scene: coloured walls, two boxes, and a 6500 K blackbody area light. Contains a SpectralDielectric dense-flint glass sphere (which produces rainbow caustics on the floor) and a SpectralMetal gold sphere. Photon-map caustics enabled.
 
@@ -228,9 +240,23 @@ material.metallic      = 0.0    # fallback if no metallic map
 - Release builds use `target-cpu=native`, fat LTO, and a single codegen unit for maximum instruction throughput
 - QBVH node width (8 vs 4) is selected at compile time via `#[cfg(target_feature = "avx2")]`
 - Spectral CMF weight is applied at the first spectral bounce via a `spectral_weighted` flag; subsequent bounces multiply by a scalar reflectance so the weight is never compounded
-- MIS weight: `w_nee = p_nee / (p_nee + p_brdf)` (balance heuristic); emitted radiance is accumulated only on camera rays and after specular bounces to avoid double-counting with NEE
+- MIS weight: `w_nee = p_nee / (p_nee + p_brdf)` (balance heuristic); emitted radiance is accumulated only on camera rays and after specular bounces to avoid double-counting with NEE. Area light, sun, and env map NEE contributions are all pooled into a single combined PDF.
+- Environment map importance sampling uses a 2D CDF (row marginal × per-row conditional) built from luminance × sin θ. Sampling is a two-level binary search (`partition_point`) with sub-pixel jitter; the solid-angle PDF `p_ω = L·W·H·inv_total / (2π²)` is used for MIS weighting against the BRDF PDF.
+- Shading normals from normal maps feed all PDF and BRDF evaluation paths (`scattering_pdf`, `specular_brdf_cos`, `specular_sampling_pdf`, `CosinePdf`), not just scatter direction — keeping MIS weights consistent with the actual scattering geometry.
 - Photon kd-tree is built with `select_nth_unstable_by` (in-place median partition, O(N log N)); queries recurse with split-plane pruning (O(√N) average for range queries)
-- Adaptive sampling tracks per-tile luminance variance; tiles below the convergence threshold are skipped in subsequent passes
+- Adaptive sampling tracks per-pixel luminance variance (Welford online algorithm); pixels below the relative convergence threshold are skipped in subsequent passes
 - OIDN runs on a background thread; its result is blended into the display buffer without blocking the render loop
 - Environment maps are loaded with no memory cap — files of any size are supported
 - Normal map tangents are computed in a two-pass algorithm: first accumulate per-face tangents into per-vertex accumulators, then normalise and Gram-Schmidt orthogonalise at shade time
+
+### Compile-time tuning knobs
+
+These constants can be adjusted in source before building:
+
+| Constant | File | Default | Effect |
+|---|---|---|---|
+| `MAX_DEPTH` | `src/renderer.rs` | `50` | Maximum ray bounce depth. Lower values cut render time but lose energy in scenes with lots of glass or mirrors. |
+| `ADAPTIVE_THRESHOLD` | `src/main.rs` | `0.05` | Relative standard error (σ/μ) below which a pixel is considered converged and skipped. Lower = more samples before early exit. |
+| `MIN_ADAPTIVE_SAMPLES` | `src/main.rs` | `16` | Minimum samples a pixel must accumulate before adaptive early-exit can trigger. |
+| `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | A sample whose luminance exceeds this multiple of the running pixel mean is scaled down to that ratio × mean. Higher values preserve more energy at the cost of occasional bright spikes. |
+| `FIREFLY_MIN_SAMPLES` | `src/main.rs` | `4` | Minimum samples before per-pixel firefly clamping activates. |

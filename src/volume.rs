@@ -93,9 +93,13 @@ impl Hittable for ConstantMedium {
 
         // Seed from ray state so each path sample gets a distinct sequence
         // without requiring rng to be threaded through Hittable::hit().
+        // Origin z and direction x are included to avoid correlated decisions
+        // between rays that share only the xy origin or differ only in direction.
         let mut vol_rng = SmallRng::seed_from_u64(
-            (r.origin.x.to_bits() as u64).wrapping_mul(6364136223846793005)
-                ^ (r.origin.y.to_bits() as u64).wrapping_mul(0x9E3779B97F4A7C15)
+            (r.origin.x.to_bits()    as u64).wrapping_mul(6364136223846793005)
+                ^ (r.origin.y.to_bits()  as u64).wrapping_mul(0x9E3779B97F4A7C15)
+                ^ (r.origin.z.to_bits()  as u64).wrapping_mul(0xBF58476D1CE4E5B9)
+                ^ (r.direction.x.to_bits() as u64).wrapping_mul(0x94D049BB133111EB)
                 ^ r.wavelength.to_bits() as u64,
         );
         let random   = vol_rng.gen::<f32>().max(f32::EPSILON);
@@ -173,8 +177,10 @@ impl Hittable for NoiseMedium {
         let ray_length = r.direction.length();
         let inv_maj    = 1.0 / (self.density_scale * ray_length);
         let mut rng    = SmallRng::seed_from_u64(
-            (r.origin.x.to_bits() as u64).wrapping_mul(6364136223846793005)
-                ^ (r.origin.y.to_bits() as u64).wrapping_mul(0x9E3779B97F4A7C15)
+            (r.origin.x.to_bits()    as u64).wrapping_mul(6364136223846793005)
+                ^ (r.origin.y.to_bits()  as u64).wrapping_mul(0x9E3779B97F4A7C15)
+                ^ (r.origin.z.to_bits()  as u64).wrapping_mul(0xBF58476D1CE4E5B9)
+                ^ (r.direction.x.to_bits() as u64).wrapping_mul(0x94D049BB133111EB)
                 ^ r.wavelength.to_bits() as u64,
         );
         let mut t      = rec1.t;

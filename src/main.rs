@@ -38,7 +38,7 @@ use renderer::{Background, render_tiles};
 #[cfg(feature = "denoise")]
 use renderer::{Background, render_tiles, render_aux_pass};
 use scene::SceneData;
-use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene};
+use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene, build_benchmark_scene};
 use output::{to_rgb_u32, save_png, ToneMapper};
 
 use winit::{
@@ -94,6 +94,7 @@ fn run_bench() {
     println!("{}", "─".repeat(header.len()));
 
     let builders: &[fn() -> SceneData] = &[
+        build_benchmark_scene,
         build_random_scene,
         build_cornell_box,
         build_nextweek_scene,
@@ -101,7 +102,8 @@ fn run_bench() {
 
     let mut scratch: Vec<Color> = Vec::new();
     for build in builders {
-        let scene = build();
+        let mut scene = build();
+        scene.rebuild_caustics();
         print!("  {:<18}  building…\r", scene.name);
         let _ = std::io::Write::flush(&mut std::io::stdout());
 
@@ -152,7 +154,8 @@ impl Default for RenderArgs {
 
 fn print_controls() {
     println!("Controls:");
-    println!("  [1-4]        Switch scene          [R]      Restart / reload scene");
+    println!("  [0]          Benchmark scene        [1-4]    Switch scene");
+    println!("  [R]          Restart / reload scene");
     println!("  [F]          Toggle free camera    [C]      Reset camera");
     println!("  WASD         Move (free cam)       [Space]  Move up");
     println!("  Mouse        Look (free cam)       [Shift]  Move down");
@@ -160,10 +163,12 @@ fn print_controls() {
     println!("  [-] [=]      Decrease / increase exposure");
     println!("  [I]  [O]     Decrease / increase aperture");
     println!("  [Arrows]     Rotate sun");
+    println!("  [L]          Print camera position (look_from / look_at for scene.toml)");
     println!("  [P]          Save PNG");
     println!("  [Enter]      Pause rendering");
     println!("  [T]          Toggle tonemapper (AgX / ACES)");
     println!("  [V]          Toggle adaptive sampling");
+    println!("  [M]          Toggle photon map (caustics on/off)");
     #[cfg(feature = "denoise")]
     println!("  [N]          Toggle OIDN denoiser");
     #[cfg(feature = "denoise")]
@@ -181,7 +186,7 @@ fn print_help() {
     println!("  rustracer --bench              Performance benchmark");
     println!("  rustracer --help               Show this message\n");
     println!("RENDER OPTIONS:");
-    println!("  --scene <name>       random|1  cornell|2  nextweek|3  <path.toml>");
+    println!("  --scene <name>       benchmark|0  random|1  cornell|2  nextweek|3  <path.toml>");
     println!("                       Default: random");
     println!("  --samples <n>        Samples per pixel / adaptive max (default: scene maximum)");
     println!("  --width  <n>         Output width  in pixels (default: {WIDTH})");
@@ -227,18 +232,20 @@ fn parse_render_args() -> Result<RenderArgs, String> {
 }
 
 fn run_render(args: RenderArgs) {
-    let scene = {
+    let mut scene = {
         let sl = args.scene.to_lowercase();
         match sl.as_str() {
-            "random"  | "1" => build_random_scene(),
-            "cornell" | "2" => build_cornell_box(),
-            "nextweek"| "3" => build_nextweek_scene(),
+            "benchmark"| "0" => build_benchmark_scene(),
+            "random"   | "1" => build_random_scene(),
+            "cornell"  | "2" => build_cornell_box(),
+            "nextweek" | "3" => build_nextweek_scene(),
             _ => match scene_file::load(&args.scene) {
                 Ok(s)  => s,
                 Err(e) => { eprintln!("Failed to load '{}': {e}", args.scene); std::process::exit(1); }
             },
         }
     };
+    scene.rebuild_caustics();
 
     let samples_max = args.samples.unwrap_or(scene.max_samples);
     let strata      = compute_strata(samples_max);
@@ -266,12 +273,12 @@ fn run_render(args: RenderArgs) {
 
     let t0 = Instant::now();
 
-    let mut pixel_samples = vec![0u32;   n_px];
-    let mut var_m2_lum    = vec![0.0f32; n_px];
-    let mut adap_conv     = vec![false;  n_px];
+    let adaptive = args.adaptive;
+    let mut pixel_samples = if adaptive { vec![0u32;   n_px] } else { Vec::new() };
+    let mut var_m2_lum    = if adaptive { vec![0.0f32; n_px] } else { Vec::new() };
+    let mut adap_conv     = if adaptive { vec![false;  n_px] } else { Vec::new() };
     let mut n_converged   = 0usize;
     let lum = |c: Color| c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
-    let adaptive = args.adaptive;
 
     let mut s = 0u32;
     while s < samples_max {
@@ -281,27 +288,42 @@ fn run_render(args: RenderArgs) {
                      scene.world.as_ref(), &scene.background,
                      &scene.lights, 1.0, scene.photon_map.as_deref());
 
-        accumulator.par_iter_mut()
-            .zip(scratch.par_iter())
-            .zip(var_m2_lum.par_iter_mut())
-            .zip(pixel_samples.par_iter_mut())
-            .zip(adap_conv.par_iter())
-            .for_each(|((((a, &sc), m2), n), &conv)| {
-                if adaptive && conv { return; }
-                let old_n    = *n;
-                let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
-                // Relative firefly clamp: suppress samples far above the running mean.
-                let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
-                    let sc_lum = lum(sc);
-                    let ratio  = sc_lum / old_mean;
-                    if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
-                } else { sc };
-                *a  += sc;
-                *n  += 1;
-                let s_lum    = lum(sc);
-                let new_mean = lum(*a) / *n as f32;
-                *m2 += (s_lum - old_mean) * (s_lum - new_mean);
-            });
+        if adaptive {
+            accumulator.par_iter_mut()
+                .zip(scratch.par_iter())
+                .zip(var_m2_lum.par_iter_mut())
+                .zip(pixel_samples.par_iter_mut())
+                .zip(adap_conv.par_iter())
+                .for_each(|((((a, &sc), m2), n), &conv)| {
+                    if conv { return; }
+                    let old_n    = *n;
+                    let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
+                    let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
+                        let sc_lum = lum(sc);
+                        let ratio  = sc_lum / old_mean;
+                        if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
+                    } else { sc };
+                    *a  += sc;
+                    *n  += 1;
+                    let sc_lum   = lum(sc);
+                    let new_mean = lum(*a) / *n as f32;
+                    *m2 += (sc_lum - old_mean) * (sc_lum - new_mean);
+                });
+        } else {
+            // Non-adaptive: no per-pixel tracking needed; use global sample count for firefly clamp.
+            let cur = s;
+            accumulator.par_iter_mut()
+                .zip(scratch.par_iter())
+                .for_each(|(a, &sc)| {
+                    let old_mean = if cur > 0 { lum(*a) / cur as f32 } else { 0.0 };
+                    let sc = if cur >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
+                        let sc_lum = lum(sc);
+                        let ratio  = sc_lum / old_mean;
+                        if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
+                    } else { sc };
+                    *a += sc;
+                });
+        }
         s += 1;
 
         if adaptive && s >= MIN_ADAPTIVE_SAMPLES {
@@ -477,6 +499,8 @@ fn main() {
     let s2 = build_cornell_box();
     println!("Scene 3: Next Week");
     let s3 = build_nextweek_scene();
+    println!("Scene 0: Benchmark (32 768-triangle mesh + spectral glass + caustics)");
+    let s_bench = build_benchmark_scene();
     let mut scenes: Vec<SceneData> = vec![s1, s2, s3];
 
     // Scene 4: hot-reloadable file scene
@@ -484,6 +508,13 @@ fn main() {
         Ok(s)  => { println!("Scene 4: {} (scene.toml)", s.name); scenes.push(s); }
         Err(e) => println!("scene.toml not loaded — {e}"),
     }
+
+    scenes.push(s_bench);
+    let bench_idx = scenes.len() - 1;
+
+    // Build the photon map only for the initially active scene (scene 0).
+    // All other scenes build their maps lazily when first switched to.
+    scenes[0].rebuild_caustics();
 
     print_controls();
 
@@ -525,11 +556,11 @@ fn main() {
     let mut strata = compute_strata(scenes[scene_idx].max_samples);
     // Adaptive sampling state
     let mut tonemapper     = ToneMapper::AgX;
-    let mut adaptive_on   = false;
-    let n_px              = (win_w * win_h) as usize;
-    let mut pixel_samples = vec![0u32;  n_px];  // per-pixel sample count
-    let mut var_m2_lum    = vec![0.0f32; n_px]; // Welford M2 for luminance
-    let mut adap_conv     = vec![false;  n_px]; // convergence mask
+    let mut adaptive_on    = false;
+    let mut photon_map_on  = true;
+    let mut pixel_samples: Vec<u32>   = Vec::new(); // allocated only when adaptive_on
+    let mut var_m2_lum:   Vec<f32>    = Vec::new();
+    let mut adap_conv:    Vec<bool>   = Vec::new();
     let mut n_converged   = 0usize;
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut exposure          = 1.0f32;
@@ -566,6 +597,11 @@ fn main() {
                 reset_accum!();
                 cam_dirty        = true;
                 pending_autofocus = true;
+                // Build photon map on first visit; subsequent visits reuse the cached map.
+                // Sun-direction changes rebuild it separately via rebuild_caustics() below.
+                if scenes[i].photon_map.is_none() {
+                    scenes[i].rebuild_caustics();
+                }
             }};
         }
 
@@ -583,10 +619,12 @@ fn main() {
                         let n = (win_w * win_h) as usize;
                         accumulator.clear();  accumulator.resize(n, Color::default());
                         scratch.clear();      scratch.resize(n, Color::default());
-                        pixel_samples.clear(); pixel_samples.resize(n, 0);
-                        var_m2_lum.clear();    var_m2_lum.resize(n, 0.0);
-                        adap_conv.clear();     adap_conv.resize(n, false);
-                        n_converged = 0;
+                        if adaptive_on {
+                            pixel_samples.clear(); pixel_samples.resize(n, 0);
+                            var_m2_lum.clear();    var_m2_lum.resize(n, 0.0);
+                            adap_conv.clear();     adap_conv.resize(n, false);
+                            n_converged = 0;
+                        }
                         samples = 0;
                         cam_dirty = true;
                     }
@@ -621,12 +659,13 @@ fn main() {
                                         window.set_cursor_visible(true);
                                     }
                                 }
+                                VirtualKeyCode::Key0 => { switch_scene!(bench_idx); }
                                 VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 => {
                                     let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, _ => 0 };
                                     switch_scene!(idx);
                                 }
                                 VirtualKeyCode::Key4 => {
-                                    if scenes.len() >= 4 {
+                                    if scenes.len() >= 5 {
                                         switch_scene!(3);
                                     } else {
                                         println!("scene.toml not loaded — edit the file and press [R] to reload it");
@@ -652,6 +691,15 @@ fn main() {
                                         let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
                                         save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                     }
+                                }
+                                VirtualKeyCode::L => {
+                                    let from = cam_state.pos;
+                                    let at   = cam_state.look_at();
+                                    println!("# paste into [camera] in scene.toml");
+                                    println!("look_from = [{:.4}, {:.4}, {:.4}]", from.x, from.y, from.z);
+                                    println!("look_at   = [{:.4}, {:.4}, {:.4}]", at.x,   at.y,   at.z);
+                                    println!("vfov      = {:.1}", cam_state.vfov);
+                                    println!("aperture  = {:.3}", cam_state.aperture);
                                 }
                                 VirtualKeyCode::I => {
                                     cam_state.aperture = (cam_state.aperture - 0.025).max(0.0);
@@ -730,6 +778,7 @@ fn main() {
                                 }
                                 VirtualKeyCode::R if scene_idx == 0 => {
                                     scenes[0] = build_random_scene();
+                                    scenes[0].rebuild_caustics();
                                     strata = compute_strata(scenes[0].max_samples);
                                     reset_accum!();
                                     cam_dirty = true;
@@ -742,6 +791,22 @@ fn main() {
                                 VirtualKeyCode::Slash => { print_controls(); }
                                 VirtualKeyCode::V => {
                                     adaptive_on = !adaptive_on;
+                                    if adaptive_on {
+                                        let n = (win_w * win_h) as usize;
+                                        pixel_samples = vec![0u32;   n];
+                                        var_m2_lum    = vec![0.0f32; n];
+                                        adap_conv     = vec![false;  n];
+                                    } else {
+                                        pixel_samples = Vec::new();
+                                        var_m2_lum    = Vec::new();
+                                        adap_conv     = Vec::new();
+                                        n_converged   = 0;
+                                    }
+                                    reset_accum!();
+                                    window.request_redraw();
+                                }
+                                VirtualKeyCode::M => {
+                                    photon_map_on = !photon_map_on;
                                     reset_accum!();
                                     window.request_redraw();
                                 }
@@ -750,6 +815,7 @@ fn main() {
                                         Ok(s) => {
                                             println!("Reloaded: {}", s.name);
                                             scenes[3] = s;
+                                            scenes[3].rebuild_caustics();
                                             cam_state = CameraState::from_params(&scenes[3].cam_init);
                                             strata = compute_strata(scenes[3].max_samples);
                                             reset_accum!();
@@ -823,6 +889,9 @@ fn main() {
                         let pct = n_converged * 100 / adap_conv.len().max(1);
                         format!("  adaptive {pct}% conv")
                     } else { String::new() };
+                    let pm_str = if !photon_map_on && scene.photon_map.is_some() {
+                        "  [photon map OFF]"
+                    } else { "" };
                     let tm_str = if tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
                     let cam_str = if cam_state_str.is_empty() {
                         format!("apt {:.2}  fov {:.0}°", cam_state.aperture, cam_state.vfov)
@@ -830,8 +899,8 @@ fn main() {
                         cam_state_str.to_string()
                     };
                     window.set_title(&format!(
-                        "rustracer — {} — {samples} spp  |  {cam_str}  exp {:.2}  {tm_str}{}{}{}",
-                        scene.name, exposure, sun_str, oidn_str, adaptive_str,
+                        "rustracer — {} — {samples} spp  |  {cam_str}  exp {:.2}  {tm_str}{}{}{}{}",
+                        scene.name, exposure, sun_str, oidn_str, adaptive_str, pm_str,
                     ));
                     last_title_update = Instant::now();
                 }
@@ -841,34 +910,47 @@ fn main() {
                     let scene = &scenes[scene_idx];
                     let bg_scale = 1.0;
                     let conv_mask = if adaptive_on { Some(adap_conv.as_slice()) } else { None };
+                    let pm = if photon_map_on { scene.photon_map.as_deref() } else { None };
                     render_tiles(&mut scratch, conv_mask, samples, strata, win_w, win_h, &camera,
                                  scene.world.as_ref(), &scene.background, &scene.lights, bg_scale,
-                                 scene.photon_map.as_deref());
+                                 pm);
 
-                    // Accumulate samples and update per-pixel Welford statistics.
-                    // Converged pixels are skipped (scratch[i] == black, flag checked).
                     let lum = |c: Color| c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722;
-                    accumulator.par_iter_mut()
-                        .zip(scratch.par_iter())
-                        .zip(var_m2_lum.par_iter_mut())
-                        .zip(pixel_samples.par_iter_mut())
-                        .zip(adap_conv.par_iter())
-                        .for_each(|((((a, &s), m2), n), &conv)| {
-                            if adaptive_on && conv { return; }
-                            let old_n    = *n;
-                            let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
-                            // Relative firefly clamp.
-                            let s = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
-                                let s_lum = lum(s);
-                                let ratio = s_lum / old_mean;
-                                if ratio > FIREFLY_CLAMP { s * (FIREFLY_CLAMP / ratio) } else { s }
-                            } else { s };
-                            *a += s;
-                            *n += 1;
-                            let s_lum    = lum(s);
-                            let new_mean = lum(*a) / *n as f32;
-                            *m2 += (s_lum - old_mean) * (s_lum - new_mean);
-                        });
+                    if adaptive_on {
+                        accumulator.par_iter_mut()
+                            .zip(scratch.par_iter())
+                            .zip(var_m2_lum.par_iter_mut())
+                            .zip(pixel_samples.par_iter_mut())
+                            .zip(adap_conv.par_iter())
+                            .for_each(|((((a, &s), m2), n), &conv)| {
+                                if conv { return; }
+                                let old_n    = *n;
+                                let old_mean = if old_n > 0 { lum(*a) / old_n as f32 } else { 0.0 };
+                                let s = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
+                                    let s_lum = lum(s);
+                                    let ratio = s_lum / old_mean;
+                                    if ratio > FIREFLY_CLAMP { s * (FIREFLY_CLAMP / ratio) } else { s }
+                                } else { s };
+                                *a += s;
+                                *n += 1;
+                                let s_lum    = lum(s);
+                                let new_mean = lum(*a) / *n as f32;
+                                *m2 += (s_lum - old_mean) * (s_lum - new_mean);
+                            });
+                    } else {
+                        let cur = samples;
+                        accumulator.par_iter_mut()
+                            .zip(scratch.par_iter())
+                            .for_each(|(a, &s)| {
+                                let old_mean = if cur > 0 { lum(*a) / cur as f32 } else { 0.0 };
+                                let s = if cur >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
+                                    let s_lum = lum(s);
+                                    let ratio = s_lum / old_mean;
+                                    if ratio > FIREFLY_CLAMP { s * (FIREFLY_CLAMP / ratio) } else { s }
+                                } else { s };
+                                *a += s;
+                            });
+                    }
                     samples += 1;
 
                     // Mark pixels as converged when relative std error < threshold.
@@ -890,10 +972,8 @@ fn main() {
 
                     // Build the aux buffers once per render sequence (first sample),
                     // so they are ready before the first OIDN invocation at sample 32.
-                    // Skipped for scenes where first-hit geometry doesn't correlate
-                    // with the final pixel colour (indirect lighting, volumes).
                     #[cfg(feature = "denoise")]
-                    if samples == 1 && matches!(&scene.background, Background::Physical { .. }) {
+                    if samples == 1 {
                         let (alb, nrm) = render_aux_pass(win_w, win_h, &camera,
                                                          scene.world.as_ref(), &scene.background);
                         aux_albedo = alb;
@@ -923,15 +1003,25 @@ fn main() {
                     let denoised_guard = denoised.lock().unwrap();
                     let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
                     if use_denoised {
-                        buf.par_iter_mut()
-                            .zip(accumulator.par_iter())
-                            .zip(denoised_guard.par_iter())
-                            .zip(pixel_samples.par_iter())
-                            .for_each(|(((dst, &acc), &den), &n)| {
-                                let n_sc = if adaptive_on { n.max(1) as f32 } else { samples.max(1) as f32 };
-                                let raw = acc / n_sc;
-                                *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
-                            });
+                        if adaptive_on {
+                            buf.par_iter_mut()
+                                .zip(accumulator.par_iter())
+                                .zip(denoised_guard.par_iter())
+                                .zip(pixel_samples.par_iter())
+                                .for_each(|(((dst, &acc), &den), &n)| {
+                                    let raw = acc / n.max(1) as f32;
+                                    *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
+                                });
+                        } else {
+                            let sc = 1.0 / samples.max(1) as f32;
+                            buf.par_iter_mut()
+                                .zip(accumulator.par_iter())
+                                .zip(denoised_guard.par_iter())
+                                .for_each(|((dst, &acc), &den)| {
+                                    let raw = acc * sc;
+                                    *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure, tonemapper);
+                                });
+                        }
                     } else if adaptive_on {
                         write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure, tonemapper);
                     } else {
