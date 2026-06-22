@@ -7,16 +7,18 @@ use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
 use crate::material::{
     Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric,
+    SpectralMetal, SpectralMetalVariant,
 };
 use crate::cone::Cone;
 use crate::cylinder::Cylinder;
 use crate::disk::Disk;
 use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
-use crate::renderer::Background;
+use crate::renderer::{Background, EnvMapData};
 use crate::scene::SceneData;
 use crate::sphere::Sphere;
 use crate::texture::Texture;
+use crate::transform::{Rotate, Scale, Translate};
 use crate::vec3::{Color, Point3, Vec3};
 use crate::volume::{ConstantMedium, NoiseMedium};
 
@@ -77,6 +79,8 @@ pub enum BackgroundConfig {
     },
     /// Uniform colour background.
     Solid { color: [f32; 3] },
+    /// Equirectangular HDR environment map (EXR file).
+    EnvMap { path: String },
 }
 
 fn default_sun_elevation() -> f32 { 30.0 }
@@ -88,6 +92,15 @@ pub struct ObjectConfig {
     /// Required for surface shapes; omit (or leave out entirely) for volume shapes.
     #[serde(default)]
     pub material: Option<MaterialConfig>,
+    /// Uniform scale applied before rotation and translation (e.g. 0.01 converts cm → m).
+    #[serde(default)]
+    pub scale:     Option<f32>,
+    /// Rotation around the world Y axis in degrees, applied after scale.
+    #[serde(default)]
+    pub rotate_y:  Option<f32>,
+    /// World-space translation applied last (after scale and rotation).
+    #[serde(default)]
+    pub translate: Option<[f32; 3]>,
 }
 
 #[derive(Deserialize)]
@@ -199,6 +212,31 @@ pub enum MaterialConfig {
         #[serde(default)]
         emission_strength: f32,
     },
+    /// PBR material driven by image texture maps.
+    /// `albedo_path` is required; the others are optional (fall back to scalar defaults).
+    /// Normal maps are not yet supported.
+    TexturedPbr {
+        albedo_path:    String,
+        #[serde(default)]
+        roughness_path: Option<String>,
+        #[serde(default)]
+        metallic_path:  Option<String>,
+        #[serde(default)]
+        ao_path:        Option<String>,
+        #[serde(default)]
+        normal_path:    Option<String>,
+        #[serde(default = "default_roughness")]
+        roughness:      f32,
+        #[serde(default)]
+        metallic:       f32,
+    },
+    /// Conductor Fresnel from J&C 1972 tabulated IOR data.
+    SpectralMetal {
+        /// "gold", "copper", or "silver"
+        variant:   String,
+        #[serde(default)]
+        roughness: f32,
+    },
     Pearl {
         #[serde(default = "default_pearl_color")]
         base_color:      [f32; 3],
@@ -293,6 +331,18 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
             }
         }
         BackgroundConfig::Solid { color } => Background::Solid(col(color)),
+        BackgroundConfig::EnvMap { path } => {
+            let mut reader = image::ImageReader::open(&path)
+                .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
+                .with_guessed_format()
+                .map_err(|e| format!("cannot load environment map '{path}': {e}"))?;
+            reader.limits(image::Limits::no_limits());
+            let img = reader
+                .decode()
+                .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
+                .into_rgb32f();
+            Background::EnvMap(Arc::new(EnvMapData::new(img)))
+        }
     };
 
     // ── Static objects ────────────────────────────────────────────────────────
@@ -306,7 +356,8 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     };
 
     for (i, obj) in file.objects.into_iter().enumerate() {
-        let hittable: Arc<dyn Hittable> = match obj.shape {
+        let (scale, rotate_y, translate) = (obj.scale, obj.rotate_y, obj.translate);
+        let mut hittable: Arc<dyn Hittable> = match obj.shape {
             // ── Volume shapes (material field is ignored) ──────────────────
             ShapeConfig::ConstantVolumeSphere { center, radius, density, color, g } => {
                 let boundary = Arc::new(Sphere::new(p3(center), radius, dummy_mat()));
@@ -351,6 +402,10 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                 }
             }
         };
+        // Apply SRT transforms: scale → rotate → translate.
+        if let Some(s) = scale    { hittable = Arc::new(Scale::new(hittable, s)); }
+        if let Some(a) = rotate_y { hittable = Arc::new(Rotate::around_y(hittable, a)); }
+        if let Some(t) = translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
         static_objects.push(hittable);
     }
 
@@ -402,6 +457,12 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
 
 // ── Material builder ──────────────────────────────────────────────────────────
 
+fn load_img(path: &str) -> Result<Arc<image::RgbImage>, String> {
+    image::open(path)
+        .map_err(|e| format!("cannot load texture '{path}': {e}"))
+        .map(|img| Arc::new(img.into_rgb8()))
+}
+
 fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
     Ok(match cfg {
         MaterialConfig::Lambertian { color } =>
@@ -433,7 +494,29 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
                                    anisotropy, anisotropy_angle,
                                    clearcoat, clearcoat_roughness, film_thickness, film_ior,
                                    sheen, sheen_tint,
-                                   emission: col(emission), emission_strength }),
+                                   emission: col(emission), emission_strength,
+                                   ..PbrMaterial::default() }),
+
+        MaterialConfig::TexturedPbr { albedo_path, roughness_path, metallic_path, ao_path, normal_path, roughness, metallic } =>
+            Arc::new(PbrMaterial {
+                albedo_tex:    Some(load_img(&albedo_path)?),
+                roughness_tex: roughness_path.as_deref().map(load_img).transpose()?,
+                metallic_tex:  metallic_path.as_deref().map(load_img).transpose()?,
+                ao_tex:        ao_path.as_deref().map(load_img).transpose()?,
+                normal_tex:    normal_path.as_deref().map(load_img).transpose()?,
+                roughness,
+                metallic,
+                ..PbrMaterial::default()
+            }),
+
+        MaterialConfig::SpectralMetal { variant, roughness } => {
+            let v = match variant.to_lowercase().as_str() {
+                "copper" => SpectralMetalVariant::Copper,
+                "silver" => SpectralMetalVariant::Silver,
+                _        => SpectralMetalVariant::Gold,
+            };
+            Arc::new(SpectralMetal::new(v, roughness))
+        }
 
         MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale, luster_roughness } =>
             Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale, luster_roughness }),

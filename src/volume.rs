@@ -111,6 +111,7 @@ impl Hittable for ConstantMedium {
             u:          0.0,
             v:          0.0,
             front_face: true,
+            tangent:    Vec3::default(),
         })
     }
 
@@ -192,6 +193,7 @@ impl Hittable for NoiseMedium {
                     t,
                     u: 0.0, v: 0.0,
                     front_face: true,
+                    tangent:    Vec3::default(),
                 });
             }
         }

@@ -14,6 +14,9 @@ pub struct Triangle {
     n0:  Vec3,
     n1:  Vec3,
     n2:  Vec3,
+    t0:  Vec3,
+    t1:  Vec3,
+    t2:  Vec3,
     uv0: (f32, f32),
     uv1: (f32, f32),
     uv2: (f32, f32),
@@ -21,19 +24,23 @@ pub struct Triangle {
 }
 
 impl Triangle {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         v0: Point3, v1: Point3, v2: Point3,
         n0: Vec3,   n1: Vec3,   n2: Vec3,
+        t0: Vec3,   t1: Vec3,   t2: Vec3,
         uv0: (f32, f32), uv1: (f32, f32), uv2: (f32, f32),
         mat: Arc<dyn Material>,
     ) -> Self {
-        Self { v0, v1, v2, n0, n1, n2, uv0, uv1, uv2, mat }
+        Self { v0, v1, v2, n0, n1, n2, t0, t1, t2, uv0, uv1, uv2, mat }
     }
 
     /// Triangle with a flat (face) normal and no meaningful UV coordinates.
-    pub fn flat(v0: Point3, v1: Point3, v2: Point3, mat: Arc<dyn Material>) -> Self {
+    #[cfg(test)]
+    fn flat(v0: Point3, v1: Point3, v2: Point3, mat: Arc<dyn Material>) -> Self {
         let n = (v1 - v0).cross(v2 - v0).unit();
-        Self::new(v0, v1, v2, n, n, n, (0.0, 0.0), (1.0, 0.0), (0.5, 1.0), mat)
+        let t = (v1 - v0).unit();
+        Self::new(v0, v1, v2, n, n, n, t, t, t, (0.0, 0.0), (1.0, 0.0), (0.5, 1.0), mat)
     }
 }
 
@@ -56,13 +63,18 @@ impl Hittable for Triangle {
 
         let b0 = 1.0 - b1 - b2;
         let p  = r.at(t);
-        // Interpolate shading normal and UV using barycentric coordinates.
-        let sn = (b0 * self.n0 + b1 * self.n1 + b2 * self.n2).unit();
-        let u  = b0 * self.uv0.0 + b1 * self.uv1.0 + b2 * self.uv2.0;
-        let v  = b0 * self.uv0.1 + b1 * self.uv1.1 + b2 * self.uv2.1;
+        // Interpolate shading normal, tangent, and UV using barycentric coordinates.
+        let sn  = (b0 * self.n0 + b1 * self.n1 + b2 * self.n2).unit();
+        let u   = b0 * self.uv0.0 + b1 * self.uv1.0 + b2 * self.uv2.0;
+        let v   = b0 * self.uv0.1 + b1 * self.uv1.1 + b2 * self.uv2.1;
+        // Gram-Schmidt: re-orthogonalize tangent against the shading normal.
+        let raw_t   = b0 * self.t0 + b1 * self.t1 + b2 * self.t2;
+        let raw_t   = raw_t - sn * raw_t.dot(sn);
+        let tangent = if raw_t.length_squared() > 1e-8 { raw_t.unit() } else { sn.onb().0 };
         let mut rec = HitRecord::new(p, t, &*self.mat, r, sn);
         rec.u = u;
         rec.v = v;
+        rec.tangent = tangent;
         Some(rec)
     }
 
@@ -181,6 +193,9 @@ mod tests {
             Vec3::new(0.0, 0.0, 1.0),
             Vec3::new(0.0, 0.0, 1.0),
             Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
             (0.0, 0.0), (1.0, 0.0), (0.0, 1.0),
             Arc::new(DummyMat),
         );
@@ -201,6 +216,9 @@ mod tests {
             Point3::new(2.0, 0.0, 0.0),
             Point3::new(0.0, 2.0, 0.0),
             n0, n1, n2,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
             (0.0, 0.0), (1.0, 0.0), (0.0, 1.0),
             Arc::new(DummyMat),
         );

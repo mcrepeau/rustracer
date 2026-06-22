@@ -1,6 +1,7 @@
 use std::f32::consts::PI;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use image::RgbImage;
 use rand::{Rng, RngCore};
 use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
@@ -466,6 +467,32 @@ impl Material for SSSMaterial {
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
 }
 
+fn uv_to_pixel(img: &RgbImage, u: f32, v: f32) -> (u32, u32) {
+    let u = u.clamp(0.0, 1.0);
+    let v = 1.0 - v.clamp(0.0, 1.0);  // images top-down, UV bottom-up
+    let x = ((u * img.width()  as f32) as u32).min(img.width()  - 1);
+    let y = ((v * img.height() as f32) as u32).min(img.height() - 1);
+    (x, y)
+}
+
+fn sample_srgb(img: &RgbImage, u: f32, v: f32) -> Color {
+    let (x, y) = uv_to_pixel(img, u, v);
+    let px = img.get_pixel(x, y);
+    let lin = |c: u8| (c as f32 / 255.0).powf(2.2);
+    Color::new(lin(px[0]), lin(px[1]), lin(px[2]))
+}
+
+fn sample_linear(img: &RgbImage, u: f32, v: f32) -> f32 {
+    let (x, y) = uv_to_pixel(img, u, v);
+    img.get_pixel(x, y)[0] as f32 / 255.0
+}
+
+fn sample_rgb(img: &RgbImage, u: f32, v: f32) -> Color {
+    let (x, y) = uv_to_pixel(img, u, v);
+    let px = img.get_pixel(x, y);
+    Color::new(px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0)
+}
+
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
 ///
 /// All specular lobes are sampled from the Visible Normal Distribution Function
@@ -486,6 +513,8 @@ impl Material for SSSMaterial {
 /// - `sheen_tint`: 0 = white sheen, 1 = sheen tinted toward the base albedo (default 0.5).
 /// - `emission`: RGB emission colour (linear); multiplied by `emission_strength`.
 /// - `emission_strength`: scale factor for the emission (0 = dark, default).
+/// - `albedo_tex / roughness_tex / metallic_tex / ao_tex`: optional image maps that override
+///   the corresponding scalar fields when set. Albedo decoded sRGB→linear; others are linear.
 pub struct PbrMaterial {
     pub albedo:              Color,
     pub roughness:           f32,
@@ -500,6 +529,11 @@ pub struct PbrMaterial {
     pub sheen_tint:          f32,
     pub emission:            Color,
     pub emission_strength:   f32,
+    pub albedo_tex:          Option<Arc<RgbImage>>,
+    pub roughness_tex:       Option<Arc<RgbImage>>,
+    pub metallic_tex:        Option<Arc<RgbImage>>,
+    pub ao_tex:              Option<Arc<RgbImage>>,
+    pub normal_tex:          Option<Arc<RgbImage>>,
 }
 
 impl Default for PbrMaterial {
@@ -518,20 +552,58 @@ impl Default for PbrMaterial {
             sheen_tint:          0.5,
             emission:            Color::default(),
             emission_strength:   0.0,
+            albedo_tex:          None,
+            roughness_tex:       None,
+            metallic_tex:        None,
+            ao_tex:              None,
+            normal_tex:          None,
         }
+    }
+}
+
+impl PbrMaterial {
+    fn albedo_at(&self, u: f32, v: f32) -> Color {
+        let c = self.albedo_tex.as_ref().map_or(self.albedo, |t| sample_srgb(t, u, v));
+        match &self.ao_tex {
+            Some(ao) => c * sample_linear(ao, u, v),
+            None     => c,
+        }
+    }
+    fn roughness_at(&self, u: f32, v: f32) -> f32 {
+        self.roughness_tex.as_ref().map_or(self.roughness, |t| sample_linear(t, u, v))
+    }
+    fn metallic_at(&self, u: f32, v: f32) -> f32 {
+        self.metallic_tex.as_ref().map_or(self.metallic, |t| sample_linear(t, u, v))
     }
 }
 
 impl Material for PbrMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let n     = rec.normal;
+        // Apply normal map if present and the hit point has a valid tangent.
+        let n = if let Some(tex) = &self.normal_tex {
+            if rec.tangent.length_squared() > 1e-6 {
+                let raw  = sample_rgb(tex, rec.u, rec.v);
+                let ts_n = Vec3::new(raw.x * 2.0 - 1.0, raw.y * 2.0 - 1.0, raw.z * 2.0 - 1.0);
+                let ng   = rec.normal;
+                let t    = rec.tangent;
+                let b    = ng.cross(t);
+                (t * ts_n.x + b * ts_n.y + ng * ts_n.z).unit()
+            } else {
+                rec.normal
+            }
+        } else {
+            rec.normal
+        };
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         if cos_o <= 0.0 { return None; }
 
-        let alpha = (self.roughness * self.roughness).max(1e-4_f32);
-        let f0    = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
-                  + self.albedo * self.metallic;
+        let albedo    = self.albedo_at(rec.u, rec.v);
+        let roughness = self.roughness_at(rec.u, rec.v);
+        let metallic  = self.metallic_at(rec.u, rec.v);
+        let alpha = (roughness * roughness).max(1e-4_f32);
+        let f0    = Color::new(0.04, 0.04, 0.04) * (1.0 - metallic)
+                  + albedo * metallic;
 
         // Clearcoat lobe: dielectric IOR 1.5 (F0 = 0.04), scaled by clearcoat weight.
         // The Fresnel at normal incidence is only ~4%, making the clearcoat very rarely
@@ -546,7 +618,7 @@ impl Material for PbrMaterial {
 
         // Base specular probability from Fresnel at the view angle.
         let f_approx = schlick_color(cos_o, f0);
-        let p_spec = if self.metallic > 0.999 {
+        let p_spec = if metallic > 0.999 {
             1.0_f32
         } else {
             (0.2126 * f_approx.x + 0.7152 * f_approx.y + 0.0722 * f_approx.z)
@@ -630,17 +702,17 @@ impl Material for PbrMaterial {
                 //   attenuation = albedo*(1−m) + π·sheen·C_sheen·F_H
                 // where F_H = (1−cos_o)^5 uses the view angle as proxy for the half-angle,
                 // correctly peaking at grazing incidence without requiring wi at scatter time.
-                let sheen_attn = if self.sheen > 0.0 && self.metallic < 0.999 {
-                    let luma = 0.2126 * self.albedo.x + 0.7152 * self.albedo.y + 0.0722 * self.albedo.z;
-                    let c_tint = if luma > 1e-6 { self.albedo / luma } else { Color::new(1.0, 1.0, 1.0) };
+                let sheen_attn = if self.sheen > 0.0 && metallic < 0.999 {
+                    let luma = 0.2126 * albedo.x + 0.7152 * albedo.y + 0.0722 * albedo.z;
+                    let c_tint = if luma > 1e-6 { albedo / luma } else { Color::new(1.0, 1.0, 1.0) };
                     let sheen_color = Color::new(1.0, 1.0, 1.0) * (1.0 - self.sheen_tint) + c_tint * self.sheen_tint;
                     let f_h = (1.0 - cos_o).powi(5);
-                    sheen_color * (self.sheen * (1.0 - self.metallic) * f_h * PI)
+                    sheen_color * (self.sheen * (1.0 - metallic) * f_h * PI)
                 } else {
                     Color::default()
                 };
                 Some(ScatterRecord {
-                    attenuation: (self.albedo * (1.0 - self.metallic) + sheen_attn) / ((1.0 - p_spec) * (1.0 - p_coat)),
+                    attenuation: (albedo * (1.0 - metallic) + sheen_attn) / ((1.0 - p_spec) * (1.0 - p_coat)),
                     ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
                     skip_pdf:    false,
                 })
@@ -664,11 +736,14 @@ impl Material for PbrMaterial {
         let cos_i = wi.dot(n);
         if cos_o <= 0.0 || cos_i <= 0.0 { return Color::default(); }
 
+        let albedo    = self.albedo_at(rec.u, rec.v);
+        let roughness = self.roughness_at(rec.u, rec.v);
+        let metallic  = self.metallic_at(rec.u, rec.v);
         let h    = (wo + wi).unit();
         let wo_h = wo.dot(h).max(0.0);
         let h_n  = h.dot(n).max(0.0);
-        let f0   = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
-                 + self.albedo * self.metallic;
+        let f0   = Color::new(0.04, 0.04, 0.04) * (1.0 - metallic)
+                 + albedo * metallic;
 
         let mut result = Color::default();
 
@@ -689,7 +764,7 @@ impl Material for PbrMaterial {
 
         // Base specular lobe: F · D · G1(wo) · G1(wi) / (4 · cos_o)
         {
-            let alpha  = (self.roughness * self.roughness).max(1e-4_f32);
+            let alpha  = (roughness * roughness).max(1e-4_f32);
             let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
             let ax     = alpha / aspect;
             let ay     = alpha * aspect;
@@ -717,16 +792,19 @@ impl Material for PbrMaterial {
         let cos_i = wi.dot(n);
         if cos_o <= 0.0 || cos_i <= 0.0 { return 0.0; }
 
+        let albedo   = self.albedo_at(rec.u, rec.v);
+        let roughness = self.roughness_at(rec.u, rec.v);
+        let metallic  = self.metallic_at(rec.u, rec.v);
         let h   = (wo + wi).unit();
         let h_n = h.dot(n).max(0.0);
-        let f0  = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
-                + self.albedo * self.metallic;
+        let f0  = Color::new(0.04, 0.04, 0.04) * (1.0 - metallic)
+                + albedo * metallic;
 
         let p_coat = if self.clearcoat > 1e-3 {
             (schlick(cos_o, 1.0 / 1.5_f32) * self.clearcoat).max(0.12 * self.clearcoat)
         } else { 0.0 };
         let f_approx = schlick_color(cos_o, f0);
-        let p_spec   = if self.metallic > 0.999 { 1.0_f32 } else {
+        let p_spec   = if metallic > 0.999 { 1.0_f32 } else {
             (0.2126 * f_approx.x + 0.7152 * f_approx.y + 0.0722 * f_approx.z)
                 .clamp(0.04, 0.9)
         };
@@ -743,7 +821,7 @@ impl Material for PbrMaterial {
 
         // Base specular VNDF pdf: (1−p_coat)·p_spec · D · G1(wo) / (4 · cos_o)
         if (1.0 - p_coat) * p_spec > 1e-6 {
-            let alpha  = (self.roughness * self.roughness).max(1e-4_f32);
+            let alpha  = (roughness * roughness).max(1e-4_f32);
             let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
             let ax     = alpha / aspect;
             let ay     = alpha * aspect;
@@ -761,7 +839,7 @@ impl Material for PbrMaterial {
         pdf
     }
 
-    fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.albedo }
+    fn albedo_hint(&self, u: f32, v: f32, _p: Point3) -> Color { self.albedo_at(u, v) }
     fn can_receive_caustics(&self) -> bool { self.metallic < 0.999 }
 }
 
@@ -1075,6 +1153,7 @@ mod tests {
             mat,
             t: 1.0, u: 0.0, v: 0.0,
             front_face: true,
+            tangent:    Vec3::default(),
         };
         let mut sum   = 0.0f64;
         let mut count = 0usize;
@@ -1124,5 +1203,92 @@ mod tests {
         let mean = white_furnace_mean(&mat, 8000, &mut rng);
         assert!(mean > 0.95, "smooth white metallic furnace mean={mean:.4} — too lossy");
         assert!(mean <= 1.0 + 1e-6, "smooth white metallic furnace mean={mean:.4} — energy gain");
+    }
+
+    // ── Dielectric ────────────────────────────────────────────────────────────
+
+    // HitRecord for a front-face hit at normal incidence (ray going +z, normal −z).
+    fn front_hit_normal_incidence(mat: &dyn Material) -> HitRecord<'_> {
+        HitRecord {
+            p:          Point3::new(0.0, 0.0, 0.0),
+            normal:     Vec3::new(0.0, 0.0, -1.0),
+            mat,
+            t: 1.0, u: 0.0, v: 0.0,
+            front_face: true,
+            tangent:    Vec3::default(),
+        }
+    }
+
+    #[test]
+    fn dielectric_attenuation_is_always_white() {
+        // Glass must be perfectly clear regardless of angle or Fresnel outcome.
+        let glass = Dielectric { ir: 1.5 };
+        let r   = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = front_hit_normal_incidence(&glass);
+        let mut rng = SmallRng::seed_from_u64(0);
+        for _ in 0..200 {
+            let sr = glass.scatter(&r, &rec, &mut rng).expect("glass always scatters");
+            assert!((sr.attenuation.x - 1.0).abs() < 1e-6
+                &&  (sr.attenuation.y - 1.0).abs() < 1e-6
+                &&  (sr.attenuation.z - 1.0).abs() < 1e-6,
+                "attenuation must be white, got {:?}", sr.attenuation);
+        }
+    }
+
+    #[test]
+    fn dielectric_is_always_specular() {
+        // skip_pdf=true so the renderer uses the scattered direction directly.
+        let glass = Dielectric { ir: 1.5 };
+        let r   = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = front_hit_normal_incidence(&glass);
+        let mut rng = SmallRng::seed_from_u64(42);
+        for _ in 0..100 {
+            let sr = glass.scatter(&r, &rec, &mut rng).expect("glass always scatters");
+            assert!(sr.skip_pdf, "dielectric scatter must be specular (skip_pdf=true)");
+        }
+    }
+
+    #[test]
+    fn dielectric_tir_always_reflects_at_steep_internal_angle() {
+        // From inside glass (n=1.5) at 50° from the surface normal:
+        // ratio × sin(50°) ≈ 1.15 > 1 → TIR is guaranteed, no RNG involved.
+        // The reflected ray must flip its z-component (going back into the medium).
+        let s50 = 50f32.to_radians().sin();
+        let c50 = 50f32.to_radians().cos();
+        let glass = Dielectric { ir: 1.5 };
+        let r = Ray::new(Point3::new(0.0, 0.0, -1.0), Vec3::new(s50, 0.0, c50));
+        // back face: outward normal (0,0,1) dotted with direction = c50 > 0 → front_face=false.
+        // HitRecord::new would flip to (0,0,−1); we set that directly.
+        let rec = HitRecord {
+            p: Point3::new(0.0, 0.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            mat: &glass,
+            t: 1.0, u: 0.0, v: 0.0,
+            front_face: false,
+            tangent:    Vec3::default(),
+        };
+        let mut rng = SmallRng::seed_from_u64(0);
+        for _ in 0..50 {
+            let sr = glass.scatter(&r, &rec, &mut rng).expect("must scatter");
+            assert!(sr.ray.direction.z < 0.0,
+                "TIR must reflect back (z < 0), got z={:.4}", sr.ray.direction.z);
+        }
+    }
+
+    #[test]
+    fn dielectric_mostly_transmits_at_normal_incidence() {
+        // Schlick r₀ = ((1−n)/(1+n))² ≈ 0.04 for n=1.5.
+        // Over 500 samples, > 90% should transmit (z > 0, same direction as input).
+        let glass = Dielectric { ir: 1.5 };
+        let r   = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = front_hit_normal_incidence(&glass);
+        let mut rng = SmallRng::seed_from_u64(7);
+        let n = 500usize;
+        let transmitted = (0..n)
+            .filter(|_| glass.scatter(&r, &rec, &mut rng).expect("must scatter").ray.direction.z > 0.0)
+            .count();
+        let frac = transmitted as f32 / n as f32;
+        assert!(frac > 0.90,
+            "≥90% should transmit at normal incidence (Schlick r₀≈4%), got {:.1}%", frac * 100.0);
     }
 }

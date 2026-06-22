@@ -40,7 +40,7 @@ pub fn build_random_scene() -> SceneData {
     let diamond_r   = 0.7_f32;
     let diamond_pav = diamond_r * 40.75_f32.to_radians().tan();
     let diamond: Arc<dyn Hittable> = Arc::new(Diamond::new(
-        Point3::new(0.0, diamond_pav, 0.0),
+        Point3::new(0.0, diamond_pav + 0.05, 0.0),
         diamond_r,
         Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585 }),
     ));

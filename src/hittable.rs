@@ -57,13 +57,16 @@ pub struct HitRecord<'a> {
     pub u: f32,
     pub v: f32,
     pub front_face: bool,
+    /// Surface tangent in world space, used for normal-map TBN construction.
+    /// Zero for shapes that don't compute tangents (spheres, planes, etc.).
+    pub tangent: Vec3,
 }
 
 impl<'a> HitRecord<'a> {
     pub fn new(p: Point3, t: f32, mat: &'a dyn Material, r: &Ray, outward_normal: Vec3) -> Self {
         let front_face = r.direction.dot(outward_normal) < 0.0;
         let normal = if front_face { outward_normal } else { -outward_normal };
-        Self { p, normal, mat, t, u: 0.0, v: 0.0, front_face }
+        Self { p, normal, mat, t, u: 0.0, v: 0.0, front_face, tangent: Vec3::default() }
     }
 }
 

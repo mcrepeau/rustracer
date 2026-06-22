@@ -1,25 +1,29 @@
 # rustracer — custom scene file
-# Press [R] in the viewer to hot-reload after editing, or [5] to select this scene.
+# Press [R] in the viewer to hot-reload after editing, or [4] to select this scene.
 #
 # Coordinate system: Y is up.  Objects are placed in world space.
 # Units are arbitrary — keep them consistent within a scene.
 
-name        = "The Lighthouse"
+name        = "OBJ loading"
 max_samples = 2000
 
 # ── Camera ────────────────────────────────────────────────────────────────────
 [camera]
-look_from  = [2, 4, 12]
-look_at    = [0, 3.5, 0]
-vfov       = 40.0
-aperture   = 0.04
-move_speed = 0.3
+look_from  = [8, 5, 10]
+look_at    = [3.8, 0.0, 2.2]
+vfov       = 70.0
+aperture   = 0.00
+move_speed = 0.2
 
 # ── Background ────────────────────────────────────────────────────────────────
 [background]
-type          = "physical"
-sun_azimuth   = -55.0
-sun_elevation = 32.0
+type = "env_map"
+path = "assets/sunset_puresky_4k.hdr"
+
+# [background]
+# type          = "physical"
+# sun_azimuth   = -55.0
+# sun_elevation = 32.0
 
 # ── Objects ───────────────────────────────────────────────────────────────────
 # Shapes:
@@ -29,6 +33,12 @@ sun_elevation = 32.0
 #   cone           — center [x,y,z]  radius  height
 #   disk           — center [x,y,z]  normal [x,y,z]  radius
 #   infinite_plane — point [x,y,z]   normal [x,y,z]  (wave_amplitude  wave_scale)
+#   mesh           — path "assets/file.obj"
+#
+# Per-object transforms (applied in SRT order: scale → rotate_y → translate):
+#   scale     = 0.01       # uniform scale factor (e.g. cm → m)
+#   rotate_y  = 90.0       # degrees around world Y axis
+#   translate = [x, y, z]  # world-space offset applied last
 #
 # Materials:
 #   lambertian          — color [r,g,b]
@@ -37,87 +47,40 @@ sun_elevation = 32.0
 #   spectral_dielectric — ior  dispersion
 #   diffuse_light       — color [r,g,b]  (>1 = HDR bright)
 #   pbr                 — albedo [r,g,b]  metallic  roughness
+#   spectral_metal      — variant ("gold"|"copper"|"silver")  roughness
+#   textured_pbr        — albedo_path  (roughness_path  metallic_path  ao_path)  roughness  metallic
 #   pearl               — film_thickness  film_scale  orient_strength
 
-# ── Ocean ─────────────────────────────────────────────────────────────────────
-# Wavy dielectric plane: Fresnel reflections at grazing angles, refracted
-# rocky seafloor visible straight-on.  wave_amplitude in world units;
-# wave_scale controls ripple frequency (higher = choppier).
+# ── Floor ─────────────────────────────────────────────────────────────────────
 [[objects]]
-shape    = { type = "infinite_plane", point = [0, -0.1, 0], normal = [0, 1, 0], wave_amplitude = 0.04, wave_scale = 2.2 }
-material = { type = "dielectric", ior = 1.33 }
-
-# ── Rocky island ──────────────────────────────────────────────────────────────
-# A wide basalt platform — its top face (y = 0) pokes just above the waterline.
-# The rocky sides visible through the water.
-[[objects]]
-shape    = { type = "box", p_min = [-6, -8, -6], p_max = [6, 0, 6] }
-material = { type = "lambertian", color = [0.42, 0.38, 0.32] }
+shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }
+material = { type = "pbr", albedo = [0.50, 0.48, 0.46], roughness = 0.25, metallic = 0.0 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LIGHTHOUSE
+# OLD CHAIR (OBJ mesh — modelled in cm, so scale 0.01 → metres)
 # ══════════════════════════════════════════════════════════════════════════════
-
-# Stone base — squat box at the tower's foot
 [[objects]]
-shape    = { type = "box", p_min = [-0.9, 0, -0.9], p_max = [0.9, 1.2, 0.9] }
-material = { type = "lambertian", color = [0.88, 0.84, 0.78] }
-
-# Tower — tall white cylinder
-[[objects]]
-shape    = { type = "cylinder", center = [0, 1.2, 0], radius = 0.40, height = 5.0 }
-material = { type = "lambertian", color = [0.93, 0.91, 0.88] }
-
-# Watch gallery — wider dark metal band near the top
-[[objects]]
-shape    = { type = "cylinder", center = [0, 6.2, 0], radius = 0.54, height = 0.30 }
-material = { type = "metal", color = [0.16, 0.16, 0.18], fuzz = 0.05 }
-
-# Fresnel lamp — glass sphere that bends the light
-[[objects]]
-shape    = { type = "sphere", center = [0, 6.85, 0], radius = 0.35 }
-material = { type = "dielectric", ior = 1.48 }
-
-# Light beam — emissive disk just in front of the lens
-[[objects]]
-shape    = { type = "disk", center = [0, 6.85, 0.36], normal = [0, 0.05, 1], radius = 0.20 }
-material = { type = "diffuse_light", color = [7.0, 5.5, 3.0] }
-
-# Roof — red-painted iron cone
-[[objects]]
-shape    = { type = "cone", center = [0, 7.20, 0], radius = 0.60, height = 0.88 }
-material = { type = "pbr", albedo = [0.68, 0.09, 0.05], roughness = 0.40, metallic = 0.30 }
+shape     = { type = "mesh", path = "assets/old_chair.obj" }
+material  = { type = "spectral_metal", variant = "gold", roughness = 0.2 }
+scale     = 0.02
+rotate_y  = 160.0
+translate = [3.8, 0.0, 2.2]
 
 # ══════════════════════════════════════════════════════════════════════════════
-# KEEPER'S COTTAGE
+# BASKETBALL (OBJ mesh — modelled in cm, so scale 0.01 → metres)
+# Ball sits on the floor at Y=0 (mesh already bottom-aligned).
+# Note: normal map not applied (tangent-space normal mapping not yet supported).
 # ══════════════════════════════════════════════════════════════════════════════
-
 [[objects]]
-shape    = { type = "box", p_min = [2.4, 0, -1.4], p_max = [5.6, 2.2, 1.4] }
-material = { type = "lambertian", color = [0.76, 0.60, 0.42] }
-
-[[objects]]
-shape    = { type = "cylinder", center = [5.0, 2.2, 0.7], radius = 0.19, height = 1.05 }
-material = { type = "lambertian", color = [0.38, 0.30, 0.22] }
-
-# ══════════════════════════════════════════════════════════════════════════════
-# OCEAN DETAILS
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Mooring post — tapered wooden piling at the island edge
-[[objects]]
-shape    = { type = "cone", center = [-5.5, 0, 0.5], radius = 0.22, height = 1.10 }
-material = { type = "pbr", albedo = [0.28, 0.18, 0.10], roughness = 0.75, metallic = 0.0 }
-
-# Pearl buoy — floating in the ocean in front of the island (left)
-[[objects]]
-shape    = { type = "sphere", center = [-4.5, 0.42, 7.5], radius = 0.52 }
-material = { type = "pearl", film_thickness = 500.0, film_scale = 3.5, orient_strength = 0.50 }
-
-# Spectral glass float — fishing-net float bobbing in the foreground (right)
-[[objects]]
-shape    = { type = "sphere", center = [2.8, 0.32, 7.8], radius = 0.42 }
-material = { type = "spectral_dielectric", ior = 1.76, dispersion = 0.08 }
+shape                  = { type = "mesh", path = "assets/basketball.obj" }
+material.type          = "textured_pbr"
+material.albedo_path   = "assets/textures/basketball_albedo.png"
+material.roughness_path = "assets/textures/basketball_roughness.png"
+material.metallic_path = "assets/textures/basketball_metallic.png"
+material.ao_path       = "assets/textures/basketball_ao.png"
+material.normal_path   = "assets/textures/basketball_normal.png"
+scale                  = 0.02
+translate              = [3.8, 1.02, 2.2]
 
 # ── Caustics ──────────────────────────────────────────────────────────────────
 # Uncomment for caustic pools under the glass float and Fresnel lamp.

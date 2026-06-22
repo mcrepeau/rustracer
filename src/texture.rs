@@ -9,6 +9,7 @@ pub enum Texture {
     Checker { scale: f32, even: Color, odd: Color },
     Image(Arc<RgbImage>),
     /// Marble-like Perlin noise: 0.5*(1 + sin(scale·p.z + 10·turb(p)))
+    #[allow(dead_code)]
     Noise { perlin: Arc<Perlin>, scale: f32 },
 }
 

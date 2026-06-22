@@ -31,7 +31,8 @@ impl SceneData {
         if !self.enable_caustics { return; }
         let r     = self.caustic_gather_radius;
         let world = Arc::clone(&self.world);
-        if let Background::Physical { sun_dir, .. } = self.background {
+        if let Background::Physical { sun_dir, .. } = &self.background {
+            let sun_dir = *sun_dir;
             let perp = if sun_dir.x.abs() < 0.9 {
                 Vec3::new(0.0, -sun_dir.z, sun_dir.y).unit()
             } else {
