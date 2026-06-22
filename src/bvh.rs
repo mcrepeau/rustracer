@@ -451,6 +451,52 @@ impl Hittable for BvhTree {
         best
     }
 
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        if self.nodes.is_empty() { return false; }
+
+        let mut stack = [0i32; 128];
+        let mut top   = 1usize;
+
+        let ro = [r.origin.x,  r.origin.y,  r.origin.z];
+        let id = [r.inv_dir.x, r.inv_dir.y, r.inv_dir.z];
+
+        while top > 0 {
+            top -= 1;
+            let entry = stack[top];
+
+            if entry < 0 {
+                if self.objects[(-entry - 1) as usize].any_hit(r, t_min, t_max) {
+                    return true;
+                }
+                continue;
+            }
+
+            let node = &self.nodes[entry as usize];
+
+            // N-wide AABB test — same SIMD paths as hit(), t_max is fixed (no shrinkage).
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            let (mask, _) = unsafe { test_children_avx2(node, ro, id, t_min, t_max) };
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            let (mask, _) = unsafe { test_children_sse(node, ro, id, t_min, t_max) };
+            #[cfg(target_arch = "aarch64")]
+            let (mask, _) = unsafe { test_children_neon(node, ro, id, t_min, t_max) };
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            let (mask, _) = test_children_scalar(node, ro, id, t_min, t_max);
+
+            if mask == 0 { continue; }
+
+            // No sort needed — any order is fine when one hit is enough.
+            for c in 0..QBVH_WIDTH {
+                if mask & (1 << c) != 0 {
+                    stack[top] = node.children[c];
+                    top += 1;
+                }
+            }
+        }
+
+        false
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         if self.nodes.is_empty() { None } else { Some(self.bbox) }
     }

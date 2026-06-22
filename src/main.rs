@@ -2,6 +2,7 @@ mod aabb;
 mod bvh;
 mod vec3;
 mod ray;
+mod spectrum;
 mod hittable;
 mod texture;
 mod material;
@@ -34,7 +35,7 @@ use camera::CameraState;
 use renderer::{Background, render_tiles};
 #[cfg(feature = "denoise")]
 use renderer::{Background, render_tiles, render_aux_pass};
-use scene::{SceneData, resolve_camera_aabb};
+use scene::SceneData;
 use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene};
 use output::{to_rgb_u32, save_png};
 
@@ -56,7 +57,6 @@ const WIDTH:  u32 = 1200;
 const HEIGHT: u32 = 800;
 const MOUSE_SENS:  f32 = 0.002;
 const TITLE_INTERVAL: Duration = Duration::from_millis(200);
-const CAM_RADIUS: f32 = 0.25;
 
 // ── Bench ─────────────────────────────────────────────────────────────────────
 
@@ -113,6 +113,47 @@ fn run_bench() {
             scene.name, SAMPLES, secs, ms_per_s, mpx_s);
     }
     println!("\nDone.");
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+fn write_tonemap(buf: &mut [u32], accumulator: &[Color], sc: f32, exposure: f32) {
+    buf.par_iter_mut()
+        .zip(accumulator.par_iter())
+        .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
+}
+
+#[cfg(feature = "denoise")]
+fn spawn_denoiser(
+    win_w: u32,
+    win_h: u32,
+    accumulator:     &[Color],
+    samples:         u32,
+    aux_albedo:      &[f32],
+    aux_normal:      &[f32],
+    denoised:        &Arc<Mutex<Vec<Color>>>,
+    denoise_running: &Arc<AtomicBool>,
+    denoise_epoch:   &Arc<AtomicU64>,
+) {
+    let sc    = 1.0 / samples.max(1) as f32;
+    let input = accumulator.iter()
+        .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
+        .collect::<Vec<f32>>();
+    let alb     = aux_albedo.to_vec();
+    let nrm     = aux_normal.to_vec();
+    let dst     = Arc::clone(denoised);
+    let running = Arc::clone(denoise_running);
+    let epoch   = denoise_epoch.load(Ordering::Relaxed);
+    let ep_ref  = Arc::clone(denoise_epoch);
+    running.store(true, Ordering::Relaxed);
+    std::thread::spawn(move || {
+        if let Some(result) = denoise::denoise_rgb(win_w, win_h, input, alb, nrm) {
+            if ep_ref.load(Ordering::Relaxed) == epoch {
+                *dst.lock().unwrap() = result;
+            }
+        }
+        running.store(false, Ordering::Release);
+    });
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -183,8 +224,6 @@ fn main() {
     let mut cam_dirty         = false;
     let mut pending_autofocus = false;
     let mut last_title_update = Instant::now();
-    let mut last_frame_time   = Instant::now();
-    let mut physics_accum     = Duration::ZERO;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -208,7 +247,6 @@ fn main() {
                 scene_idx        = i;
                 cam_state        = CameraState::from_params(&scenes[i].cam_init);
                 strata           = (scenes[i].max_samples as f32).sqrt() as u32;
-                physics_accum    = Duration::ZERO;
                 reset_accum!();
                 cam_dirty        = true;
                 pending_autofocus = true;
@@ -316,7 +354,7 @@ fn main() {
                                     window.request_redraw();
                                 }
                                 VirtualKeyCode::Left | VirtualKeyCode::Right => {
-                                    if let Background::Physical { sun_dir } = &mut scenes[scene_idx].background {
+                                    if let Background::Physical { sun_dir, .. } = &mut scenes[scene_idx].background {
                                         let step = if key == VirtualKeyCode::Right { 0.1f32 } else { -0.1f32 };
                                         let (s, c) = step.sin_cos();
                                         *sun_dir = vec3::Vec3::new(
@@ -329,7 +367,7 @@ fn main() {
                                     }
                                 }
                                 VirtualKeyCode::Up | VirtualKeyCode::Down => {
-                                    if let Background::Physical { sun_dir } = &mut scenes[scene_idx].background {
+                                    if let Background::Physical { sun_dir, .. } = &mut scenes[scene_idx].background {
                                         let step = if key == VirtualKeyCode::Up { 0.1f32 } else { -0.1f32 };
                                         let el = sun_dir.y.asin();
                                         let new_el = (el + step).clamp(-10f32.to_radians(), 85f32.to_radians());
@@ -348,27 +386,10 @@ fn main() {
                                 #[cfg(feature = "denoise")]
                                 VirtualKeyCode::N => {
                                     oidn_on = !oidn_on;
-                                    if oidn_on && samples > 0 && !denoise_running.load(Ordering::Relaxed) {
-                                        let w = win_w; let h = win_h;
-                                        let sc = 1.0 / samples.max(1) as f32;
-                                        let input: Vec<f32> = accumulator.iter()
-                                            .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
-                                            .collect();
-                                        let alb     = aux_albedo.clone();
-                                        let nrm     = aux_normal.clone();
-                                        let dst     = Arc::clone(&denoised);
-                                        let running = Arc::clone(&denoise_running);
-                                        let epoch   = denoise_epoch.load(Ordering::Relaxed);
-                                        let ep_ref  = Arc::clone(&denoise_epoch);
-                                        running.store(true, Ordering::Relaxed);
-                                        std::thread::spawn(move || {
-                                            if let Some(result) = denoise::denoise_rgb(w, h, input, alb, nrm) {
-                                                if ep_ref.load(Ordering::Relaxed) == epoch {
-                                                    *dst.lock().unwrap() = result;
-                                                }
-                                            }
-                                            running.store(false, Ordering::Relaxed);
-                                        });
+                                    if oidn_on && samples > 0 && !denoise_running.load(Ordering::Acquire) {
+                                        spawn_denoiser(win_w, win_h, &accumulator, samples,
+                                            &aux_albedo, &aux_normal,
+                                            &denoised, &denoise_running, &denoise_epoch);
                                     }
                                     window.request_redraw();
                                 }
@@ -382,18 +403,9 @@ fn main() {
                                     denoise_blend = (denoise_blend + 0.1).min(1.0);
                                     window.request_redraw();
                                 }
-                                VirtualKeyCode::Return => {
-                                    let pausing = !scenes[scene_idx].physics.paused;
-                                    scenes[scene_idx].physics.paused = pausing;
-                                    if pausing {
-                                        scenes[scene_idx].rebuild();
-                                        reset_accum!();
-                                    }
-                                }
                                 VirtualKeyCode::R if scene_idx == 0 => {
                                     scenes[0] = build_random_scene();
                                     strata = (scenes[0].max_samples as f32).sqrt() as u32;
-                                    physics_accum = Duration::ZERO;
                                     reset_accum!();
                                     cam_dirty = true;
                                     pending_autofocus = true;
@@ -444,9 +456,6 @@ fn main() {
                     if pressed.contains(&VirtualKeyCode::Space)  { cam_state.pos.y += spd;       moved = true; }
                     if pressed.contains(&VirtualKeyCode::LShift) { cam_state.pos.y -= spd;       moved = true; }
                     if moved {
-                        for bbox in &scenes[scene_idx].physics.colliders {
-                            resolve_camera_aabb(&mut cam_state.pos, CAM_RADIUS, bbox);
-                        }
                         cam_dirty = true;
                         pending_autofocus = true;
                     }
@@ -462,29 +471,9 @@ fn main() {
                     cam_dirty = false;
                 }
 
-                let now = Instant::now();
-                let frame_dt = now.duration_since(last_frame_time);
-                physics_accum += frame_dt.min(Duration::from_millis(100));
-                last_frame_time = now;
-                let mut physics_ticked = false;
-                while physics_accum >= Duration::from_millis(16) {
-                    physics_ticked |= scenes[scene_idx].tick();
-                    physics_accum -= Duration::from_millis(16);
-                }
-                if physics_ticked {
-                    reset_accum!();
-                }
-
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
                     let scene    = &scenes[scene_idx];
                     let cam_hint = if free_cam { "FREE CAM [Esc] release" } else { "[F] Free Camera" };
-                    let motion_hint = if scene.physics.gravity > 0.0 {
-                        if scene.physics.settled     { "  settled — [R] restart" }
-                        else if scene.physics.paused { "  PAUSED — [Enter] resume  [R] restart" }
-                        else                         { "  [Enter] pause  [R] restart" }
-                    } else if !scene.physics.dynamic.is_empty() {
-                        if scene.physics.paused { "  PAUSED — [Enter] resume" } else { "  [Enter] pause" }
-                    } else { "" };
                     #[cfg(feature = "denoise")]
                     let oidn_hint = if oidn_on {
                         let state = if denoise_running.load(Ordering::Relaxed) { "running…" } else { "on" };
@@ -495,14 +484,14 @@ fn main() {
                     #[cfg(not(feature = "denoise"))]
                     let oidn_hint = "";
                     let spp_label = format!("{samples} spp");
-                    let sun_hint = if let Background::Physical { sun_dir } = scene.background {
+                    let sun_hint = if let Background::Physical { sun_dir, .. } = scene.background {
                         format!("  sun {:.0}° [arrows]", sun_dir.y.asin().to_degrees())
                     } else { String::new() };
                     window.set_title(&format!(
-                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}{}",
+                        "Ray Tracer — {} — {}  |  {}  [P] save  [[] apt {:.2}  [,.] fov {:.0}°  [-=] exp {:.2}x{}{}",
                         scene.name, spp_label, cam_hint,
                         cam_state.aperture, cam_state.vfov, exposure,
-                        sun_hint, oidn_hint, motion_hint,
+                        sun_hint, oidn_hint,
                     ));
                     last_title_update = Instant::now();
                 }
@@ -534,27 +523,10 @@ fn main() {
                     }
 
                     #[cfg(feature = "denoise")]
-                    if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Relaxed) {
-                        let w = win_w; let h = win_h;
-                        let sc = 1.0 / samples.max(1) as f32;
-                        let input: Vec<f32> = accumulator.iter()
-                            .flat_map(|c| [c.x * sc, c.y * sc, c.z * sc])
-                            .collect();
-                        let alb     = aux_albedo.clone();
-                        let nrm     = aux_normal.clone();
-                        let dst     = Arc::clone(&denoised);
-                        let running = Arc::clone(&denoise_running);
-                        let epoch   = denoise_epoch.load(Ordering::Relaxed);
-                        let ep_ref  = Arc::clone(&denoise_epoch);
-                        running.store(true, Ordering::Relaxed);
-                        std::thread::spawn(move || {
-                            if let Some(result) = denoise::denoise_rgb(w, h, input, alb, nrm) {
-                                if ep_ref.load(Ordering::Relaxed) == epoch {
-                                    *dst.lock().unwrap() = result;
-                                }
-                            }
-                            running.store(false, Ordering::Relaxed);
-                        });
+                    if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
+                        spawn_denoiser(win_w, win_h, &accumulator, samples,
+                            &aux_albedo, &aux_normal,
+                            &denoised, &denoise_running, &denoise_epoch);
                     }
 
                     window.request_redraw();
@@ -565,11 +537,11 @@ fn main() {
 
             Event::RedrawRequested(_) => {
                 let mut buffer = surface.buffer_mut().unwrap();
+                let sc = 1.0 / samples.max(1) as f32;
                 #[cfg(feature = "denoise")]
                 {
                     let denoised_guard = denoised.lock().unwrap();
                     let use_denoised = oidn_on && denoised_guard.len() == (win_w * win_h) as usize;
-                    let sc = 1.0 / samples.max(1) as f32;
                     let buf: &mut [u32] = &mut buffer;
                     if use_denoised {
                         buf.par_iter_mut()
@@ -580,18 +552,11 @@ fn main() {
                                 *dst = to_rgb_u32(den * denoise_blend + raw * (1.0 - denoise_blend), exposure);
                             });
                     } else {
-                        buf.par_iter_mut()
-                            .zip(accumulator.par_iter())
-                            .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
+                        write_tonemap(buf, &accumulator, sc, exposure);
                     }
                 }
                 #[cfg(not(feature = "denoise"))]
-                {
-                    let sc = 1.0 / samples.max(1) as f32;
-                    (*buffer).par_iter_mut()
-                        .zip(accumulator.par_iter())
-                        .for_each(|(dst, &acc)| *dst = to_rgb_u32(acc * sc, exposure));
-                }
+                write_tonemap(&mut buffer, &accumulator, sc, exposure);
                 buffer.present().unwrap();
             }
 

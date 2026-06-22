@@ -7,6 +7,8 @@ use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord};
 use crate::texture::Texture;
+use crate::spectrum::{cauchy_ior, spectral_to_rgb};
+use crate::volume::hg_sample;
 
 pub struct DiffuseLight {
     pub emit: Texture,
@@ -26,7 +28,7 @@ impl Material for Lambertian {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let albedo = self.texture.value(rec.u, rec.v, rec.p);
         // Direction is overridden by the PDF in ray_color; normal is a harmless placeholder.
-        Some(ScatterRecord { attenuation: albedo, ray: Ray::new_at_time(rec.p, rec.normal, r_in.time), skip_pdf: false })
+        Some(ScatterRecord { attenuation: albedo, ray: Ray::scatter_from(rec.p, rec.normal, r_in), skip_pdf: false })
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
@@ -45,7 +47,7 @@ pub struct Metal {
 impl Material for Metal {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let reflected = r_in.direction.unit().reflect(rec.normal);
-        let ray = Ray::new_at_time(rec.p, reflected + self.fuzz * Vec3::random_unit_vector(rng), r_in.time);
+        let ray = Ray::scatter_from(rec.p, reflected + self.fuzz * Vec3::random_unit_vector(rng), r_in);
         if ray.direction.dot(rec.normal) > 0.0 {
             Some(ScatterRecord { attenuation: self.albedo, ray, skip_pdf: true })
         } else {
@@ -83,11 +85,53 @@ fn schlick_color(cos_theta: f32, f0: Color) -> Color {
     f0 + (Color::new(1.0, 1.0, 1.0) - f0) * t
 }
 
-/// Smith G1 term for GGX (height-correlated uncorrelated form).
+/// Smith G1 term for isotropic GGX.
 fn smith_g1(cos_theta: f32, alpha: f32) -> f32 {
     let a2 = alpha * alpha;
     let c2 = cos_theta * cos_theta;
     2.0 * cos_theta / (cos_theta + (a2 + (1.0 - a2) * c2).sqrt())
+}
+
+/// Smith G1 for anisotropic GGX.
+/// `tx` / `ty` are dot(v, tangent) / dot(v, bitangent); `cos_theta` = dot(v, normal).
+fn smith_g1_aniso(cos_theta: f32, tx: f32, ty: f32, ax: f32, ay: f32) -> f32 {
+    let denom = cos_theta + (cos_theta*cos_theta + ax*ax*tx*tx + ay*ay*ty*ty).sqrt();
+    (2.0 * cos_theta / denom.max(1e-6)).clamp(0.0, 1.0)
+}
+
+/// Sample a microfacet normal from the anisotropic GGX VNDF (Heitz 2018).
+/// `wo_ts` is the outgoing direction in tangent space (z = dot(wo, n) > 0).
+/// Returns the microfacet normal in tangent space.
+fn vndf_sample_aniso(wo_ts: Vec3, ax: f32, ay: f32, xi1: f32, xi2: f32) -> Vec3 {
+    // Stretch wo into an isotropic hemisphere
+    let wh = Vec3::new(ax * wo_ts.x, ay * wo_ts.y, wo_ts.z).unit();
+
+    // Orthonormal basis around wh (T1 perpendicular to wh in the xy-plane)
+    let len = (wh.x * wh.x + wh.y * wh.y).sqrt();
+    let t1 = if len > 1e-6 {
+        Vec3::new(-wh.y / len, wh.x / len, 0.0)
+    } else {
+        Vec3::new(1.0, 0.0, 0.0)
+    };
+    let t2 = wh.cross(t1);
+
+    // Sample the projected area of the hemisphere cap (Heitz 2018, Algorithm 2)
+    let a  = 1.0 / (1.0 + wh.z);
+    let r  = xi1.sqrt();
+    let (p1, p2) = if xi2 < a {
+        let phi = xi2 / a * PI;
+        (r * phi.cos(), r * phi.sin())
+    } else {
+        let phi = PI + (xi2 - a) / (1.0 - a) * PI;
+        (r * phi.cos(), r * phi.sin() * wh.z)
+    };
+
+    // Compose sample on the unit hemisphere
+    let p3 = (1.0 - p1*p1 - p2*p2).max(0.0).sqrt();
+    let nh  = t1 * p1 + t2 * p2 + wh * p3;
+
+    // Unstretch → microfacet normal in tangent space
+    Vec3::new(ax * nh.x, ay * nh.y, nh.z.max(0.0)).unit()
 }
 
 /// Build a tangent + bitangent pair perpendicular to `n`.
@@ -105,45 +149,47 @@ pub struct Dielectric {
 impl Material for Dielectric {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let (direction, _) = dielectric_boundary(self.ir, r_in, rec, rng);
-        Some(ScatterRecord { attenuation: Color::new(1.0, 1.0, 1.0), ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
+        Some(ScatterRecord { attenuation: Color::new(1.0, 1.0, 1.0), ray: Ray::scatter_from(rec.p, direction, r_in), skip_pdf: true })
     }
 }
 
-/// Dispersive dielectric that refracts each wavelength (R/G/B) at its own IOR.
+/// Dispersive dielectric using a continuous hero-wavelength model.
 ///
-/// At each scatter event a hero wavelength is chosen uniformly at random.
-/// Refractions use the wavelength-specific IOR and carry 3× weight on a single
-/// channel so the Monte Carlo estimator remains unbiased.  Reflections (TIR or
-/// Fresnel) are wavelength-independent and carry full (1,1,1) weight, keeping
-/// those paths uncoloured.
+/// The ray carries a wavelength λ ∈ [380, 700] nm sampled once per path.
+/// At each boundary event the IOR is evaluated via the Cauchy equation
+/// n(λ) = B + C/λ² (λ in μm), and refracted rays are weighted by the CIE
+/// colour-matching function for that wavelength — normalised so that
+/// E_λ[weight] = (1,1,1).  This produces smooth spectral dispersion (rainbows,
+/// coloured diamond fire) rather than the coarse R/G/B bands of the 3-channel
+/// approach.  Reflections carry (1,1,1) since Fresnel is nearly achromatic.
 ///
-/// For a round brilliant diamond use  ir_red = 2.407, ir_green = 2.417,
-/// ir_blue = 2.426  (Cauchy model fit to measured dispersion data).
+/// Cauchy parameters for common materials (B, C in μm²):
+/// - Crown glass:  cauchy_b ≈ 1.507, cauchy_c ≈ 0.00375
+/// - Dense flint:  cauchy_b ≈ 1.612, cauchy_c ≈ 0.00950
+/// - Diamond:      cauchy_b ≈ 2.395, cauchy_c ≈ 0.00585
 pub struct SpectralDielectric {
-    pub ir_red:   f32,
-    pub ir_green: f32,
-    pub ir_blue:  f32,
+    pub cauchy_b: f32,
+    pub cauchy_c: f32,
 }
 
 impl Material for SpectralDielectric {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let (ir, channel): (f32, u8) = match rng.gen_range(0u8..3) {
-            0 => (self.ir_red,   0),
-            1 => (self.ir_green, 1),
-            _ => (self.ir_blue,  2),
-        };
-        let (direction, reflected) = dielectric_boundary(ir, r_in, rec, rng);
-        // Reflection is wavelength-independent; refraction isolates the hero channel.
-        let attenuation = if reflected {
-            Color::new(1.0, 1.0, 1.0)
+        let ior = cauchy_ior(r_in.wavelength, self.cauchy_b, self.cauchy_c);
+        let (direction, reflected) = dielectric_boundary(ior, r_in, rec, rng);
+
+        // Apply the CMF weight exactly once per path: on the first refraction.
+        // Subsequent refractions use (1,1,1) so the weight doesn't compound.
+        // Reflections are always achromatic — Fresnel reflectance is nearly flat
+        // across the visible spectrum.
+        let weight_this_refraction = !reflected && !r_in.spectral_weighted;
+        let attenuation = if weight_this_refraction {
+            spectral_to_rgb(r_in.wavelength)
         } else {
-            match channel {
-                0 => Color::new(3.0, 0.0, 0.0),
-                1 => Color::new(0.0, 3.0, 0.0),
-                _ => Color::new(0.0, 0.0, 3.0),
-            }
+            Color::new(1.0, 1.0, 1.0)
         };
-        Some(ScatterRecord { attenuation, ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
+        let mut scattered = Ray::scatter_from(rec.p, direction, r_in);
+        if weight_this_refraction { scattered.spectral_weighted = true; }
+        Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
     }
 
     fn is_spectral(&self) -> bool { true }
@@ -181,25 +227,8 @@ impl Material for MarbleMaterial {
         } else {
             Color::new(1.0, 1.0, 1.0)
         };
-        Some(ScatterRecord { attenuation, ray: Ray::new_at_time(rec.p, direction, r_in.time), skip_pdf: true })
+        Some(ScatterRecord { attenuation, ray: Ray::scatter_from(rec.p, direction, r_in), skip_pdf: true })
     }
-}
-
-/// Sample a new direction from the Henyey-Greenstein phase function around `wi`.
-/// `g` ∈ (-1, 1): 0 = isotropic, >0 = forward-biased, <0 = back-scattered.
-fn hg_sample(wi: Vec3, g: f32, rng: &mut dyn RngCore) -> Vec3 {
-    let xi1 = rng.gen::<f32>();
-    let xi2 = rng.gen::<f32>();
-    let cos_theta = if g.abs() < 1e-3 {
-        1.0 - 2.0 * xi1
-    } else {
-        let sq = (1.0 - g * g) / (1.0 - g + 2.0 * g * xi1);
-        ((1.0 + g * g - sq * sq) / (2.0 * g)).clamp(-1.0, 1.0)
-    };
-    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-    let phi = 2.0 * PI * xi2;
-    let (t, b) = make_onb(wi);
-    (t * (sin_theta * phi.cos()) + b * (sin_theta * phi.sin()) + wi * cos_theta).unit()
 }
 
 /// Translucent marble: glass boundary with volumetric multiple scattering inside.
@@ -239,7 +268,7 @@ impl Material for SSSMaterial {
                 let new_dir = hg_sample(unit, self.g, rng);
                 return Some(ScatterRecord {
                     attenuation: self.albedo,
-                    ray:         Ray::new_at_time(p_scat, new_dir, r_in.time),
+                    ray:         Ray::scatter_from(p_scat, new_dir, r_in),
                     skip_pdf:    true,
                 });
             }
@@ -249,7 +278,7 @@ impl Material for SSSMaterial {
         let (direction, _) = dielectric_boundary(self.ior, r_in, rec, rng);
         Some(ScatterRecord {
             attenuation: Color::new(1.0, 1.0, 1.0),
-            ray:         Ray::new_at_time(rec.p, direction, r_in.time),
+            ray:         Ray::scatter_from(rec.p, direction, r_in),
             skip_pdf:    true,
         })
     }
@@ -259,36 +288,67 @@ impl Material for SSSMaterial {
 
 /// Physically-based material using GGX microfacet specular + Lambertian diffuse.
 ///
-/// The specular lobe uses the GGX NDF (Trowbridge-Reitz) with Smith G2 shadowing
-/// and Schlick Fresnel.  Specular vs. diffuse is chosen each scatter event via
-/// Russian roulette with probability proportional to the Fresnel reflectance,
-/// keeping the estimator unbiased.
+/// All specular lobes are sampled from the Visible Normal Distribution Function
+/// (VNDF, Heitz 2018).  At `anisotropy == 0`, ax = ay = α, which reduces exactly
+/// to isotropic GGX — no branch needed.
 ///
 /// Parameters:
 /// - `albedo`: base colour — diffuse tint for dielectrics, F0 for metals.
-/// - `roughness`: 0 = perfect mirror, 1 = fully diffuse specular.  The actual
-///   α used internally is `roughness²` (perceptual remapping).
-/// - `metallic`: 0 = dielectric (F0 ≈ 0.04 gray, tinted diffuse), 1 = conductor
-///   (F0 = albedo, no diffuse).
+/// - `roughness`: 0 = perfect mirror, 1 = fully diffuse specular (α = roughness²).
+/// - `metallic`: 0 = dielectric (F0 ≈ 0.04, tinted diffuse), 1 = conductor (no diffuse).
+/// - `anisotropy`: 0 = isotropic, 1 = maximum elongation (brushed-metal look).
+/// - `anisotropy_angle`: rotates the highlight direction in the tangent plane (radians).
+/// - `clearcoat`: weight of a smooth dielectric overcoat [0–1].
+/// - `clearcoat_roughness`: roughness of the coat surface (default ~0.03).
+/// - `film_thickness`: thin-film thickness in nm (0 = achromatic; 400–800 for vivid colours).
+/// - `film_ior`: IOR of the thin film (default 1.5 for common dielectric coats).
 pub struct PbrMaterial {
-    pub albedo:    Color,
-    pub roughness: f32,
-    pub metallic:  f32,
+    pub albedo:              Color,
+    pub roughness:           f32,
+    pub metallic:            f32,
+    pub anisotropy:          f32,
+    pub anisotropy_angle:    f32,
+    pub clearcoat:           f32,
+    pub clearcoat_roughness: f32,
+    pub film_thickness:      f32,
+    pub film_ior:            f32,
+}
+
+impl Default for PbrMaterial {
+    fn default() -> Self {
+        Self {
+            albedo:              Color::new(0.8, 0.8, 0.8),
+            roughness:           0.5,
+            metallic:            0.0,
+            anisotropy:          0.0,
+            anisotropy_angle:    0.0,
+            clearcoat:           0.0,
+            clearcoat_roughness: 0.03,
+            film_thickness:      0.0,
+            film_ior:            1.5,
+        }
+    }
 }
 
 impl Material for PbrMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let n  = rec.normal;
-        let wo = (-r_in.direction).unit();
+        let n     = rec.normal;
+        let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         if cos_o <= 0.0 { return None; }
 
         let alpha = (self.roughness * self.roughness).max(1e-4_f32);
-        // F0: interpolate between dielectric (0.04) and conductor (albedo)
-        let f0 = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
-               + self.albedo * self.metallic;
+        let f0    = Color::new(0.04, 0.04, 0.04) * (1.0 - self.metallic)
+                  + self.albedo * self.metallic;
 
-        // Fresnel at viewing angle: drives specular/diffuse split probability.
+        // Clearcoat lobe: dielectric IOR 1.5 (F0 = 0.04), scaled by clearcoat weight.
+        let p_coat = if self.clearcoat > 1e-3 {
+            schlick(cos_o, 1.0 / 1.5_f32) * self.clearcoat
+        } else {
+            0.0
+        };
+
+        // Base specular probability from Fresnel at the view angle.
         let f_approx = schlick_color(cos_o, f0);
         let p_spec = if self.metallic > 0.999 {
             1.0_f32
@@ -297,43 +357,80 @@ impl Material for PbrMaterial {
                 .clamp(0.04, 0.9)
         };
 
-        if rng.gen::<f32>() < p_spec {
-            // ── GGX specular ──────────────────────────────────────────────────
+        if rng.gen::<f32>() < p_coat {
+            // ── Clearcoat specular (isotropic VNDF) ──────────────────────────
+            let alpha_coat = (self.clearcoat_roughness * self.clearcoat_roughness).max(1e-4);
             let (t, b) = make_onb(n);
             let xi1: f32 = rng.gen();
             let xi2: f32 = rng.gen();
 
-            // Sample half-vector from GGX NDF (Walter et al. 2007 inverse CDF)
-            let cos_th = ((1.0 - xi2) / (xi2 * (alpha * alpha - 1.0) + 1.0)).max(0.0).sqrt();
-            let sin_th = (1.0 - cos_th * cos_th).max(0.0).sqrt();
-            let phi    = 2.0 * PI * xi1;
-            let h = (t * (sin_th * phi.cos()) + b * (sin_th * phi.sin()) + n * cos_th).unit();
+            let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+            let m_ts  = vndf_sample_aniso(wo_ts, alpha_coat, alpha_coat, xi1, xi2);
+            let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
 
-            let vo_h = wo.dot(h).max(0.0);
-            let wi   = (2.0 * vo_h * h - wo).unit();   // reflect wo about h
+            let vo_h  = wo.dot(m).max(0.0);
+            let wi    = (2.0 * vo_h * m - wo).unit();
             let cos_i = wi.dot(n);
             if cos_i <= 0.0 { return None; }
 
-            let cos_h = h.dot(n).max(1e-6);
-            let g2    = smith_g1(cos_o, alpha) * smith_g1(cos_i, alpha);
-            let f     = schlick_color(vo_h, f0);
+            let f_coat = schlick(vo_h, 1.0 / 1.5_f32) * self.clearcoat;
+            let g1_wi  = smith_g1(cos_i, alpha_coat);
 
-            // Weight from PDF cancellation: F·G·(vo·h) / (cos_o · cos_h)
-            // Divide by p_spec to correct for Russian-roulette sampling.
-            let weight = f * (g2 * vo_h / (cos_o.max(1e-6) * cos_h));
+            let film = if self.film_thickness > 0.0 {
+                nacre_color(vo_h, self.film_ior, self.film_thickness)
+            } else {
+                Color::new(1.0, 1.0, 1.0)
+            };
+
+            // VNDF weight: F_coat · film · G1(wi) / p_coat
             Some(ScatterRecord {
-                attenuation: weight / p_spec,
-                ray: Ray::new_at_time(rec.p, wi, r_in.time),
-                skip_pdf: true,
+                attenuation: film * (f_coat * g1_wi / p_coat),
+                ray:         Ray::scatter_from(rec.p, wi, r_in),
+                skip_pdf:    true,
             })
         } else {
-            // ── Diffuse Lambertian (dielectrics only) ─────────────────────────
-            // Divide by (1-p_spec) to correct for Russian-roulette sampling.
-            Some(ScatterRecord {
-                attenuation: self.albedo * ((1.0 - self.metallic) / (1.0 - p_spec)),
-                ray: Ray::new_at_time(rec.p, rec.normal, r_in.time), // direction overridden by PDF
-                skip_pdf: false,
-            })
+            // ── Base layer ────────────────────────────────────────────────────
+            // All base weights divided by (1 − p_coat) for Russian-roulette correction.
+            if rng.gen::<f32>() < p_spec {
+                let xi1: f32 = rng.gen();
+                let xi2: f32 = rng.gen();
+
+                // Unified VNDF: ax = ay = α at anisotropy=0 is identical to isotropic GGX.
+                let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
+                let ax = alpha * aspect;
+                let ay = alpha / aspect;
+
+                let (t0, b0) = make_onb(n);
+                let (ca, sa) = (self.anisotropy_angle.cos(), self.anisotropy_angle.sin());
+                let t = t0 * ca + b0 * sa;
+                let b = b0 * ca - t0 * sa;
+
+                let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
+                let m_ts  = vndf_sample_aniso(wo_ts, ax, ay, xi1, xi2);
+                let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
+
+                let vo_h  = wo.dot(m).max(0.0);
+                let wi    = (2.0 * vo_h * m - wo).unit();
+                let cos_i = wi.dot(n);
+                if cos_i <= 0.0 { return None; }
+
+                let wi_ts = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
+                let g1_wi = smith_g1_aniso(wi_ts.z, wi_ts.x, wi_ts.y, ax, ay);
+                let f     = schlick_color(vo_h, f0);
+
+                Some(ScatterRecord {
+                    attenuation: f * g1_wi / (p_spec * (1.0 - p_coat)),
+                    ray:         Ray::scatter_from(rec.p, wi, r_in),
+                    skip_pdf:    true,
+                })
+            } else {
+                // ── Diffuse Lambertian (dielectrics only) ─────────────────────
+                Some(ScatterRecord {
+                    attenuation: self.albedo * ((1.0 - self.metallic) / ((1.0 - p_spec) * (1.0 - p_coat))),
+                    ray:         Ray::scatter_from(rec.p, rec.normal, r_in),
+                    skip_pdf:    false,
+                })
+            }
         }
     }
 
@@ -364,7 +461,8 @@ pub fn set_pearl_sun_dir(dir: Vec3) {
     PEARL_SUN_X.store(dir.x.to_bits(), Ordering::Relaxed);
     PEARL_SUN_Y.store(dir.y.to_bits(), Ordering::Relaxed);
     PEARL_SUN_Z.store(dir.z.to_bits(), Ordering::Relaxed);
-    PEARL_SUN_ACTIVE.store(true, Ordering::Relaxed);
+    // Release: ensures X/Y/Z writes are visible to any thread that observes ACTIVE=true.
+    PEARL_SUN_ACTIVE.store(true, Ordering::Release);
 }
 
 pub fn clear_pearl_sun_dir() {
@@ -373,7 +471,8 @@ pub fn clear_pearl_sun_dir() {
 
 #[inline]
 fn pearl_sun_dir() -> Option<Vec3> {
-    if PEARL_SUN_ACTIVE.load(Ordering::Relaxed) {
+    // Acquire: pairs with the Release store in set_pearl_sun_dir, guaranteeing X/Y/Z are visible.
+    if PEARL_SUN_ACTIVE.load(Ordering::Acquire) {
         Some(Vec3::new(
             f32::from_bits(PEARL_SUN_X.load(Ordering::Relaxed)),
             f32::from_bits(PEARL_SUN_Y.load(Ordering::Relaxed)),
@@ -386,39 +485,41 @@ fn pearl_sun_dir() -> Option<Vec3> {
 
 // ── Pearl ─────────────────────────────────────────────────────────────────────
 
-/// Two-beam thin-film interference colour for nacre.
+/// Spectral thin-film interference colour for nacre, computed via a full
+/// spectral integral over the visible range.
 ///
-/// Returns an RGB colour in [0,1]³ giving the constructive-interference
-/// intensity at the three representative wavelengths 700 nm (R), 546 nm (G),
-/// 435 nm (B).  Both interfaces in natural nacre undergo a π phase shift
-/// (each layer goes from a lighter to a denser medium), so the shifts cancel
-/// and constructive interference occurs when the optical path difference equals
-/// an integer multiple of λ.
+/// Evaluates OPD = 2 n d cos(θ_t) and integrates the two-beam interference
+/// intensity against the CIE 1931 CMFs at every 5 nm step from 380–700 nm.
+/// This gives a physically correct, deterministic iridescent colour per bounce
+/// without relying on the hero wavelength — avoiding the convergence problem
+/// that arises because the interference cosine oscillates ~3 full cycles across
+/// the visible range, which would average to near-grey with single-wavelength
+/// sampling.
 ///
-/// `cos_theta`        – cosine of the incident angle in air.
-/// `film_ior`         – effective IOR of the nacre layer (~1.56).
-/// `film_thickness_nm`– layer thickness in nanometres (~380–500 for natural pearls).
+/// The integral is normalised so that a non-dispersive surface (constant OPD,
+/// irid = 0.5 everywhere) returns (0.5, 0.5, 0.5); blending toward white at
+/// grazing angles mimics the many-beam suppression of real nacre.
 #[inline]
 fn nacre_color(cos_theta: f32, film_ior: f32, film_thickness_nm: f32) -> Color {
-    // Refracted angle via Snell's law (air → nacre).
-    let sin_sq  = (1.0 - cos_theta * cos_theta).max(0.0);
-    let cos_t   = (1.0 - sin_sq / (film_ior * film_ior)).max(0.0).sqrt();
-    // Optical path difference in nm: OPD = 2 n d cos(θ_t).
-    let opd     = 2.0 * film_ior * film_thickness_nm * cos_t;
-    let irid = |lambda: f32| 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
-    let raw  = Color::new(irid(700.0), irid(546.0), irid(435.0));
-    // At grazing angles the 2-beam model saturates to vivid single-channel
-    // primaries that look artificial on a sphere's rim.  Real nacre has
-    // ~100 stacked platelet layers whose many-beam interference suppresses
-    // off-axis saturation.  Approximate this by blending toward white with
-    // weight (1 − cos²θ) so the rim shows pale pearl luster, not solid colour.
-    // Blend toward white linearly with grazing angle.  Real nacre has ~100
-    // stacked platelet layers; their many-beam interference suppresses off-axis
-    // saturation more gently than a harsh quadratic rolloff.  A linear weight
-    // keeps mid-sphere colours (the most visible part) while still preventing
-    // vivid primary-colour spikes right at the silhouette.
-    let t = cos_theta.powf(0.5);
-    raw * t + Color::new(1.0, 1.0, 1.0) * (1.0 - t)
+    let sin_sq = (1.0 - cos_theta * cos_theta).max(0.0);
+    let cos_t  = (1.0 - sin_sq / (film_ior * film_ior)).max(0.0).sqrt();
+    let opd    = 2.0 * film_ior * film_thickness_nm * cos_t;
+
+    // Spectral integral: Σ CMF(λ) × irid(λ) over 65 wavelengths, 380–700 nm.
+    let mut color = Color::default();
+    let mut lambda = 380.0_f32;
+    while lambda <= 700.01 {
+        let irid = 0.5 * (1.0 + (2.0 * PI * opd / lambda).cos());
+        color += spectral_to_rgb(lambda) * irid;
+        lambda += 5.0;
+    }
+    color /= 65.0; // Normalise: mean = (0.5, 0.5, 0.5) for flat interference.
+
+    // Grazing blend: at cos_theta → 0 the many-beam interference in real nacre
+    // suppresses saturation; blend toward white luster ((1,1,1) × 0.5).
+    let t     = cos_theta.powf(0.5);
+    let luster = Color::new(0.5, 0.5, 0.5);
+    color * t + luster * (1.0 - t)
 }
 
 /// Smooth, aperiodic noise in [−1, 1] — three sine waves at golden-ratio
@@ -441,51 +542,74 @@ fn oil_noise(p: Point3) -> f32 {
 /// the pearl's body colour.
 pub struct PearlMaterial {
     /// Body colour (cream/white for Akoya, golden for South Sea, black for Tahitian).
-    pub base_color:      Color,
+    pub base_color:       Color,
     /// Effective nacre IOR.  Average of aragonite (~1.68) and organic (~1.44)
     /// layers; ~1.56 gives a typical Akoya orient cycle.
-    pub ior:             f32,
+    pub ior:              f32,
     /// Nacre platelet thickness in **nanometres** (natural pearls: 380–600 nm).
-    /// Controls which colour appears at normal incidence and how fast it shifts.
-    pub film_thickness:  f32,
+    pub film_thickness:   f32,
     /// How strongly the orient tints the diffuse body colour [0–1].
-    /// 0 = plain Lambertian cream; 0.3 = visible sheen; 1 = fully replaced.
-    pub orient_strength: f32,
-    /// Spatial frequency of oil-spill film-thickness variation.
-    /// Use ~5.0 for unit-scale objects, ~0.1 for objects ~50 units across.
-    pub film_scale:      f32,
+    pub orient_strength:  f32,
+    /// Spatial frequency of the thickness variation (oil-spill pattern).
+    pub film_scale:       f32,
+    /// GGX roughness of the pearl luster (0 = mirror, 0.05 = soft Akoya sheen).
+    pub luster_roughness: f32,
 }
 
 impl Material for PearlMaterial {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let unit      = r_in.direction.unit();
-        let cos_theta = (-unit).dot(rec.normal).clamp(0.0, 1.0);
+        let n         = rec.normal;
+        let wo        = (-r_in.direction).unit();
+        let cos_theta = wo.dot(n).clamp(0.0, 1.0);
 
         let varied = self.film_thickness + oil_noise(rec.p * self.film_scale) * 150.0;
         let f      = schlick(cos_theta, 1.0 / self.ior);
 
+        // Illumination angle: governs the nacre glow on the diffuse path.
+        // OPD is set when light enters the aragonite platelet stack, so this
+        // component shifts with the sun position, not the camera angle.
+        let cos_illumin = match pearl_sun_dir() {
+            Some(sun) => n.dot(sun).clamp(0.0, 1.0),
+            None      => cos_theta,
+        };
+
         if rng.gen::<f32>() < f {
-            // Specular: OPD depends on the view angle with the normal.
-            let orient = nacre_color(cos_theta, self.ior, varied);
+            // ── GGX luster: view-dependent thin-film iridescence (VNDF) ──────
+            let (t, b)    = make_onb(n);
+            let alpha_l   = (self.luster_roughness * self.luster_roughness).max(1e-4);
+            let xi1: f32  = rng.gen();
+            let xi2: f32  = rng.gen();
+
+            let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_theta);
+            let m_ts  = vndf_sample_aniso(wo_ts, alpha_l, alpha_l, xi1, xi2);
+            let m     = (t * m_ts.x + b * m_ts.y + n * m_ts.z).unit();
+
+            let vo_h  = wo.dot(m).max(0.0);
+            let wi    = (2.0 * vo_h * m - wo).unit();
+            let cos_i = wi.dot(n);
+            if cos_i <= 0.0 { return None; }
+
+            let f_h    = schlick(vo_h, 1.0 / self.ior);
+            let g1_wi  = smith_g1(cos_i, alpha_l);
+            let orient = nacre_color(vo_h, self.ior, varied);
+
+            // VNDF weight: orient · F · G1(wi), divided by RR probability f.
+            let attenuation = orient * (f_h * g1_wi / f);
             Some(ScatterRecord {
-                attenuation: orient,
-                ray:         Ray::new_at_time(rec.p, unit.reflect(rec.normal), r_in.time),
-                skip_pdf:    true,
+                attenuation,
+                ray:      Ray::scatter_from(rec.p, wi, r_in),
+                skip_pdf: true,
             })
         } else {
-            // Diffuse: use the sun-film angle for nacre_color so that moving the
-            // sun shifts the interference colour across the whole pearl.  When no
-            // sun is active (solid background) fall back to the view angle.
-            let cos_illumin = match pearl_sun_dir() {
-                Some(sun) => rec.normal.dot(sun).clamp(0.0, 1.0),
-                None      => cos_theta,
-            };
-            let orient  = nacre_color(cos_illumin, self.ior, varied);
-            let s       = self.orient_strength;
-            let tinted  = self.base_color * (orient * s + Color::new(1.0, 1.0, 1.0) * (1.0 - s));
+            // ── Diffuse nacre glow: illumination-angle thin film ──────────────
+            // Colour is set by how light enters the platelet stack → shifts with
+            // sun movement, not camera orbit.  Existing behaviour preserved.
+            let orient = nacre_color(cos_illumin, self.ior, varied);
+            let s      = self.orient_strength;
+            let tinted = self.base_color * (orient * s + Color::new(1.0, 1.0, 1.0) * (1.0 - s));
             Some(ScatterRecord {
                 attenuation: tinted,
-                ray:         Ray::new_at_time(rec.p, rec.normal, r_in.time),
+                ray:         Ray::scatter_from(rec.p, n, r_in),
                 skip_pdf:    false,
             })
         }

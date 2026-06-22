@@ -53,6 +53,12 @@ pub trait Hittable: Send + Sync {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>>;
     fn bounding_box(&self) -> Option<Aabb>;
 
+    /// Returns true if any object is hit in [t_min, t_max].
+    /// Faster than hit() for shadow/occlusion tests — exits at the first intersection.
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        self.hit(r, t_min, t_max).is_some()
+    }
+
     /// Solid-angle PDF for sampling this hittable from `origin` in direction `dir` at `time`.
     fn pdf_value(&self, _origin: Point3, _dir: Vec3, _time: f32) -> f32 { 0.0 }
 
@@ -86,6 +92,10 @@ impl Hittable for HittableList {
             }
         }
         result
+    }
+
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        self.objects.iter().any(|obj| obj.any_hit(r, t_min, t_max))
     }
 
     fn bounding_box(&self) -> Option<Aabb> {

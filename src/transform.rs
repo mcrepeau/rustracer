@@ -19,7 +19,7 @@ impl Translate {
 
 impl Hittable for Translate {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
-        let moved = Ray::new_at_time(r.origin - self.offset, r.direction, r.time);
+        let moved = Ray::scatter_from(r.origin - self.offset, r.direction, r);
         let mut rec = self.object.hit(&moved, t_min, t_max)?;
         rec.p += self.offset;
         Some(rec)
@@ -97,10 +97,10 @@ impl Rotate {
 impl Hittable for Rotate {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         // Transform ray into object space using the inverse rotation (= transpose).
-        let rotated = Ray::new_at_time(
+        let rotated = Ray::scatter_from(
             mat_apply_t(&self.fwd, r.origin),
             mat_apply_t(&self.fwd, r.direction),
-            r.time,
+            r,
         );
         let mut rec = self.object.hit(&rotated, t_min, t_max)?;
         // Transform hit point and normal back to world space.

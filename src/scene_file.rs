@@ -14,10 +14,11 @@ use crate::disk::Disk;
 use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
 use crate::renderer::Background;
-use crate::scene::{PhysicsState, SceneData};
+use crate::scene::SceneData;
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::vec3::{Color, Point3, Vec3};
+use crate::volume::{ConstantMedium, NoiseMedium};
 
 // ── Serde types ───────────────────────────────────────────────────────────────
 
@@ -51,6 +52,9 @@ pub struct CameraConfig {
     pub focus_dist: Option<f32>,
     #[serde(default = "default_move_speed")]
     pub move_speed: f32,
+    /// Aperture blade count for polygonal bokeh (0 = circular, 5/6/8 = typical lenses).
+    #[serde(default)]
+    pub aperture_blades: u32,
 }
 
 fn default_vfov()       -> f32 { 40.0 }
@@ -59,7 +63,7 @@ fn default_move_speed() -> f32 { 0.5  }
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackgroundConfig {
-    /// Physically-inspired sky with a sun.
+    /// Preetham atmospheric sky with a physical sun.
     Physical {
         /// Degrees clockwise from +Z axis when viewed from above.
         #[serde(default)]
@@ -67,25 +71,31 @@ pub enum BackgroundConfig {
         /// Degrees above the horizon (0 = horizon, 90 = zenith).
         #[serde(default = "default_sun_elevation")]
         sun_elevation: f32,
+        /// Atmospheric turbidity T (1 = ideal clear, 3 = clear, 5 = light haze, 10 = heavy haze).
+        #[serde(default = "default_turbidity")]
+        turbidity:     f32,
     },
     /// Uniform colour background.
     Solid { color: [f32; 3] },
 }
 
 fn default_sun_elevation() -> f32 { 30.0 }
+fn default_turbidity()     -> f32 {  3.0 }
 
 #[derive(Deserialize)]
 pub struct ObjectConfig {
     pub shape:    ShapeConfig,
-    pub material: MaterialConfig,
+    /// Required for surface shapes; omit (or leave out entirely) for volume shapes.
+    #[serde(default)]
+    pub material: Option<MaterialConfig>,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ShapeConfig {
-    Sphere   { center: [f32; 3], radius: f32 },
-    Quad     { corner: [f32; 3], u: [f32; 3], v: [f32; 3] },
-    Box      { p_min:  [f32; 3], p_max: [f32; 3] },
+    Sphere        { center: [f32; 3], radius: f32 },
+    Quad          { corner: [f32; 3], u: [f32; 3], v: [f32; 3] },
+    Box           { p_min:  [f32; 3], p_max: [f32; 3] },
     Cylinder      { center: [f32; 3], radius: f32, height: f32 },
     Cone          { center: [f32; 3], radius: f32, height: f32 },
     Disk          { center: [f32; 3], normal: [f32; 3], radius: f32 },
@@ -96,6 +106,47 @@ pub enum ShapeConfig {
         wave_amplitude: f32,
         #[serde(default = "default_wave_scale")]
         wave_scale: f32,
+    },
+    // ── Volume shapes — `material` field is ignored; color+density are inline ──
+    /// Uniform-density participating medium enclosed in a sphere.
+    /// `g`: Henyey-Greenstein asymmetry (0 = isotropic, 0.85 = cloud droplets).
+    ConstantVolumeSphere {
+        center: [f32; 3], radius: f32, density: f32, color: [f32; 3],
+        #[serde(default)] g: f32,
+    },
+    /// Uniform-density participating medium enclosed in an axis-aligned box.
+    ConstantVolumeBox {
+        p_min: [f32; 3], p_max: [f32; 3], density: f32, color: [f32; 3],
+        #[serde(default)] g: f32,
+    },
+    /// Perlin-noise–driven heterogeneous medium enclosed in a sphere.
+    /// `noise_scale` controls feature size (larger = smaller features).
+    /// `threshold` [0, 1) clips the noise: 0 = full volume, 0.5 = patchy clouds.
+    /// `g`: Henyey-Greenstein asymmetry (0 = isotropic, 0.85 = cloud droplets).
+    NoiseVolumeSphere {
+        center:  [f32; 3],
+        radius:  f32,
+        density: f32,
+        color:   [f32; 3],
+        #[serde(default = "default_noise_scale")]
+        noise_scale: f32,
+        #[serde(default)]
+        threshold:   f32,
+        #[serde(default)]
+        g:           f32,
+    },
+    /// Perlin-noise–driven heterogeneous medium enclosed in an axis-aligned box.
+    NoiseVolumeBox {
+        p_min:   [f32; 3],
+        p_max:   [f32; 3],
+        density: f32,
+        color:   [f32; 3],
+        #[serde(default = "default_noise_scale")]
+        noise_scale: f32,
+        #[serde(default)]
+        threshold:   f32,
+        #[serde(default)]
+        g:           f32,
     },
 }
 
@@ -124,6 +175,18 @@ pub enum MaterialConfig {
         metallic:  f32,
         #[serde(default = "default_roughness")]
         roughness: f32,
+        #[serde(default)]
+        anisotropy: f32,
+        #[serde(default)]
+        anisotropy_angle: f32,
+        #[serde(default)]
+        clearcoat: f32,
+        #[serde(default = "default_clearcoat_roughness")]
+        clearcoat_roughness: f32,
+        #[serde(default)]
+        film_thickness: f32,
+        #[serde(default = "default_film_ior")]
+        film_ior: f32,
     },
     Pearl {
         #[serde(default = "default_pearl_color")]
@@ -136,15 +199,20 @@ pub enum MaterialConfig {
         orient_strength: f32,
         #[serde(default = "default_film_scale")]
         film_scale:      f32,
+        #[serde(default = "default_luster_roughness")]
+        luster_roughness: f32,
     },
 }
 
-fn default_roughness()       -> f32       { 0.5 }
-fn default_pearl_color()     -> [f32; 3]  { [0.98, 0.93, 0.88] }
-fn default_pearl_ior()       -> f32       { 1.56 }
-fn default_film_thickness()  -> f32       { 450.0 }
-fn default_orient_strength() -> f32       { 0.30 }
-fn default_film_scale()      -> f32       { 3.0 }
+fn default_roughness()          -> f32 { 0.5 }
+fn default_clearcoat_roughness() -> f32 { 0.03 }
+fn default_film_ior()           -> f32 { 1.5 }
+fn default_pearl_color()        -> [f32; 3] { [0.98, 0.93, 0.88] }
+fn default_pearl_ior()          -> f32 { 1.56 }
+fn default_film_thickness()     -> f32 { 450.0 }
+fn default_orient_strength()    -> f32 { 0.30 }
+fn default_film_scale()         -> f32 { 3.0 }
+fn default_luster_roughness()   -> f32 { 0.05 }
 
 /// A quad that emits light — added to both the world and the NEE light list.
 #[derive(Deserialize)]
@@ -166,6 +234,7 @@ pub struct CausticsConfig {
 fn default_true()          -> bool { true  }
 fn default_gather_radius() -> f32  { 0.15  }
 fn default_wave_scale()    -> f32  { 1.0   }
+fn default_noise_scale()   -> f32  { 1.0   }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -188,17 +257,18 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     let focus_dist = file.camera.focus_dist
         .unwrap_or_else(|| (from - at).length().max(0.01));
     let cam_init = SceneCameraParams {
-        pos:        from,
-        lookat:     at,
-        vfov:       file.camera.vfov,
-        aperture:   file.camera.aperture,
+        pos:             from,
+        lookat:          at,
+        vfov:            file.camera.vfov,
+        aperture:        file.camera.aperture,
         focus_dist,
-        move_speed: file.camera.move_speed,
+        move_speed:      file.camera.move_speed,
+        aperture_blades: file.camera.aperture_blades,
     };
 
     // ── Background ────────────────────────────────────────────────────────────
     let background = match file.background {
-        BackgroundConfig::Physical { sun_azimuth, sun_elevation } => {
+        BackgroundConfig::Physical { sun_azimuth, sun_elevation, turbidity } => {
             let el = sun_elevation.to_radians();
             let az = sun_azimuth.to_radians();
             Background::Physical {
@@ -207,6 +277,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                     el.sin(),
                     el.cos() * az.cos(),
                 ).unit(),
+                turbidity,
             }
         }
         BackgroundConfig::Solid { color } => Background::Solid(col(color)),
@@ -215,24 +286,55 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     // ── Static objects ────────────────────────────────────────────────────────
     let mut static_objects: Vec<Arc<dyn Hittable>> = Vec::new();
 
+    // A throwaway Lambertian is used as the boundary-shape material for volume
+    // types; it is never actually sampled — the HG phase function inside the
+    // medium is what scatters photons.
+    let dummy_mat = || -> Arc<dyn Material> {
+        Arc::new(Lambertian { texture: Texture::from(Color::new(0.5, 0.5, 0.5)) })
+    };
+
     for (i, obj) in file.objects.into_iter().enumerate() {
-        let mat = build_material(obj.material)
-            .map_err(|e| format!("objects[{i}].material: {e}"))?;
         let hittable: Arc<dyn Hittable> = match obj.shape {
-            ShapeConfig::Sphere { center, radius } =>
-                Arc::new(Sphere::new(p3(center), radius, mat)),
-            ShapeConfig::Quad { corner, u, v } =>
-                Arc::new(Quad::new(p3(corner), v3(u), v3(v), mat)),
-            ShapeConfig::Box { p_min, p_max } =>
-                Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), mat))),
-            ShapeConfig::Cylinder { center, radius, height } =>
-                Arc::new(Cylinder { center: p3(center), radius, height, mat }),
-            ShapeConfig::Cone { center, radius, height } =>
-                Arc::new(Cone { center: p3(center), radius, height, mat }),
-            ShapeConfig::Disk { center, normal, radius } =>
-                Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
-            ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
-                Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
+            // ── Volume shapes (material field is ignored) ──────────────────
+            ShapeConfig::ConstantVolumeSphere { center, radius, density, color, g } => {
+                let boundary = Arc::new(Sphere::new(p3(center), radius, dummy_mat()));
+                Arc::new(ConstantMedium::new(boundary, density, col(color), g))
+            }
+            ShapeConfig::ConstantVolumeBox { p_min, p_max, density, color, g } => {
+                let boundary = Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), dummy_mat())));
+                Arc::new(ConstantMedium::new(boundary, density, col(color), g))
+            }
+            ShapeConfig::NoiseVolumeSphere { center, radius, density, color, noise_scale, threshold, g } => {
+                let boundary = Arc::new(Sphere::new(p3(center), radius, dummy_mat()));
+                Arc::new(NoiseMedium::new(boundary, col(color), density, noise_scale, threshold, g))
+            }
+            ShapeConfig::NoiseVolumeBox { p_min, p_max, density, color, noise_scale, threshold, g } => {
+                let boundary = Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), dummy_mat())));
+                Arc::new(NoiseMedium::new(boundary, col(color), density, noise_scale, threshold, g))
+            }
+            // ── Surface shapes (material field required) ───────────────────
+            shape => {
+                let mat = build_material(
+                    obj.material.ok_or_else(|| format!("objects[{i}]: material is required for this shape type"))?
+                ).map_err(|e| format!("objects[{i}].material: {e}"))?;
+                match shape {
+                    ShapeConfig::Sphere { center, radius } =>
+                        Arc::new(Sphere::new(p3(center), radius, mat)),
+                    ShapeConfig::Quad { corner, u, v } =>
+                        Arc::new(Quad::new(p3(corner), v3(u), v3(v), mat)),
+                    ShapeConfig::Box { p_min, p_max } =>
+                        Arc::new(BvhTree::from_list(make_box(p3(p_min), p3(p_max), mat))),
+                    ShapeConfig::Cylinder { center, radius, height } =>
+                        Arc::new(Cylinder { center: p3(center), radius, height, mat }),
+                    ShapeConfig::Cone { center, radius, height } =>
+                        Arc::new(Cone { center: p3(center), radius, height, mat }),
+                    ShapeConfig::Disk { center, normal, radius } =>
+                        Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
+                    ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
+                        Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
+                    _ => unreachable!(), // volume variants handled above
+                }
+            }
         };
         static_objects.push(hittable);
     }
@@ -263,8 +365,12 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     // bytes per reload, negligible over the life of the process.
     let name: &'static str = Box::leak(file.name.into_boxed_str());
 
+    let mut world_list = HittableList::new();
+    for obj in static_objects { world_list.objects.push(obj); }
+    let world: Arc<dyn Hittable> = Arc::new(BvhTree::from_list(world_list));
+
     let mut scene = SceneData {
-        world:         Arc::new(HittableList::new()),
+        world,
         lights,
         background,
         name,
@@ -274,19 +380,8 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         caustic_quad:          None,
         caustic_gather_radius,
         photon_map:    None,
-        physics: PhysicsState {
-            static_objects,
-            dynamic:          Vec::new(),
-            bounds:           None,
-            colliders:        Vec::new(),
-            convex_colliders: Vec::new(),
-            gravity:          0.0,
-            settled:          false,
-            paused:           false,
-            cached_static:    None,
-        },
     };
-    scene.rebuild();
+    scene.rebuild_caustics();
     Ok(scene)
 }
 
@@ -304,22 +399,26 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
             Arc::new(Dielectric { ir: ior }),
 
         MaterialConfig::SpectralDielectric { ior, dispersion } => {
-            let h = dispersion / 2.0;
-            Arc::new(SpectralDielectric {
-                ir_red:   ior - h,
-                ir_green: ior,
-                ir_blue:  ior + h,
-            })
+            // Convert (ior at ~546 nm, spread over visible) to Cauchy n(λ)=B+C/λ²
+            // C determined from spread: Δn = C × (1/λ_b² − 1/λ_r²), λ in μm.
+            // λ_b = 0.435 μm, λ_r = 0.700 μm → denominator ≈ 3.250 μm⁻².
+            let cauchy_c = dispersion / 3.250;
+            // B so that n(550 nm) ≈ ior: B = ior − C / 0.550².
+            let cauchy_b = ior - cauchy_c / (0.550 * 0.550);
+            Arc::new(SpectralDielectric { cauchy_b, cauchy_c })
         }
 
         MaterialConfig::DiffuseLight { color } =>
             Arc::new(DiffuseLight { emit: Texture::from(col(color)) }),
 
-        MaterialConfig::Pbr { albedo, metallic, roughness } =>
-            Arc::new(PbrMaterial { albedo: col(albedo), metallic, roughness }),
+        MaterialConfig::Pbr { albedo, metallic, roughness, anisotropy, anisotropy_angle,
+                              clearcoat, clearcoat_roughness, film_thickness, film_ior } =>
+            Arc::new(PbrMaterial { albedo: col(albedo), metallic, roughness,
+                                   anisotropy, anisotropy_angle,
+                                   clearcoat, clearcoat_roughness, film_thickness, film_ior }),
 
-        MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale } =>
-            Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale }),
+        MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale, luster_roughness } =>
+            Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale, luster_roughness }),
     })
 }
 
