@@ -379,6 +379,7 @@ fn run_render(args: RenderArgs) {
                  elapsed.as_secs_f64(), elapsed.as_millis() as f64 / actual_spp.max(1) as f64);
 
         // ── Save (OIDN or raw) ────────────────────────────────────────────────
+        #[allow(unused_mut)]
         let mut saved = false;
 
         #[cfg(feature = "denoise")]
