@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
+use crate::animation::{AnimationData, Keyframe};
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
@@ -38,10 +39,31 @@ pub struct SceneFile {
     pub caustics:    Option<CausticsConfig>,
     #[serde(default = "default_max_samples")]
     pub max_samples: u32,
+    pub animation:   Option<AnimationConfig>,
 }
 
 fn default_name()        -> String { "Custom Scene".to_string() }
 fn default_max_samples() -> u32    { 2000 }
+
+#[derive(Deserialize)]
+pub struct AnimationConfig {
+    pub fps:        f32,
+    pub duration:   f32,
+    pub keyframes:  Vec<KeyframeConfig>,
+}
+
+#[derive(Deserialize)]
+pub struct KeyframeConfig {
+    pub time:       f32,
+    pub look_from:  [f32; 3],
+    pub look_at:    [f32; 3],
+    /// Overrides the scene camera vfov for this keyframe.
+    pub vfov:       Option<f32>,
+    /// Overrides the scene camera aperture for this keyframe.
+    pub aperture:   Option<f32>,
+    /// Overrides the scene camera focus distance; defaults to look_from→look_at distance.
+    pub focus_dist: Option<f32>,
+}
 
 #[derive(Deserialize)]
 pub struct CameraConfig {
@@ -465,6 +487,23 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     for obj in static_objects { world_list.objects.push(obj); }
     let world: Arc<dyn Hittable> = Arc::new(BvhTree::from_list(world_list));
 
+    // ── Animation ─────────────────────────────────────────────────────────────
+    let animation = file.animation.and_then(|ac| {
+        let keyframes = ac.keyframes.into_iter().map(|kc| {
+            let from = p3(kc.look_from);
+            let at   = p3(kc.look_at);
+            Keyframe {
+                time:       kc.time,
+                look_from:  from,
+                look_at:    at,
+                vfov:       kc.vfov      .unwrap_or(cam_init.vfov),
+                aperture:   kc.aperture  .unwrap_or(cam_init.aperture),
+                focus_dist: kc.focus_dist.unwrap_or_else(|| (from - at).length().max(0.01)),
+            }
+        }).collect();
+        AnimationData::new(ac.fps, ac.duration, keyframes)
+    });
+
     let scene = SceneData {
         world,
         lights,
@@ -476,6 +515,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         caustic_quad:          file.lights.first().map(|lc| (p3(lc.corner), v3(lc.u), v3(lc.v), col(lc.color))),
         caustic_gather_radius,
         photon_map:    None,
+        animation,
     };
     Ok(scene)
 }

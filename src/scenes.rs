@@ -181,6 +181,7 @@ pub fn build_random_scene() -> SceneData {
         caustic_quad:        None,
         caustic_gather_radius: 0.5,
         photon_map:          None,
+        animation:           None,
     }
 }
 
@@ -244,6 +245,7 @@ pub fn build_cornell_box() -> SceneData {
         )),
         caustic_gather_radius: 8.0,
         photon_map:            None,
+        animation:             None,
     }
 }
 
@@ -390,6 +392,7 @@ pub fn build_nextweek_scene() -> SceneData {
         caustic_quad:          Some(caustic_quad),
         caustic_gather_radius: 25.0,
         photon_map:            None,
+        animation:             None,
     }
 }
 
@@ -567,5 +570,6 @@ pub fn build_benchmark_scene() -> SceneData {
         caustic_quad:          None,
         caustic_gather_radius: 0.5,
         photon_map:            None,
+        animation:             None,
     }
 }

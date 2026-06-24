@@ -25,6 +25,7 @@ mod scene;
 mod scenes;
 mod scene_file;
 mod output;
+mod animation;
 mod diamond;
 mod photon;
 #[cfg(feature = "denoise")]
@@ -32,7 +33,8 @@ mod denoise;
 
 use rayon::prelude::*;
 use vec3::Color;
-use camera::CameraState;
+use camera::{Camera, CameraState};
+use vec3::Vec3;
 #[cfg(not(feature = "denoise"))]
 use renderer::{Background, render_tiles};
 #[cfg(feature = "denoise")]
@@ -259,17 +261,25 @@ fn run_render(args: RenderArgs) {
     let samples_max = args.samples.unwrap_or(scene.max_samples);
     let strata      = compute_strata(samples_max);
     let n_px        = (args.width * args.height) as usize;
+    let aspect      = args.width as f32 / args.height as f32;
+    let slug        = scene.name.to_lowercase().replace(' ', "_");
 
-    let mut cam = CameraState::from_params(&scene.cam_init);
-    cam.autofocus(scene.world.as_ref());
-    let camera = cam.to_camera(args.width as f32 / args.height as f32);
+    // Take animation out of the scene (if present) so we own it independently.
+    let animation   = scene.animation.take();
+    let total_frames = animation.as_ref().map_or(1u32, |a| a.total_frames().max(1));
+    let is_anim      = animation.is_some();
 
-    let mut accumulator = vec![Color::default(); n_px];
-    let mut scratch     = vec![Color::default(); n_px];
-
+    // ── One-time header ───────────────────────────────────────────────────────
     let tm_name = if args.tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
     println!("Scene:      {}", scene.name);
     println!("Resolution: {}×{}", args.width, args.height);
+    if is_anim {
+        let a = animation.as_ref().unwrap();
+        println!("Animation:  {} frames  ·  {:.0} fps  ·  {:.1}s",
+                 total_frames, a.fps, a.duration);
+        let out_dir = args.output.as_deref().unwrap_or(".");
+        println!("Output dir: {out_dir}");
+    }
     if args.adaptive {
         println!("Samples:    adaptive  (target: {:.1}% convergence)", args.convergence_pct);
     } else {
@@ -279,117 +289,160 @@ fn run_render(args: RenderArgs) {
     if args.no_photon_map { println!("Photon map: off"); }
     #[cfg(feature = "denoise")]
     if let Some(blend) = args.denoise {
-        if blend < 1.0 {
-            println!("Denoiser:   OIDN ({:.0}% blend)", blend * 100.0);
-        } else {
-            println!("Denoiser:   OIDN");
-        }
+        if blend < 1.0 { println!("Denoiser:   OIDN ({:.0}% blend)", blend * 100.0); }
+        else           { println!("Denoiser:   OIDN"); }
     }
     println!();
 
-    let t0 = Instant::now();
+    // ── Per-frame loop ────────────────────────────────────────────────────────
+    let mut accumulator = vec![Color::default(); n_px];
+    let mut scratch     = vec![Color::default(); n_px];
 
     let adaptive        = args.adaptive;
     let convergence_pct = args.convergence_pct;
     let min_samples     = args.min_samples;
-    let mut pixel_samples = if adaptive { vec![0u32;   n_px] } else { Vec::new() };
-    let mut var_m2_lum    = if adaptive { vec![0.0f32; n_px] } else { Vec::new() };
-    let mut adap_conv     = if adaptive { vec![false;  n_px] } else { Vec::new() };
-    let mut n_converged   = 0usize;
 
-    let mut s = 0u32;
-    loop {
-        if !adaptive && s >= samples_max { break; }
-
-        render_tiles(&mut scratch,
-                     if adaptive { Some(adap_conv.as_slice()) } else { None },
-                     s, strata, args.width, args.height, &camera,
-                     scene.world.as_ref(), &scene.background,
-                     &scene.lights, 1.0, scene.photon_map.as_deref());
-
-        accumulate_sample(&mut accumulator, &scratch, s,
-                          &mut pixel_samples, &mut var_m2_lum, &adap_conv);
-        s += 1;
-
-        if adaptive && s >= min_samples {
-            n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2_lum, &accumulator);
-        }
-
-        let target_reached = n_converged as f32 >= n_px as f32 * convergence_pct / 100.0;
-        let print_now = if adaptive {
-            s.is_multiple_of(5) || target_reached
+    for frame_idx in 0..total_frames {
+        // ── Camera for this frame ─────────────────────────────────────────────
+        let camera: Camera = if let Some(anim) = &animation {
+            let t  = frame_idx as f32 / anim.fps;
+            let kf = anim.evaluate(t);
+            Camera::new(kf.look_from, kf.look_at, Vec3::new(0.0, 1.0, 0.0),
+                        kf.vfov, aspect, kf.aperture, kf.focus_dist,
+                        scene.cam_init.aperture_blades)
         } else {
-            s % 5 == 4 || s == samples_max - 1
+            let mut cam = CameraState::from_params(&scene.cam_init);
+            cam.autofocus(scene.world.as_ref());
+            cam.to_camera(aspect)
         };
-        if print_now {
-            let elapsed = t0.elapsed().as_secs_f64();
-            if adaptive {
-                let pct = n_converged as f32 * 100.0 / n_px.max(1) as f32;
-                print!("\r  {s:>5} spp  {pct:>5.1}% converged  {elapsed:5.0}s  ");
+
+        if is_anim {
+            println!("[Frame {:>4} / {}]", frame_idx + 1, total_frames);
+        }
+
+        // ── Reset per-frame state ─────────────────────────────────────────────
+        accumulator.iter_mut().for_each(|c| *c = Color::default());
+        scratch.iter_mut().for_each(|c| *c = Color::default());
+        let mut pixel_samples = if adaptive { vec![0u32;   n_px] } else { Vec::new() };
+        let mut var_m2_lum    = if adaptive { vec![0.0f32; n_px] } else { Vec::new() };
+        let mut adap_conv     = if adaptive { vec![false;  n_px] } else { Vec::new() };
+        let mut n_converged   = 0usize;
+
+        // ── Render loop ───────────────────────────────────────────────────────
+        let t0 = Instant::now();
+        let mut s = 0u32;
+        loop {
+            if !adaptive && s >= samples_max { break; }
+
+            render_tiles(&mut scratch,
+                         if adaptive { Some(adap_conv.as_slice()) } else { None },
+                         s, strata, args.width, args.height, &camera,
+                         scene.world.as_ref(), &scene.background,
+                         &scene.lights, 1.0, scene.photon_map.as_deref());
+
+            accumulate_sample(&mut accumulator, &scratch, s,
+                              &mut pixel_samples, &mut var_m2_lum, &adap_conv);
+            s += 1;
+
+            if adaptive && s >= min_samples {
+                n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2_lum, &accumulator);
+            }
+
+            let target_reached = n_converged as f32 >= n_px as f32 * convergence_pct / 100.0;
+            let print_now = if adaptive {
+                s.is_multiple_of(5) || target_reached
             } else {
-                let done   = s;
-                let eta    = if done < samples_max { elapsed / done as f64 * (samples_max - done) as f64 } else { 0.0 };
-                const BAR: usize = 32;
-                let filled = (done as usize * BAR / samples_max as usize).min(BAR);
-                let bar    = format!("{}{}", "█".repeat(filled), "░".repeat(BAR - filled));
-                print!("\r  {done:>5}/{samples_max}  [{bar}]  {elapsed:5.0}s elapsed  ETA {eta:4.0}s  ");
-            }
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-        }
-        if adaptive && target_reached { break; }
-    }
-    let actual_spp        = s;
-    let pixel_samples_opt = if adaptive { Some(pixel_samples) } else { None };
-
-    let elapsed = t0.elapsed();
-    println!("\n\nRendered in {:.2}s  ({:.1} ms/spp)\n",
-             elapsed.as_secs_f64(), elapsed.as_millis() as f64 / actual_spp.max(1) as f64);
-
-    // ── OIDN denoising ────────────────────────────────────────────────────────
-    #[cfg(feature = "denoise")]
-    if let Some(blend) = args.denoise {
-        let raw: Vec<crate::vec3::Color> = accumulator.iter().enumerate()
-            .map(|(i, c)| {
-                let n = pixel_samples_opt.as_ref().map_or(actual_spp, |ps| ps[i]).max(1) as f32;
-                crate::vec3::Color::new(c.x / n, c.y / n, c.z / n)
-            })
-            .collect();
-        let color: Vec<f32> = raw.iter().flat_map(|c| [c.x, c.y, c.z]).collect();
-        print!("Denoising with OIDN…  ");
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        let (alb, nrm) = render_aux_pass(args.width, args.height, &camera,
-                                         scene.world.as_ref(), &scene.background);
-        let spp_label = actual_spp;
-        match denoise::denoise_rgb(args.width, args.height, color, alb, nrm) {
-            Some(denoised) => {
-                let output: Vec<crate::vec3::Color> = if blend < 1.0 {
-                    denoised.iter().zip(raw.iter())
-                        .map(|(&den, &r)| den * blend + r * (1.0 - blend))
-                        .collect()
+                s % 5 == 4 || s == samples_max - 1
+            };
+            if print_now {
+                let elapsed = t0.elapsed().as_secs_f64();
+                if adaptive {
+                    let pct = n_converged as f32 * 100.0 / n_px.max(1) as f32;
+                    print!("\r  {s:>5} spp  {pct:>5.1}% converged  {elapsed:5.0}s  ");
                 } else {
-                    denoised
-                };
-                let denoised_path = args.output.clone().unwrap_or_else(|| {
-                    let slug = scene.name.to_lowercase().replace(' ', "_");
-                    format!("render_{}_{:04}spp_denoised.png", slug, spp_label)
-                });
-                // output is already per-pixel-normalized; pass samples=1 so save_png
-                // applies exposure directly without a second division
-                save_png(&output, 1, None, scene.name,
-                         args.width, args.height, args.exposure, args.tonemapper,
-                         Some(spp_label), Some(&denoised_path));
+                    let done   = s;
+                    let eta    = if done < samples_max { elapsed / done as f64 * (samples_max - done) as f64 } else { 0.0 };
+                    const BAR: usize = 32;
+                    let filled = (done as usize * BAR / samples_max as usize).min(BAR);
+                    let bar    = format!("{}{}", "█".repeat(filled), "░".repeat(BAR - filled));
+                    print!("\r  {done:>5}/{samples_max}  [{bar}]  {elapsed:5.0}s elapsed  ETA {eta:4.0}s  ");
+                }
+                let _ = std::io::Write::flush(&mut std::io::stdout());
             }
-            None => eprintln!("OIDN denoising failed."),
+            if adaptive && target_reached { break; }
         }
-        return;
+        let actual_spp        = s;
+        let pixel_samples_opt = if adaptive { Some(pixel_samples) } else { None };
+
+        let elapsed = t0.elapsed();
+        println!("\n\n  Rendered in {:.2}s  ({:.1} ms/spp)\n",
+                 elapsed.as_secs_f64(), elapsed.as_millis() as f64 / actual_spp.max(1) as f64);
+
+        // ── Save (OIDN or raw) ────────────────────────────────────────────────
+        let mut saved = false;
+
+        #[cfg(feature = "denoise")]
+        if let Some(blend) = args.denoise {
+            let raw: Vec<Color> = accumulator.iter().enumerate()
+                .map(|(i, c)| {
+                    let n = pixel_samples_opt.as_ref().map_or(actual_spp, |ps| ps[i]).max(1) as f32;
+                    Color::new(c.x / n, c.y / n, c.z / n)
+                })
+                .collect();
+            let color: Vec<f32> = raw.iter().flat_map(|c| [c.x, c.y, c.z]).collect();
+            print!("  Denoising with OIDN…  ");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let (alb, nrm) = render_aux_pass(args.width, args.height, &camera,
+                                             scene.world.as_ref(), &scene.background);
+            match denoise::denoise_rgb(args.width, args.height, color, alb, nrm) {
+                Some(denoised) => {
+                    let output: Vec<Color> = if blend < 1.0 {
+                        denoised.iter().zip(raw.iter())
+                            .map(|(&den, &r)| den * blend + r * (1.0 - blend))
+                            .collect()
+                    } else {
+                        denoised
+                    };
+                    let path = if is_anim {
+                        let out_dir = args.output.as_deref().unwrap_or(".");
+                        format!("{out_dir}/{slug}_{frame_idx:04}_denoised.png")
+                    } else {
+                        args.output.clone().unwrap_or_else(|| {
+                            format!("render_{}_{:04}spp_denoised.png", slug, actual_spp)
+                        })
+                    };
+                    // output is already per-pixel-normalized; samples=1 so save_png
+                    // applies exposure directly without a second division
+                    save_png(&output, 1, None, scene.name,
+                             args.width, args.height, args.exposure, args.tonemapper,
+                             Some(actual_spp), Some(&path));
+                }
+                None => eprintln!("OIDN denoising failed."),
+            }
+            saved = true;
+        }
+
+        if !saved {
+            let ps = pixel_samples_opt.as_deref();
+            let out_path: Option<String> = if is_anim {
+                let out_dir = args.output.as_deref().unwrap_or(".");
+                Some(format!("{out_dir}/{slug}_{frame_idx:04}.png"))
+            } else {
+                args.output.clone()
+            };
+            save_png(&accumulator, actual_spp, ps, scene.name,
+                     args.width, args.height, args.exposure, args.tonemapper,
+                     None, out_path.as_deref());
+        }
     }
 
-    // ── Raw PNG save ──────────────────────────────────────────────────────────
-    let ps    = pixel_samples_opt.as_deref();
-    let label: Option<u32> = None;
-    save_png(&accumulator, actual_spp, ps, scene.name,
-             args.width, args.height, args.exposure, args.tonemapper,
-             label, args.output.as_deref());
+    if is_anim {
+        let out_dir = args.output.as_deref().unwrap_or(".");
+        println!("\nAll frames saved to {out_dir}/");
+        println!("Assemble with ffmpeg:");
+        let fps = animation.as_ref().map_or(24.0, |a| a.fps);
+        println!("  ffmpeg -r {fps:.0} -i \"{out_dir}/{slug}_%04d.png\" -c:v libx264 -pix_fmt yuv420p output.mp4");
+    }
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────

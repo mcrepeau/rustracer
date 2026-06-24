@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use crate::animation::AnimationData;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList};
 use crate::photon::PhotonMap;
@@ -22,6 +23,8 @@ pub struct SceneData {
     pub caustic_gather_radius: f32,
     /// Caustic photon map, rebuilt after every sun-direction change when enabled.
     pub photon_map:      Option<Arc<PhotonMap>>,
+    /// Camera animation; `None` for static scenes.
+    pub animation:       Option<AnimationData>,
 }
 
 /// Number of photons traced when building the caustic photon map.
