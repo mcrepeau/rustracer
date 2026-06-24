@@ -122,7 +122,7 @@ struct RenderArgs {
     min_samples:      u32,
     no_photon_map:    bool,
     #[cfg(feature = "denoise")]
-    denoise:    bool,
+    denoise:    Option<f32>,
 }
 
 impl Default for RenderArgs {
@@ -140,7 +140,7 @@ impl Default for RenderArgs {
             min_samples:     128,
             no_photon_map:   false,
             #[cfg(feature = "denoise")]
-            denoise:    false,
+            denoise:    None,
         }
     }
 }
@@ -192,12 +192,12 @@ fn print_help() {
     println!("  --min-samples <n>    Minimum SPP before any pixel may be marked converged (default: 128; requires --adaptive)");
     println!("  --no-photon-map      Disable caustic photon map (faster, no caustics)");
     #[cfg(feature = "denoise")]
-    println!("  --denoise            Run OIDN after render and save denoised PNG");
+    println!("  --denoise [strength] Run OIDN after render; optional strength in [0.0, 1.0] (default: 1.0)");
 }
 
 fn parse_render_args() -> Result<RenderArgs, String> {
     let mut r  = RenderArgs::default();
-    let mut it = std::env::args().skip(2); // skip binary + "--render"
+    let mut it = std::env::args().skip(2).peekable(); // skip binary + "--render"
     while let Some(flag) = it.next() {
         macro_rules! val {
             () => { it.next().ok_or_else(|| format!("'{flag}' requires a value"))? }
@@ -222,7 +222,15 @@ fn parse_render_args() -> Result<RenderArgs, String> {
             "--no-photon-map" => r.no_photon_map = true,
             "--denoise"    => {
                 #[cfg(feature = "denoise")]
-                { r.denoise = true; }
+                {
+                    let strength = match it.peek() {
+                        Some(s) if s.parse::<f32>().is_ok() => {
+                            it.next().unwrap().parse::<f32>().unwrap().clamp(0.0, 1.0)
+                        }
+                        _ => 1.0,
+                    };
+                    r.denoise = Some(strength);
+                }
                 #[cfg(not(feature = "denoise"))]
                 return Err("--denoise requires the 'denoise' feature (rebuild with: cargo run --features denoise)".to_string());
             }
@@ -270,7 +278,13 @@ fn run_render(args: RenderArgs) {
     println!("Tonemapper: {tm_name}  exposure {:.2}", args.exposure);
     if args.no_photon_map { println!("Photon map: off"); }
     #[cfg(feature = "denoise")]
-    if args.denoise { println!("Denoiser:   OIDN"); }
+    if let Some(blend) = args.denoise {
+        if blend < 1.0 {
+            println!("Denoiser:   OIDN ({:.0}% blend)", blend * 100.0);
+        } else {
+            println!("Denoiser:   OIDN");
+        }
+    }
     println!();
 
     let t0 = Instant::now();
@@ -333,13 +347,14 @@ fn run_render(args: RenderArgs) {
 
     // ── OIDN denoising ────────────────────────────────────────────────────────
     #[cfg(feature = "denoise")]
-    if args.denoise {
-        let color: Vec<f32> = accumulator.iter().enumerate()
-            .flat_map(|(i, c)| {
+    if let Some(blend) = args.denoise {
+        let raw: Vec<crate::vec3::Color> = accumulator.iter().enumerate()
+            .map(|(i, c)| {
                 let n = pixel_samples_opt.as_ref().map_or(actual_spp, |ps| ps[i]).max(1) as f32;
-                [c.x / n, c.y / n, c.z / n]
+                crate::vec3::Color::new(c.x / n, c.y / n, c.z / n)
             })
             .collect();
+        let color: Vec<f32> = raw.iter().flat_map(|c| [c.x, c.y, c.z]).collect();
         print!("Denoising with OIDN…  ");
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let (alb, nrm) = render_aux_pass(args.width, args.height, &camera,
@@ -347,13 +362,20 @@ fn run_render(args: RenderArgs) {
         let spp_label = actual_spp;
         match denoise::denoise_rgb(args.width, args.height, color, alb, nrm) {
             Some(denoised) => {
+                let output: Vec<crate::vec3::Color> = if blend < 1.0 {
+                    denoised.iter().zip(raw.iter())
+                        .map(|(&den, &r)| den * blend + r * (1.0 - blend))
+                        .collect()
+                } else {
+                    denoised
+                };
                 let denoised_path = args.output.clone().unwrap_or_else(|| {
                     let slug = scene.name.to_lowercase().replace(' ', "_");
                     format!("render_{}_{:04}spp_denoised.png", slug, spp_label)
                 });
-                // denoised buffer is already per-pixel-normalized; pass samples=1 so save_png
+                // output is already per-pixel-normalized; pass samples=1 so save_png
                 // applies exposure directly without a second division
-                save_png(&denoised, 1, None, scene.name,
+                save_png(&output, 1, None, scene.name,
                          args.width, args.height, args.exposure, args.tonemapper,
                          Some(spp_label), Some(&denoised_path));
             }
