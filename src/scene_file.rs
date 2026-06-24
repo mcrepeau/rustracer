@@ -11,6 +11,7 @@ use crate::material::{
 };
 use crate::cone::Cone;
 use crate::cylinder::Cylinder;
+use crate::diamond::{Diamond, DiamondParams};
 use crate::disk::Disk;
 use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
@@ -112,6 +113,18 @@ pub enum ShapeConfig {
     Cylinder      { center: [f32; 3], radius: f32, height: f32 },
     Cone          { center: [f32; 3], radius: f32, height: f32 },
     Disk          { center: [f32; 3], normal: [f32; 3], radius: f32 },
+    /// Round brilliant diamond as an analytic convex polyhedron.
+    /// Proportions default to the Tolkowsky ideal cut when omitted.
+    Diamond {
+        center:   [f32; 3],
+        radius:   f32,
+        #[serde(default = "default_table_pct")]
+        table_pct:      f32,
+        #[serde(default = "default_crown_angle")]
+        crown_angle:    f32,
+        #[serde(default = "default_pavilion_angle")]
+        pavilion_angle: f32,
+    },
     InfinitePlane {
         point:  [f32; 3],
         normal: [f32; 3],
@@ -289,6 +302,9 @@ fn default_true()          -> bool { true  }
 fn default_gather_radius() -> f32  { 0.15  }
 fn default_wave_scale()    -> f32  { 1.0   }
 fn default_noise_scale()   -> f32  { 1.0   }
+fn default_table_pct()     -> f32  { 53.0  }
+fn default_crown_angle()   -> f32  { 34.5  }
+fn default_pavilion_angle()-> f32  { 40.75 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -397,6 +413,12 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                         Arc::new(Cone { center: p3(center), radius, height, mat }),
                     ShapeConfig::Disk { center, normal, radius } =>
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
+                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle } =>
+                        Arc::new(Diamond::new(
+                            p3(center), radius,
+                            DiamondParams { table_pct, crown_angle, pavilion_angle },
+                            mat,
+                        )),
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
                         Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
                     ShapeConfig::Mesh { path } =>

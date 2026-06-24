@@ -119,6 +119,7 @@ struct RenderArgs {
     tonemapper: ToneMapper,
     adaptive:         bool,
     convergence_pct:  f32,
+    min_samples:      u32,
     no_photon_map:    bool,
     #[cfg(feature = "denoise")]
     denoise:    bool,
@@ -136,6 +137,7 @@ impl Default for RenderArgs {
             tonemapper:      ToneMapper::AgX,
             adaptive:        false,
             convergence_pct: 99.0,
+            min_samples:     128,
             no_photon_map:   false,
             #[cfg(feature = "denoise")]
             denoise:    false,
@@ -187,6 +189,7 @@ fn print_help() {
     println!("  --tonemapper <name>  agx or aces             (default: agx)");
     println!("  --adaptive           Adaptive sampling: run until convergence target is reached");
     println!("  --convergence <pct>  Convergence target in %% (default: 99.0; requires --adaptive)");
+    println!("  --min-samples <n>    Minimum SPP before any pixel may be marked converged (default: 128; requires --adaptive)");
     println!("  --no-photon-map      Disable caustic photon map (faster, no caustics)");
     #[cfg(feature = "denoise")]
     println!("  --denoise            Run OIDN after render and save denoised PNG");
@@ -214,6 +217,8 @@ fn parse_render_args() -> Result<RenderArgs, String> {
             "--adaptive"      => r.adaptive      = true,
             "--convergence"   => r.convergence_pct = val!().parse::<f32>()
                 .map_err(|e| format!("--convergence: {e}"))?.clamp(0.0, 100.0),
+            "--min-samples"   => r.min_samples = val!().parse::<u32>()
+                .map_err(|e| format!("--min-samples: {e}"))?,
             "--no-photon-map" => r.no_photon_map = true,
             "--denoise"    => {
                 #[cfg(feature = "denoise")]
@@ -272,6 +277,7 @@ fn run_render(args: RenderArgs) {
 
     let adaptive        = args.adaptive;
     let convergence_pct = args.convergence_pct;
+    let min_samples     = args.min_samples;
     let mut pixel_samples = if adaptive { vec![0u32;   n_px] } else { Vec::new() };
     let mut var_m2_lum    = if adaptive { vec![0.0f32; n_px] } else { Vec::new() };
     let mut adap_conv     = if adaptive { vec![false;  n_px] } else { Vec::new() };
@@ -291,7 +297,7 @@ fn run_render(args: RenderArgs) {
                           &mut pixel_samples, &mut var_m2_lum, &adap_conv);
         s += 1;
 
-        if adaptive && s >= MIN_ADAPTIVE_SAMPLES {
+        if adaptive && s >= min_samples {
             n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2_lum, &accumulator);
         }
 
@@ -425,7 +431,7 @@ fn mark_converged(
         .zip(var_m2_lum.par_iter())
         .zip(accumulator.par_iter())
         .for_each(|(((conv, &n), &m2), &acc)| {
-            if *conv || n < MIN_ADAPTIVE_SAMPLES { return; }
+            if *conv { return; }
             let mean_lum = luminance(acc) / n as f32;
             if mean_lum < 1e-4 { *conv = true; return; }
             let variance = m2 / (n - 1).max(1) as f32;
@@ -451,8 +457,6 @@ fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples:
         });
 }
 
-/// Minimum samples before a pixel can be declared converged.
-const MIN_ADAPTIVE_SAMPLES: u32 = 16;
 /// Maximum relative standard error (σ/μ) to consider a pixel converged.
 const ADAPTIVE_THRESHOLD:   f32 = 0.05;
 /// Per-sample firefly clamp: a new sample whose luminance exceeds this multiple
@@ -582,8 +586,9 @@ fn main() {
     let mut samples       = 0u32;
     let mut strata = compute_strata(scenes[scene_idx].max_samples);
     // Adaptive sampling state
-    let mut tonemapper     = ToneMapper::AgX;
-    let mut adaptive_on    = false;
+    let mut tonemapper          = ToneMapper::AgX;
+    let mut adaptive_on         = false;
+    let     min_adaptive_samples: u32 = 128;
     let mut photon_map_on  = true;
     let mut pixel_samples: Vec<u32>   = Vec::new(); // allocated only when adaptive_on
     let mut var_m2_lum:   Vec<f32>    = Vec::new();
@@ -953,7 +958,7 @@ fn main() {
                                       &mut pixel_samples, &mut var_m2_lum, &adap_conv);
                     samples += 1;
 
-                    if adaptive_on && samples >= MIN_ADAPTIVE_SAMPLES {
+                    if adaptive_on && samples >= min_adaptive_samples {
                         n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2_lum, &accumulator);
                     }
 

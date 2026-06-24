@@ -6,22 +6,40 @@ use crate::hittable::{HitRecord, Hittable, Material};
 use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
 
+/// GIA-reportable proportion parameters for a round brilliant cut.
+///
+/// The three fields directly control the half-space normals of the analytic
+/// polyhedron built by [`Diamond::new`].
+#[derive(Clone, Debug)]
+pub struct DiamondParams {
+    /// Table facet diameter as a percentage of the girdle diameter.
+    /// GIA ideal: 53–57 %. Tolkowsky: 53 %.
+    pub table_pct:      f32,
+    /// Crown main (bezel) facet angle from the girdle plane, in degrees.
+    /// GIA ideal: 34–35 °. Tolkowsky: 34.5 °.
+    pub crown_angle:    f32,
+    /// Pavilion main facet angle from the girdle plane, in degrees.
+    /// GIA ideal: 40.6–41.0 °. Tolkowsky: 40.75 °.
+    pub pavilion_angle: f32,
+}
+
+impl Default for DiamondParams {
+    fn default() -> Self {
+        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75 }
+    }
+}
+
 /// Round brilliant diamond as an analytic convex polyhedron.
 ///
 /// The girdle (widest circle) lies in the horizontal plane through `center`.
 /// The table (flat top octagon) faces +Y; the culet (bottom point) faces −Y.
 ///
-/// Tolkowsky ideal-cut proportions used to derive the half-space normals:
-///   crown angle    = 34.5°  →  crown_h    = (r − table_r) · tan 34.5°
-///   pavilion angle = 40.75° →  pavilion_h = r · tan 40.75°
-///   table inscribed radius  = 0.53 r
+/// The 17 half-spaces (1 table + 8 crown bezel + 8 pavilion main) are arranged
+/// so that crown and pavilion faces alternate every 22.5° around the girdle.
+/// Their pairwise intersections form a regular 16-gon with inscribed radius
+/// `radius`, giving the girdle without any explicit vertical girdle planes.
 ///
-/// The 17 half-spaces (1 table + 8 crown + 8 pavilion) are arranged so that
-/// the crown and pavilion faces alternate every 22.5° around the girdle.  Their
-/// pairwise intersections form a regular 16-gon with inscribed radius `radius`,
-/// giving the girdle without any explicit vertical girdle planes.
-///
-/// Recommended material: `Dielectric { ir: 2.417 }`.
+/// Recommended material: `SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585, .. }`.
 pub struct Diamond {
     planes:     Vec<(Vec3, f32)>,   // (outward unit normal n, offset d) — interior iff n·x ≤ d
     bbox:       Aabb,
@@ -32,11 +50,11 @@ pub struct Diamond {
 }
 
 impl Diamond {
-    pub fn new(center: Point3, radius: f32, mat: Arc<dyn Material>) -> Self {
+    pub fn new(center: Point3, radius: f32, params: DiamondParams, mat: Arc<dyn Material>) -> Self {
         let r          = radius;
-        let table_r    = 0.53 * r;
-        let crown_h    = (r - table_r) * 34.5_f32.to_radians().tan();
-        let pavilion_h = r             * 40.75_f32.to_radians().tan();
+        let table_r    = (params.table_pct / 100.0) * r;
+        let crown_h    = (r - table_r) * params.crown_angle.to_radians().tan();
+        let pavilion_h = r             * params.pavilion_angle.to_radians().tan();
 
         let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity(17);
 

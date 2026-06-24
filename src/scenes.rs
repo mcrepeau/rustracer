@@ -9,7 +9,7 @@ use crate::scene::SceneData;
 use crate::sphere::Sphere;
 use crate::texture::Texture;
 use crate::triangle::Triangle;
-use crate::diamond::Diamond;
+use crate::diamond::{Diamond, DiamondParams};
 use crate::transform::{Rotate, Translate};
 use crate::vec3::{Color, Point3, Vec3};
 use crate::volume::{ConstantMedium, NoiseMedium};
@@ -327,6 +327,7 @@ pub fn build_nextweek_scene() -> SceneData {
     list.objects.push(Arc::new(Diamond::new(
         Point3::new(220.0, 325.0, 300.0),
         diamond_r,
+        DiamondParams::default(),
         Arc::new(SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585, ..Default::default() }),
     )) as Arc<dyn Hittable>);
 
