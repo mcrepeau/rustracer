@@ -46,11 +46,16 @@ impl Vec3 {
 
     pub fn reflect(self, n: Self) -> Self { self - 2.0 * self.dot(n) * n }
 
-    pub fn refract(self, n: Self, etai_over_etat: f32) -> Self {
+    /// Returns `None` when total internal reflection applies
+    /// (`etai_over_etat * sin θ > 1`). The caller is responsible for
+    /// checking the TIR condition before calling; `None` here means the
+    /// caller should use `reflect()` instead.
+    pub fn refract(self, n: Self, etai_over_etat: f32) -> Option<Self> {
         let cos_theta = (-self).dot(n).min(1.0);
         let perp = etai_over_etat * (self + cos_theta * n);
-        let parallel = -(1.0 - perp.length_squared()).abs().sqrt() * n;
-        perp + parallel
+        let k = 1.0 - perp.length_squared();
+        if k < 0.0 { return None; }
+        Some(perp + (-k.sqrt() * n))
     }
 
     pub fn random(rng: &mut (impl Rng + ?Sized)) -> Self {

@@ -115,7 +115,13 @@ fn dielectric_boundary(ior: f32, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn 
     let cos_theta = (-unit).dot(rec.normal).min(1.0);
     let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
     let reflected = ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>();
-    let direction = if reflected { unit.reflect(rec.normal) } else { unit.refract(rec.normal, ratio) };
+    let direction = if reflected {
+        unit.reflect(rec.normal)
+    } else {
+        // TIR already ruled out above; unwrap_or_else handles floating-point
+        // edge cases where sin_theta rounds just under the TIR threshold.
+        unit.refract(rec.normal, ratio).unwrap_or_else(|| unit.reflect(rec.normal))
+    };
     (direction, reflected)
 }
 
