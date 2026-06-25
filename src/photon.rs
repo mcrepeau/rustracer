@@ -80,7 +80,10 @@ impl PhotonMap {
         num_photons:   u32,
         gather_radius: f32,
     ) -> Self {
-        let quad_area = light_u.cross(light_v).length();
+        let cross     = light_u.cross(light_v);
+        let quad_area = cross.length();
+        let normal    = cross / quad_area; // unit normal, emission side
+        let (t_axis, b_axis) = normal.onb();
         let power     = light_color * (quad_area * PI / num_photons as f32);
 
         let mut photons: Vec<KdPhoton> = (0..num_photons)
@@ -95,7 +98,10 @@ impl PhotonMap {
                 let cos_theta = rng.gen::<f32>().sqrt();
                 let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
                 let phi       = 2.0 * PI * rng.gen::<f32>();
-                let dir       = Vec3::new(sin_theta * phi.cos(), -cos_theta, sin_theta * phi.sin());
+                // Cosine-weighted hemisphere sample in the quad's own frame.
+                let dir = sin_theta * phi.cos() * t_axis
+                        + sin_theta * phi.sin() * b_axis
+                        + cos_theta * normal;
                 trace_photon(world, origin, dir, power, &mut rng)
             })
             .collect();
