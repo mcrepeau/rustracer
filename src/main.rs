@@ -536,10 +536,21 @@ fn write_tonemap_adaptive(buf: &mut [u32], accumulator: &[Color], pixel_samples:
 /// Maximum relative standard error (σ/μ) to consider a pixel converged.
 const ADAPTIVE_THRESHOLD:   f32 = 0.05;
 /// Per-sample firefly clamp: a new sample whose luminance exceeds this multiple
-/// of the running pixel mean is scaled down to this ratio × mean.  Adapts to
-/// local brightness so genuinely bright pixels (all samples bright) are not
-/// biased, while rare spikes in otherwise dark pixels are suppressed.
-/// Applied only after FIREFLY_MIN_SAMPLES are accumulated.
+/// of the running pixel mean is scaled down to this ratio × mean.
+///
+/// **Bias:** this intentionally introduces a downward bias on high-variance
+/// pixels.  Once a pixel has accumulated many samples its running mean tracks
+/// its true brightness, so the clamp rarely fires on consistently bright
+/// pixels (e.g. direct emitter hits).  The bias is most visible *early* in
+/// the accumulation: a legitimately bright sample (caustic specular path,
+/// first hit on an area light) can be clamped against a low running mean
+/// before enough samples have been gathered to raise it.  This is an
+/// acceptable tradeoff for interactive rendering — use OIDN denoising
+/// (`--denoise`) for bias-free firefly suppression in final renders.
+///
+/// Photon-map caustics are unaffected: the photon irradiance estimate is
+/// constant across samples, so it contributes equally to every sample and
+/// never appears as a spike relative to the running mean.
 const FIREFLY_CLAMP:        f32 = 8.0;
 const FIREFLY_MIN_SAMPLES:  u32 = 4;
 

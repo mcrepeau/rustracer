@@ -443,6 +443,7 @@ impl Hittable for BvhTree {
             hits[..n_hits].sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
 
             for &(_, child) in &hits[..n_hits] {
+                debug_assert!(top < stack.len(), "BVH traversal stack overflow at depth {top}");
                 stack[top] = child;
                 top += 1;
             }
@@ -488,6 +489,7 @@ impl Hittable for BvhTree {
             // No sort needed — any order is fine when one hit is enough.
             for c in 0..QBVH_WIDTH {
                 if mask & (1 << c) != 0 {
+                    debug_assert!(top < stack.len(), "BVH traversal stack overflow at depth {top}");
                     stack[top] = node.children[c];
                     top += 1;
                 }

@@ -333,5 +333,5 @@ These constants can be adjusted in source before building:
 |---|---|---|---|
 | `MAX_DEPTH` | `src/renderer.rs` | `50` | Maximum ray bounce depth. Lower values cut render time but lose energy in scenes with lots of glass or mirrors. |
 | `ADAPTIVE_THRESHOLD` | `src/main.rs` | `0.05` | Relative standard error (σ/μ) below which a pixel is considered converged and skipped. Lower = more samples before early exit. |
-| `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | A sample whose luminance exceeds this multiple of the running pixel mean is scaled down to that ratio × mean. Higher values preserve more energy at the cost of occasional bright spikes. |
+| `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | A sample whose luminance exceeds this multiple of the running pixel mean is scaled down to that ratio × mean. Higher values preserve more energy at the cost of occasional bright spikes. **Introduces downward bias on high-variance pixels early in accumulation** — use `--denoise` for bias-free firefly suppression in final renders. |
 | `FIREFLY_MIN_SAMPLES` | `src/main.rs` | `4` | Minimum samples before per-pixel firefly clamping activates. |
