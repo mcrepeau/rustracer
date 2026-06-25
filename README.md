@@ -12,6 +12,12 @@ A physically-based path tracer built in Rust. It simulates how light actually be
 |:-----------------------------------------------------------------------:|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
 | ![Next Week](examples/render_next_week_5000spp.png) 5000 samples per pixel + AgX tonemapping | ![OBJ Loading](examples/render_obj_loading_5000spp.png) HDR background, 1 OBJ with texture mapping + 1 OBJ with spectral material - 5000 samples per pixel + AgX tonemapping |
 
+### Animation — 360° orbit
+
+Camera orbit around a gold chair and basketball, 144 frames at 24 fps rendered with adaptive sampling.
+
+<video src="examples/obj_loading.mp4" controls width="100%"></video>
+
 ## Build & Run
 
 ```sh
@@ -208,6 +214,7 @@ translate = [x, y, z]  # world-space offset applied last
 
 ```toml
 { type = "lambertian",          color = [r,g,b] }
+{ type = "checker",             even = [r,g,b], odd = [r,g,b], scale = 1.0 }  # 3-D checker; scale = tile size in world units
 { type = "metal",               color = [r,g,b], fuzz = 0.0 }
 { type = "dielectric",          ior = 1.5 }
 { type = "spectral_dielectric", ior = 1.8, dispersion = 0.02 }
@@ -229,6 +236,70 @@ material.normal_path   = "assets/textures/normal.png"
 material.roughness     = 0.5    # fallback if no roughness map
 material.metallic      = 0.0    # fallback if no metallic map
 ```
+
+### Caustics
+
+```toml
+[caustics]
+enabled       = true
+gather_radius = 0.15      # world units; increase for smoother/brighter, decrease for sharper
+num_photons   = 500_000   # increase for small objects where most photons miss (e.g. 5_000_000 for a small diamond)
+```
+
+> **Note:** Turbidity for the physical sky must be ≥ 1.7. Values below that cause the Preetham model's normalisation coefficient to go negative, producing a black sky.
+
+### Animation
+
+Scenes can define a camera animation that renders each frame to a numbered PNG and prints an ffmpeg command at the end.
+
+**Orbit** — perfect circular path computed trigonometrically; no spline artifacts:
+
+```toml
+[animation]
+fps      = 24
+duration = 6.0   # seconds → fps × duration frames total
+
+[animation.orbit]
+center      = [x, 0.0, z]   # XZ of the orbit axis (Y is ignored; set by height)
+radius      = 4.5
+height      = 2.0            # world-space Y of the camera
+look_at     = [x, y, z]     # fixed point the camera points at
+start_angle = 0.0            # degrees; 0° = +Z from center, clockwise from above
+end_angle   = 360.0          # 360° = full orbit back to start
+```
+
+**Keyframes** — smooth Catmull-Rom spline through arbitrary camera positions:
+
+```toml
+[animation]
+fps      = 24
+duration = 4.0
+
+[[animation.keyframes]]
+time      = 0.0
+look_from = [x, y, z]
+look_at   = [x, y, z]
+# vfov, aperture, focus_dist are optional (inherit from [camera] when omitted)
+
+[[animation.keyframes]]
+time      = 4.0
+look_from = [x, y, z]
+look_at   = [x, y, z]
+```
+
+Render an animation:
+
+```sh
+cargo run --release -- --render --scene myfile.toml --adaptive --min-samples 64
+```
+
+Frame files are written as `{slug}_{frame:04d}.png`. After the last frame the assemble command is printed:
+
+```sh
+ffmpeg -r 24 -i "slug_%04d.png" -c:v libx264 -pix_fmt yuv420p output.mp4
+```
+
+The BVH and photon map are built **once** and reused across all frames — only the camera is reconstructed per frame.
 
 ## Scenes
 
