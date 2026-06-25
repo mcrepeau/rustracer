@@ -1,6 +1,6 @@
 use crate::vec3::{Point3, Vec3};
 
-/// Camera state at a single keyframe.
+/// Camera state at a single keyframe (or evaluated orbit sample).
 #[derive(Clone)]
 pub struct Keyframe {
     pub time:       f32,
@@ -11,61 +11,95 @@ pub struct Keyframe {
     pub focus_dist: f32,
 }
 
-/// Camera animation defined by a set of keyframes.
-///
-/// `evaluate(t)` interpolates between keyframes using a clamped Catmull-Rom
-/// spline for `look_from` / `look_at` (smooth curves through all control
-/// points) and linear interpolation for scalar fields (`vfov`, `aperture`,
-/// `focus_dist`).
+/// True circular orbit: camera travels on a circle in the XZ-plane at fixed Y,
+/// always pointing at `look_at`.  Angles are stored in radians internally.
+pub struct OrbitData {
+    pub center:      Point3,
+    pub radius:      f32,
+    pub height:      f32,   // world-space Y of the camera
+    pub look_at:     Point3,
+    pub start_angle: f32,   // radians; 0 = +Z from center
+    pub end_angle:   f32,   // radians
+    pub vfov:        f32,
+    pub aperture:    f32,
+    pub focus_dist:  Option<f32>,  // None = compute from distance
+}
+
+pub enum AnimationKind {
+    Keyframes(Vec<Keyframe>),
+    Orbit(OrbitData),
+}
+
 pub struct AnimationData {
     pub fps:      f32,
     pub duration: f32,
-    keyframes: Vec<Keyframe>,
+    pub kind:     AnimationKind,
 }
 
 impl AnimationData {
-    /// Validate and sort keyframes. Returns `None` if inputs are degenerate.
-    pub fn new(fps: f32, duration: f32, mut keyframes: Vec<Keyframe>) -> Option<Self> {
-        if keyframes.is_empty() || fps <= 0.0 || duration <= 0.0 { return None; }
-        keyframes.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
-        Some(Self { fps, duration, keyframes })
+    pub fn new(fps: f32, duration: f32, kind: AnimationKind) -> Option<Self> {
+        if fps <= 0.0 || duration <= 0.0 { return None; }
+        if let AnimationKind::Keyframes(ref kf) = kind {
+            if kf.is_empty() { return None; }
+        }
+        Some(Self { fps, duration, kind })
     }
 
-    /// Total number of frames: `round(fps × duration)`, minimum 1.
     pub fn total_frames(&self) -> u32 {
         (self.fps * self.duration).round() as u32
     }
 
-    /// Evaluate camera parameters at absolute time `t` (seconds).
     pub fn evaluate(&self, t: f32) -> Keyframe {
-        let kf = &self.keyframes;
-        let n  = kf.len();
-
-        if n == 1 { return kf[0].clone(); }
-
-        let t = t.clamp(kf[0].time, kf[n - 1].time);
-
-        // Segment index i such that kf[i].time <= t < kf[i+1].time.
-        let i = kf.partition_point(|k| k.time <= t).saturating_sub(1).min(n - 2);
-
-        let t0 = kf[i].time;
-        let t1 = kf[i + 1].time;
-        let u  = if (t1 - t0).abs() < 1e-8 { 0.0 } else { (t - t0) / (t1 - t0) };
-
-        // Clamped Catmull-Rom: clamp P0/P3 at boundaries instead of extrapolating.
-        let p0 = &kf[i.saturating_sub(1)];
-        let p1 = &kf[i];
-        let p2 = &kf[(i + 1).min(n - 1)];
-        let p3 = &kf[(i + 2).min(n - 1)];
-
-        Keyframe {
-            time:       t,
-            look_from:  cr_vec3(p0.look_from,  p1.look_from,  p2.look_from,  p3.look_from,  u),
-            look_at:    cr_vec3(p0.look_at,     p1.look_at,    p2.look_at,    p3.look_at,    u),
-            vfov:       lerp(p1.vfov,       p2.vfov,       u),
-            aperture:   lerp(p1.aperture,   p2.aperture,   u),
-            focus_dist: lerp(p1.focus_dist, p2.focus_dist, u),
+        match &self.kind {
+            AnimationKind::Keyframes(kf) => evaluate_keyframes(kf, t),
+            AnimationKind::Orbit(o) => {
+                let frac = (t / self.duration).clamp(0.0, 1.0);
+                let angle = o.start_angle + (o.end_angle - o.start_angle) * frac;
+                let look_from = Point3::new(
+                    o.center.x + o.radius * angle.sin(),
+                    o.height,
+                    o.center.z + o.radius * angle.cos(),
+                );
+                let focus_dist = o.focus_dist.unwrap_or_else(|| {
+                    (look_from - o.look_at).length().max(0.01)
+                });
+                Keyframe {
+                    time: t,
+                    look_from,
+                    look_at: o.look_at,
+                    vfov:     o.vfov,
+                    aperture: o.aperture,
+                    focus_dist,
+                }
+            }
         }
+    }
+}
+
+fn evaluate_keyframes(kf: &[Keyframe], t: f32) -> Keyframe {
+    let n = kf.len();
+    if n == 1 { return kf[0].clone(); }
+
+    let t = t.clamp(kf[0].time, kf[n - 1].time);
+
+    let i = kf.partition_point(|k| k.time <= t).saturating_sub(1).min(n - 2);
+
+    let t0 = kf[i].time;
+    let t1 = kf[i + 1].time;
+    let u  = if (t1 - t0).abs() < 1e-8 { 0.0 } else { (t - t0) / (t1 - t0) };
+
+    let p0 = &kf[i.saturating_sub(1)];
+    let p1 = &kf[i];
+    let p2 = &kf[(i + 1).min(n - 1)];
+    let p3 = &kf[(i + 2).min(n - 1)];
+
+    Keyframe {
+        time:       t,
+        look_from:  cr_vec3(p0.look_from,  p1.look_from,  p2.look_from,  p3.look_from,  u),
+        look_at:    cr_vec3(p0.look_at,     p1.look_at,    p2.look_at,    p3.look_at,    u),
+        vfov:       lerp(p1.vfov,       p2.vfov,       u),
+        aperture:   lerp(p1.aperture,   p2.aperture,   u),
+        focus_dist: lerp(p1.focus_dist, p2.focus_dist, u),
     }
 }
 

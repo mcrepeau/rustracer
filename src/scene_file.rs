@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::animation::{AnimationData, Keyframe};
+use crate::animation::{AnimationData, AnimationKind, Keyframe, OrbitData};
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
@@ -47,10 +47,41 @@ fn default_max_samples() -> u32    { 2000 }
 
 #[derive(Deserialize)]
 pub struct AnimationConfig {
-    pub fps:        f32,
-    pub duration:   f32,
-    pub keyframes:  Vec<KeyframeConfig>,
+    pub fps:      f32,
+    pub duration: f32,
+    /// Keyframe-based path — Catmull-Rom spline through each control point.
+    #[serde(default)]
+    pub keyframes: Vec<KeyframeConfig>,
+    /// True circular orbit — camera travels on a perfect circle in the XZ-plane.
+    /// Takes precedence over `keyframes` when both are present.
+    pub orbit: Option<OrbitConfig>,
 }
+
+#[derive(Deserialize)]
+pub struct OrbitConfig {
+    /// World-space center of the orbit circle (only XZ used; Y is set by `height`).
+    pub center:      [f32; 3],
+    /// Orbit radius in scene units.
+    pub radius:      f32,
+    /// World-space Y position of the camera throughout the orbit.
+    pub height:      f32,
+    /// Fixed look-at point (can differ from `center`).
+    pub look_at:     [f32; 3],
+    /// Starting angle in degrees; 0° = +Z from center (clockwise when viewed from above).
+    #[serde(default)]
+    pub start_angle: f32,
+    /// Ending angle in degrees; 360° = full orbit back to start.
+    #[serde(default = "default_end_angle")]
+    pub end_angle:   f32,
+    /// Overrides the scene camera vfov for the orbit.
+    pub vfov:        Option<f32>,
+    /// Overrides the scene camera aperture for the orbit.
+    pub aperture:    Option<f32>,
+    /// Fixed focus distance; defaults to camera→look_at distance if omitted.
+    pub focus_dist:  Option<f32>,
+}
+
+fn default_end_angle() -> f32 { 360.0 }
 
 #[derive(Deserialize)]
 pub struct KeyframeConfig {
@@ -489,19 +520,35 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
 
     // ── Animation ─────────────────────────────────────────────────────────────
     let animation = file.animation.and_then(|ac| {
-        let keyframes = ac.keyframes.into_iter().map(|kc| {
-            let from = p3(kc.look_from);
-            let at   = p3(kc.look_at);
-            Keyframe {
-                time:       kc.time,
-                look_from:  from,
-                look_at:    at,
-                vfov:       kc.vfov      .unwrap_or(cam_init.vfov),
-                aperture:   kc.aperture  .unwrap_or(cam_init.aperture),
-                focus_dist: kc.focus_dist.unwrap_or_else(|| (from - at).length().max(0.01)),
-            }
-        }).collect();
-        AnimationData::new(ac.fps, ac.duration, keyframes)
+        let kind = if let Some(oc) = ac.orbit {
+            let look_at_pt = p3(oc.look_at);
+            AnimationKind::Orbit(OrbitData {
+                center:      p3(oc.center),
+                radius:      oc.radius,
+                height:      oc.height,
+                look_at:     look_at_pt,
+                start_angle: oc.start_angle.to_radians(),
+                end_angle:   oc.end_angle.to_radians(),
+                vfov:        oc.vfov      .unwrap_or(cam_init.vfov),
+                aperture:    oc.aperture  .unwrap_or(cam_init.aperture),
+                focus_dist:  oc.focus_dist,
+            })
+        } else {
+            let keyframes = ac.keyframes.into_iter().map(|kc| {
+                let from = p3(kc.look_from);
+                let at   = p3(kc.look_at);
+                Keyframe {
+                    time:       kc.time,
+                    look_from:  from,
+                    look_at:    at,
+                    vfov:       kc.vfov      .unwrap_or(cam_init.vfov),
+                    aperture:   kc.aperture  .unwrap_or(cam_init.aperture),
+                    focus_dist: kc.focus_dist.unwrap_or_else(|| (from - at).length().max(0.01)),
+                }
+            }).collect();
+            AnimationKind::Keyframes(keyframes)
+        };
+        AnimationData::new(ac.fps, ac.duration, kind)
     });
 
     let scene = SceneData {
