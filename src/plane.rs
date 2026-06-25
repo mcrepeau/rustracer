@@ -75,7 +75,18 @@ impl Hittable for InfinitePlane {
     }
 
     fn bounding_box(&self) -> Option<Aabb> {
-        let b = 1e5_f32;
-        Some(Aabb::new(Point3::new(-b, -b, -b), Point3::new(b, b, b)))
+        // A truly infinite plane can only be bounded along the axis its normal aligns with.
+        // For tilted planes all axes are unbounded; use ±1e5 as a finite proxy.
+        const B: f32 = 1e5;
+        const E: f32 = 1e-3;
+        let n = self.normal;
+        let p = self.point;
+        let range = |ni: f32, pi: f32| -> (f32, f32) {
+            if ni.abs() > 0.999 { (pi - E, pi + E) } else { (-B, B) }
+        };
+        let (x0, x1) = range(n.x, p.x);
+        let (y0, y1) = range(n.y, p.y);
+        let (z0, z1) = range(n.z, p.z);
+        Some(Aabb::new(Point3::new(x0, y0, z0), Point3::new(x1, y1, z1)))
     }
 }
