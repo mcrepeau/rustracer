@@ -127,7 +127,7 @@ pub enum BackgroundConfig {
         /// Degrees above the horizon (0 = horizon, 90 = zenith).
         #[serde(default = "default_sun_elevation")]
         sun_elevation: f32,
-        /// Atmospheric turbidity T (1 = ideal clear, 3 = clear, 5 = light haze, 10 = heavy haze).
+        /// Atmospheric turbidity T (1.7 = min valid, 2 = very clear, 3 = clear, 5 = light haze, 10 = heavy haze).
         #[serde(default = "default_turbidity")]
         turbidity:     f32,
     },
@@ -236,6 +236,13 @@ pub enum ShapeConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MaterialConfig {
     Lambertian { color: [f32; 3] },
+    /// Lambertian with a 3-D checker texture.  `scale` controls tile size in world units.
+    Checker {
+        even:  [f32; 3],
+        odd:   [f32; 3],
+        #[serde(default = "default_checker_scale")]
+        scale: f32,
+    },
     Metal {
         color: [f32; 3],
         #[serde(default)]
@@ -351,6 +358,7 @@ pub struct CausticsConfig {
     pub gather_radius: f32,
 }
 
+fn default_checker_scale() -> f32  { 1.0   }
 fn default_true()          -> bool { true  }
 fn default_gather_radius() -> f32  { 0.15  }
 fn default_wave_scale()    -> f32  { 1.0   }
@@ -579,6 +587,9 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
     Ok(match cfg {
         MaterialConfig::Lambertian { color } =>
             Arc::new(Lambertian { texture: Texture::from(col(color)) }),
+
+        MaterialConfig::Checker { even, odd, scale } =>
+            Arc::new(Lambertian { texture: Texture::Checker { scale, even: col(even), odd: col(odd) } }),
 
         MaterialConfig::Metal { color, fuzz } =>
             Arc::new(PbrMaterial { albedo: col(color), metallic: 1.0, roughness: fuzz, ..Default::default() }),

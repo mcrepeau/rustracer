@@ -24,16 +24,16 @@ aperture   = 0.0
 # and focuses into a caustic pattern below it.  Low turbidity = hard shadows.
 [background]
 type          = "physical"
-sun_azimuth   = -30.0
-sun_elevation = 50.0
-turbidity     = 2.0
+sun_azimuth   = -55.0
+sun_elevation = 32.0
+turbidity     = 1.8
 
 # ── Objects ───────────────────────────────────────────────────────────────────
 
-# Ground — light grey Lambertian disk to catch and display the caustics clearly.
+# Ground — checkered floor to display caustics and give visual depth cues.
 [[objects]]
-shape    = { type = "disk", center = [0.0, 0.0, 0.0], normal = [0.0, 1.0, 0.0], radius = 20.0 }
-material = { type = "lambertian", color = [0.82, 0.82, 0.82] }
+shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }
+material = { type = "checker", even = [0.9, 0.9, 0.9], odd = [0.15, 0.15, 0.15], scale = 1.0 }
 
 # Diamond — Tolkowsky round brilliant (53 % table, 34.5° crown, 40.75° pavilion).
 # SpectralDielectric: ior = 2.417 at the d-line (589 nm), dispersion = 0.044

@@ -177,7 +177,9 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
     let cos_gamma = d.dot(sun).clamp(-1.0, 1.0);
     let gamma     = cos_gamma.acos();
 
-    let t = turbidity.clamp(1.0, 20.0);
+    // Preetham Perez coefficients become non-physical below T≈1.7 (normalization
+    // factor goes negative, zeroing the whole sky).  Clamp to the valid range.
+    let t = turbidity.clamp(1.7, 20.0);
 
     // Sun zenith angle (floor at 1° above horizon; model invalid for θ_s > 90°)
     let cos_theta_s = sun.y.max(0.0175);   // sin(1°) ≈ 0.0175
