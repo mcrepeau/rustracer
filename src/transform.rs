@@ -148,9 +148,10 @@ impl Hittable for Rotate {
             r,
         );
         let mut rec = self.object.hit(&rotated, t_min, t_max)?;
-        // Transform hit point and normal back to world space.
-        rec.p      = mat_apply(&self.fwd, rec.p);
-        rec.normal = mat_apply(&self.fwd, rec.normal);
+        // Transform hit point, normal, and tangent back to world space.
+        rec.p       = mat_apply(&self.fwd, rec.p);
+        rec.normal  = mat_apply(&self.fwd, rec.normal);
+        rec.tangent = mat_apply(&self.fwd, rec.tangent);
         Some(rec)
     }
 
