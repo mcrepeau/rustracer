@@ -235,7 +235,7 @@ fn trace_photon(
         } else {
             if spec_depth > 0 && hit_spectral && rec.mat.can_receive_caustics() {
                 // Clamp spectral spikes once at storage, not per bounce.
-                let lum = 0.2126 * power.x + 0.7152 * power.y + 0.0722 * power.z;
+                let lum = power.luminance();
                 if lum > 15.0 { power *= 15.0 / lum; }
                 let nor = rec.normal;
                 return Some(KdPhoton {

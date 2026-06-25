@@ -448,7 +448,7 @@ fn run_render(args: RenderArgs) {
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-fn luminance(c: Color) -> f32 { c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722 }
+fn luminance(c: Color) -> f32 { c.luminance() }
 
 /// Accumulates one rendered sample into the accumulator with firefly clamping.
 /// When `pixel_samples` is non-empty, per-pixel adaptive bookkeeping is updated;

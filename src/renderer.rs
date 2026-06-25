@@ -32,8 +32,6 @@ impl EnvMapData {
         use std::f32::consts::PI;
         let w = image.width()  as usize;
         let h = image.height() as usize;
-        let lum = |r: f32, g: f32, b: f32| 0.2126 * r + 0.7152 * g + 0.0722 * b;
-
         // Build per-row conditional CDFs and collect the row marginal weights.
         // Each pixel is weighted by luminance × sin(θ) — the solid-angle element
         // for an equirectangular map — so bright, equator-facing pixels are sampled
@@ -45,7 +43,7 @@ impl EnvMapData {
             let mut sum = 0.0f32;
             for i in 0..w {
                 let px = image.get_pixel(i as u32, j as u32);
-                sum += lum(px[0], px[1], px[2]) * sin_j;
+                sum += Color::new(px[0], px[1], px[2]).luminance() * sin_j;
                 cond_cdf[j * w + i] = sum;
             }
             if sum > 0.0 {
@@ -136,7 +134,7 @@ impl EnvMapData {
         let w   = self.image.width()  as usize;
         let h   = self.image.height() as usize;
         let px  = self.image.get_pixel(i as u32, j as u32);
-        let lum = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+        let lum = Color::new(px[0], px[1], px[2]).luminance();
         // The sinθ weighting used during CDF construction cancels exactly with the
         // equirectangular→solid-angle Jacobian (|dω/d(u,v)| = 2π² sinθ), giving:
         //   p_ω = L(i,j) × W × H / (Z × 2π²)

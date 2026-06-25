@@ -30,6 +30,8 @@ impl Vec3 {
 
     #[inline] pub fn unit(self) -> Self { self / self.length() }
 
+    #[inline] pub fn luminance(self) -> f32 { 0.2126 * self.x + 0.7152 * self.y + 0.0722 * self.z }
+
     /// Build a tangent-space ONB for a surface normal (must already be unit).
     /// Returns `(u_axis, v_axis)`, both perpendicular to `self` and each other.
     pub fn onb(self) -> (Self, Self) {

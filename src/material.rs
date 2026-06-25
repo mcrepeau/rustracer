@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use image::RgbImage;
 use rand::{Rng, RngCore};
+use crate::output::srgb_decode;
 use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord};
@@ -519,7 +520,7 @@ fn bilinear_coords(img: &RgbImage, u: f32, v: f32) -> (u32, u32, u32, u32, f32, 
 
 fn sample_srgb(img: &RgbImage, u: f32, v: f32) -> Color {
     let (x0, y0, x1, y1, tx, ty) = bilinear_coords(img, u, v);
-    let lin = |c: u8| (c as f32 / 255.0).powf(2.2);
+    let lin = srgb_decode;
     let px  = |x, y| { let p = img.get_pixel(x, y); Color::new(lin(p[0]), lin(p[1]), lin(p[2])) };
     let c0  = px(x0, y0) * (1.0 - tx) + px(x1, y0) * tx;
     let c1  = px(x0, y1) * (1.0 - tx) + px(x1, y1) * tx;
@@ -674,8 +675,7 @@ impl Material for PbrMaterial {
         let p_spec = if metallic > 0.999 {
             1.0_f32
         } else {
-            (0.2126 * f_approx.x + 0.7152 * f_approx.y + 0.0722 * f_approx.z)
-                .clamp(0.04, 0.9)
+            f_approx.luminance().clamp(0.04, 0.9)
         };
 
         if rng.gen::<f32>() < p_coat {
@@ -756,7 +756,7 @@ impl Material for PbrMaterial {
                 // where F_H = (1−cos_o)^5 uses the view angle as proxy for the half-angle,
                 // correctly peaking at grazing incidence without requiring wi at scatter time.
                 let sheen_attn = if self.sheen > 0.0 && metallic < 0.999 {
-                    let luma = 0.2126 * albedo.x + 0.7152 * albedo.y + 0.0722 * albedo.z;
+                    let luma = albedo.luminance();
                     let c_tint = if luma > 1e-6 { albedo / luma } else { Color::new(1.0, 1.0, 1.0) };
                     let sheen_color = Color::new(1.0, 1.0, 1.0) * (1.0 - self.sheen_tint) + c_tint * self.sheen_tint;
                     let f_h = (1.0 - cos_o).powi(5);
@@ -858,8 +858,7 @@ impl Material for PbrMaterial {
         } else { 0.0 };
         let f_approx = schlick_color(cos_o, f0);
         let p_spec   = if metallic > 0.999 { 1.0_f32 } else {
-            (0.2126 * f_approx.x + 0.7152 * f_approx.y + 0.0722 * f_approx.z)
-                .clamp(0.04, 0.9)
+            f_approx.luminance().clamp(0.04, 0.9)
         };
 
         let mut pdf = 0.0;
@@ -1139,9 +1138,7 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
-    fn luma(c: Color) -> f32 {
-        0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z
-    }
+    fn luma(c: Color) -> f32 { c.luminance() }
 
     // ── GGX NDF ──────────────────────────────────────────────────────────────
 

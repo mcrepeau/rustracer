@@ -65,7 +65,7 @@ fn agx_tonemap(c: Color) -> Color {
 
     // Punchy look (Blender AgX "Punchy"): ASC CDL power 1.35 + 1.4× saturation.
     // Applied in curve-output space, before the outset matrix.
-    let luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
+    let luma = Color::new(r, g, b).luminance();
     let r = luma + 1.4 * (r.powf(1.35) - luma);
     let g = luma + 1.4 * (g.powf(1.35) - luma);
     let b = luma + 1.4 * (b.powf(1.35) - luma);
@@ -83,6 +83,12 @@ fn agx_tonemap(c: Color) -> Color {
 #[inline]
 fn srgb_encode(x: f32) -> f32 {
     if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
+}
+
+#[inline]
+pub fn srgb_decode(c: u8) -> f32 {
+    let s = c as f32 / 255.0;
+    if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
 }
 
 #[inline]

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use image::RgbImage;
+use crate::output::srgb_decode;
 use crate::perlin::Perlin;
 use crate::vec3::{Color, Point3};
 
@@ -34,7 +35,7 @@ impl Texture {
                 let y = ((v * img.height() as f32) as u32).min(img.height() - 1);
                 let px = img.get_pixel(x, y);
                 // sRGB → linear
-                let lin = |c: u8| (c as f32 / 255.0).powf(2.2);
+                let lin = srgb_decode;
                 Color::new(lin(px[0]), lin(px[1]), lin(px[2]))
             }
             Texture::Noise { perlin, scale } => {
