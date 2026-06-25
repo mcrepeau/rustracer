@@ -588,66 +588,46 @@ pub fn render_tiles(
         _                                    => clear_pearl_sun_dir(),
     }
 
-    // Tile the image into 16×16 blocks so that rays within a tile share BVH
-    // cache lines.  Tiles are non-overlapping, so parallel writes are safe.
-    // The pointer is carried as usize (which is Send+Sync) to avoid the
-    // raw-pointer Sync restriction, then cast back inside each closure call.
-    const TILE: usize = 16;
-    let h = height as usize;
-    let tiles_x = w.div_ceil(TILE);
-    let tiles_y = h.div_ceil(TILE);
-    // SAFETY: tiles partition the image without overlap; each pixel is written
-    // by exactly one tile iteration.
-    let buf_ptr: usize = scratch.as_mut_ptr() as usize;
+    // One row per Rayon task: gives ~height tasks (800 for 1200×800), which is
+    // enough for good load-balancing across cores.  par_chunks_mut(w) gives
+    // each task exclusive ownership of its row — no unsafe pointer arithmetic.
+    scratch.par_chunks_mut(w).enumerate().for_each(|(row, row_buf)| {
+        for (col, out) in row_buf.iter_mut().enumerate() {
+            let i = row * w + col;
 
-    (0..tiles_x * tiles_y).into_par_iter().for_each(move |tile_idx| {
-        let base = buf_ptr as *mut Color;
-        let tile_r = tile_idx / tiles_x;
-        let tile_c = tile_idx % tiles_x;
-        let col0   = tile_c * TILE;
-        let row0   = tile_r * TILE;
-        let col1   = (col0 + TILE).min(w);
-        let row1   = (row0 + TILE).min(h);
-
-        for row in row0..row1 {
-            for col in col0..col1 {
-                let i = row * w + col;
-                if converged.is_some_and(|c| c[i]) {
-                    // SAFETY: same non-overlapping guarantee as active pixels.
-                    unsafe { *base.add(i) = Color::default(); }
-                    continue;
-                }
-                let mut rng = SmallRng::seed_from_u64(
-                    (i as u64).wrapping_mul(6364136223846793005)
-                        ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
-                );
-                let ray_y = height - 1 - row as u32;
-
-                // Stratified pixel sampling: map sample_idx into a strata×strata grid.
-                // A per-pixel cyclic offset (Fibonacci hash) ensures neighboring pixels
-                // visit strata in different orders, avoiding spatial correlation.
-                let (u_jitter, v_jitter) = if strata2 > 0 {
-                    let offset = (i as u32).wrapping_mul(0x9E3779B9) % strata2;
-                    let s  = (sample_idx + offset) % strata2;
-                    let sx = s % strata;
-                    let sy = s / strata;
-                    (
-                        (sx as f32 + rng.gen::<f32>()) / strata_f,
-                        (sy as f32 + rng.gen::<f32>()) / strata_f,
-                    )
-                } else {
-                    (rng.gen::<f32>(), rng.gen::<f32>())
-                };
-
-                let u = (col as f32 + u_jitter) / w_denom;
-                let v = (ray_y as f32 + v_jitter) / h_denom;
-                let mut cam_ray = camera.get_ray(u, v, &mut rng);
-                // Sample a hero wavelength uniformly over the visible spectrum.
-                cam_ray.wavelength = rng.gen_range(380.0_f32..700.0);
-                let color = ray_color(&cam_ray, world, background, lights, bg_scale, photon_map, &mut rng);
-                // SAFETY: each (row, col) maps to a unique index; tiles are non-overlapping.
-                unsafe { *base.add(i) = color; }
+            if converged.is_some_and(|c| c[i]) {
+                *out = Color::default();
+                continue;
             }
+
+            let mut rng = SmallRng::seed_from_u64(
+                (i as u64).wrapping_mul(6364136223846793005)
+                    ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
+            );
+            let ray_y = height - 1 - row as u32;
+
+            // Stratified pixel sampling: map sample_idx into a strata×strata grid.
+            // A per-pixel cyclic offset (Fibonacci hash) ensures neighboring pixels
+            // visit strata in different orders, avoiding spatial correlation.
+            let (u_jitter, v_jitter) = if strata2 > 0 {
+                let offset = (i as u32).wrapping_mul(0x9E3779B9) % strata2;
+                let s  = (sample_idx + offset) % strata2;
+                let sx = s % strata;
+                let sy = s / strata;
+                (
+                    (sx as f32 + rng.gen::<f32>()) / strata_f,
+                    (sy as f32 + rng.gen::<f32>()) / strata_f,
+                )
+            } else {
+                (rng.gen::<f32>(), rng.gen::<f32>())
+            };
+
+            let u = (col as f32 + u_jitter) / w_denom;
+            let v = (ray_y as f32 + v_jitter) / h_denom;
+            let mut cam_ray = camera.get_ray(u, v, &mut rng);
+            // Sample a hero wavelength uniformly over the visible spectrum.
+            cam_ray.wavelength = rng.gen_range(380.0_f32..700.0);
+            *out = ray_color(&cam_ray, world, background, lights, bg_scale, photon_map, &mut rng);
         }
     });
 }
