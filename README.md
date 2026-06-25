@@ -16,7 +16,7 @@ A physically-based path tracer built in Rust. It simulates how light actually be
 
 Camera orbit around a gold chair and basketball, 144 frames at 24 fps rendered with adaptive sampling.
 
-<video src="examples/obj_loading.mp4" controls width="100%"></video>
+[Watch the orbit animation](examples/obj_loading.mp4)
 
 ## Build & Run
 
