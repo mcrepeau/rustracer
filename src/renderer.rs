@@ -392,7 +392,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                         }
                     }
 
-                    // ── Direct lighting: explicit NEE with MIS balance heuristic ──
+                    // ── Direct lighting: explicit NEE with MIS power heuristic ──
                     // w_nee = p_nee / (p_nee + p_brdf)
                     // The estimator simplifies to: attenuation * brdf * L_e / (p_nee + p_brdf)
                     if !lights.objects.is_empty() {
