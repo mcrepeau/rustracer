@@ -4,20 +4,26 @@ use crate::hittable::{HitRecord, Hittable};
 use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
 
-// ── Scale ─────────────────────────────────────────────────────────────────────
+// ── UniformScale ──────────────────────────────────────────────────────────────
 
-pub struct Scale {
+/// Uniform (isotropic) scale transform.  A single scalar factor is required
+/// because non-uniform scale needs the inverse-transpose for correct normal
+/// transformation; uniform scale's inverse-transpose is the identity, so
+/// normals can be passed through unchanged.  `factor` must be positive —
+/// negative values flip normals and break front-face detection.
+pub struct UniformScale {
     object: Arc<dyn Hittable>,
     factor: f32,
 }
 
-impl Scale {
+impl UniformScale {
     pub fn new(object: Arc<dyn Hittable>, factor: f32) -> Self {
+        debug_assert!(factor > 0.0, "UniformScale factor must be positive; negative scale flips normals");
         Self { object, factor }
     }
 }
 
-impl Hittable for Scale {
+impl Hittable for UniformScale {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let inv = 1.0 / self.factor;
         // Transform ray to object space: scale both origin and direction by inv.
@@ -25,7 +31,7 @@ impl Hittable for Scale {
         let scaled = Ray::scatter_from(inv * r.origin, inv * r.direction, r);
         let mut rec = self.object.hit(&scaled, t_min, t_max)?;
         rec.p = self.factor * rec.p;
-        // Normal direction is unchanged for uniform scale (inverse-transpose = identity direction).
+        // Normals are unchanged: inverse-transpose of a uniform scale is the identity.
         Some(rec)
     }
 
@@ -41,6 +47,7 @@ impl Hittable for Scale {
         })
     }
 }
+
 
 // ── Translate ─────────────────────────────────────────────────────────────────
 

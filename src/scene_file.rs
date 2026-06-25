@@ -20,7 +20,7 @@ use crate::renderer::{Background, EnvMapData};
 use crate::scene::SceneData;
 use crate::sphere::Sphere;
 use crate::texture::Texture;
-use crate::transform::{Rotate, Scale, Translate};
+use crate::transform::{Rotate, UniformScale, Translate};
 use crate::vec3::{Color, Point3, Vec3};
 use crate::volume::{ConstantMedium, NoiseMedium};
 
@@ -495,7 +495,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
             }
         };
         // Apply SRT transforms: scale → rotate → translate.
-        if let Some(s) = scale    { hittable = Arc::new(Scale::new(hittable, s)); }
+        if let Some(s) = scale    { hittable = Arc::new(UniformScale::new(hittable, s)); }
         if let Some(a) = rotate_y { hittable = Arc::new(Rotate::around_y(hittable, a)); }
         if let Some(t) = translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
         static_objects.push(hittable);
