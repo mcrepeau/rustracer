@@ -21,23 +21,21 @@ pub struct SceneData {
     /// Photon gather radius in world units.  Must match the scene's spatial
     /// scale: ~0.15 for unit-scale scenes, ~10 for 0–555 coordinate scenes.
     pub caustic_gather_radius: f32,
+    /// Number of photons to trace when building the caustic map.
+    pub caustic_num_photons: u32,
     /// Caustic photon map, rebuilt after every sun-direction change when enabled.
     pub photon_map:      Option<Arc<PhotonMap>>,
     /// Camera animation; `None` for static scenes.
     pub animation:       Option<AnimationData>,
 }
 
-/// Number of photons traced when building the caustic photon map.
-/// Higher values produce smoother caustics at the cost of longer build time.
-/// 200_000 ≈ 1–2 s, 500_000 ≈ 3–5 s, 1_000_000 ≈ 8–10 s.
-const CAUSTIC_PHOTON_COUNT: u32 = 500_000;
-
 impl SceneData {
     /// Rebuild only the photon map, reusing the current world BVH.
     /// Call this after sun-direction changes.
     pub fn rebuild_caustics(&mut self) {
         if !self.enable_caustics { return; }
-        let r     = self.caustic_gather_radius;
+        let r   = self.caustic_gather_radius;
+        let n   = self.caustic_num_photons;
         let world = Arc::clone(&self.world);
         if let Background::Physical { sun_dir, .. } = &self.background {
             let sun_dir = *sun_dir;
@@ -49,11 +47,11 @@ impl SceneData {
             let power_dir = (sun_dir + perp * 0.04).unit();
             let sun_color = self.background.eval(power_dir) * std::f32::consts::PI;
             self.photon_map = Some(Arc::new(
-                PhotonMap::build(world.as_ref(), sun_dir, sun_color, CAUSTIC_PHOTON_COUNT, r)
+                PhotonMap::build(world.as_ref(), sun_dir, sun_color, n, r)
             ));
         } else if let Some((origin, u, v, color)) = self.caustic_quad {
             self.photon_map = Some(Arc::new(
-                PhotonMap::build_from_quad(world.as_ref(), origin, u, v, color, CAUSTIC_PHOTON_COUNT, r)
+                PhotonMap::build_from_quad(world.as_ref(), origin, u, v, color, n, r)
             ));
         }
     }

@@ -48,7 +48,11 @@ material = { type = "spectral_dielectric", ior = 2.417, dispersion = 0.044 }
 # unit scale — increase if caustic patches look noisy, decrease for sharpness.
 [caustics]
 enabled       = true
-gather_radius = 0.15
+gather_radius = 0.25
+# Diamond is 0.4 units wide; only ~0.04% of photons from the 20-unit
+# emission disk hit it.  5M photons → ~2000 stored caustic photons,
+# enough for a visible caustic.  Increase further for smoother results.
+num_photons   = 5_000_000
 
 # ── Animation — 360° orbit around the diamond ─────────────────────────────────
 # Uses the orbit type: camera position is computed as sin/cos of the angle,

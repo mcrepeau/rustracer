@@ -356,9 +356,14 @@ pub struct CausticsConfig {
     pub enabled:       bool,
     #[serde(default = "default_gather_radius")]
     pub gather_radius: f32,
+    /// Photons to trace.  Increase for small or far-away objects where most
+    /// photons miss the target (e.g. 5_000_000 for a small diamond).
+    #[serde(default = "default_num_photons")]
+    pub num_photons:   u32,
 }
 
 fn default_checker_scale() -> f32  { 1.0   }
+fn default_num_photons()   -> u32  { 500_000 }
 fn default_true()          -> bool { true  }
 fn default_gather_radius() -> f32  { 0.15  }
 fn default_wave_scale()    -> f32  { 1.0   }
@@ -512,9 +517,9 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     }
 
     // ── Caustics ──────────────────────────────────────────────────────────────
-    let (enable_caustics, caustic_gather_radius) = match file.caustics {
-        Some(c) => (c.enabled, c.gather_radius),
-        None    => (false, 0.15),
+    let (enable_caustics, caustic_gather_radius, caustic_num_photons) = match file.caustics {
+        Some(c) => (c.enabled, c.gather_radius, c.num_photons),
+        None    => (false, 0.15, 500_000),
     };
 
     // ── Assemble SceneData ────────────────────────────────────────────────────
@@ -569,6 +574,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         enable_caustics,
         caustic_quad:          file.lights.first().map(|lc| (p3(lc.corner), v3(lc.u), v3(lc.v), col(lc.color))),
         caustic_gather_radius,
+        caustic_num_photons,
         photon_map:    None,
         animation,
     };

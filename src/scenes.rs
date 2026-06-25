@@ -178,10 +178,11 @@ pub fn build_random_scene() -> SceneData {
         },
         max_samples:         2000,
         enable_caustics:     true,
-        caustic_quad:        None,
+        caustic_quad:          None,
         caustic_gather_radius: 0.5,
-        photon_map:          None,
-        animation:           None,
+        caustic_num_photons:   500_000,
+        photon_map:            None,
+        animation:             None,
     }
 }
 
@@ -244,6 +245,7 @@ pub fn build_cornell_box() -> SceneData {
             Color::new(15.0, 15.0, 15.0),
         )),
         caustic_gather_radius: 8.0,
+        caustic_num_photons:   500_000,
         photon_map:            None,
         animation:             None,
     }
@@ -391,6 +393,7 @@ pub fn build_nextweek_scene() -> SceneData {
         enable_caustics:       true,
         caustic_quad:          Some(caustic_quad),
         caustic_gather_radius: 25.0,
+        caustic_num_photons:   500_000,
         photon_map:            None,
         animation:             None,
     }
@@ -569,6 +572,7 @@ pub fn build_benchmark_scene() -> SceneData {
         enable_caustics:       true,
         caustic_quad:          None,
         caustic_gather_radius: 0.5,
+        caustic_num_photons:   500_000,
         photon_map:            None,
         animation:             None,
     }
