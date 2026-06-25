@@ -4,8 +4,13 @@
 # Render output (keep curated examples/)
 *.png
 *.exr
+*.mp4
 !examples/*.png
 !examples/*.exr
+!examples/*.mp4
+
+# Local scene files
+diamond.toml
 
 # macOS
 .DS_Store
