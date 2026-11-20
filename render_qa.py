@@ -20,7 +20,8 @@ Usage:
   python render_qa.py render.png
   python render_qa.py a.png b.png              # compare multiple renders
   python render_qa.py render.png --annotate    # save *_qa.png with circles
-  python render_qa.py render.png --json        # machine-readable report
+  python render_qa.py render.png --json        # machine-readable report (always a list)
+  python render_qa.py render.png --reference ref_4096spp.png   # + RMSE/PSNR vs reference
 
 Dependencies:
   pip install numpy Pillow scipy
@@ -85,8 +86,33 @@ def load_float(path: str) -> np.ndarray:
 
 
 def gamma_lum(rgb: np.ndarray) -> np.ndarray:
-    """Perceptual luminance in gamma space (sufficient for artifact detection)."""
-    return 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    """Perceptual luminance in gamma space (Rec.709 weights, same as the renderer)."""
+    return 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+
+
+def srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
+    """Exact IEC 61966-2-1 decode: gamma [0,1] sRGB -> linear light."""
+    return np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+
+
+def compare_to_reference(rgb: np.ndarray, ref_rgb: np.ndarray) -> dict:
+    """
+    Pixel-error metrics vs a high-spp reference, computed in LINEAR light
+    (gamma-space RMSE would underweight shadow error).  Also reports the
+    center 40%x40% crop, where the subject usually is.
+    """
+    if rgb.shape != ref_rgb.shape:
+        raise ValueError(f"reference shape {ref_rgb.shape} != image shape {rgb.shape}")
+    a = srgb_to_linear(rgb.astype(np.float64))
+    b = srgb_to_linear(ref_rgb.astype(np.float64))
+    err = a - b
+    rmse = float(np.sqrt((err ** 2).mean()))
+    psnr = float(20.0 * np.log10(1.0 / max(rmse, 1e-12)))
+    H, W = rgb.shape[:2]
+    err_c = err[int(H * 0.3):int(H * 0.7), int(W * 0.3):int(W * 0.7)]
+    rmse_c = float(np.sqrt((err_c ** 2).mean()))
+    return {"rmse_linear": round(rmse, 6), "psnr_db": round(psnr, 2),
+            "rmse_linear_center40": round(rmse_c, 6)}
 
 
 def rgb_to_hsv(rgb: np.ndarray) -> tuple:
@@ -191,7 +217,12 @@ def detect_hue_outliers(rgb: np.ndarray) -> np.ndarray:
     diff = np.abs(hue - med_hue)
     diff = np.minimum(diff, 360.0 - diff)   # wrap to [0, 180]
 
-    return candidate & (diff >= HO_DIFF_DEG)
+    # Hue-isolation guard: only flag when a clear majority of the window agrees
+    # with the median hue.  Along a saturated color boundary the window mixes
+    # two hues, the median lands between them, and boundary pixels would
+    # otherwise false-positive.
+    consensus = uniform_filter((diff < HO_DIFF_DEG).astype(np.float32), size=sz)
+    return candidate & (diff >= HO_DIFF_DEG) & (consensus > 0.5)
 
 
 # ── Grading ───────────────────────────────────────────────────────────────────
@@ -274,6 +305,21 @@ def analyze(path: str) -> dict:
     mpx  = H * W / 1_000_000.0
     lum  = gamma_lum(rgb)
 
+    # ---- Sanity / exposure / noise stats -------------------------------------
+    pct_black  = float((lum <= 0.01).mean() * 100.0)   # crushed shadows
+    pct_white  = float((lum >= 0.99).mean() * 100.0)   # clipped highlights
+    mean_lum   = float(lum.mean())
+    std_lum    = float(lum.std())
+    degenerate = (mean_lum <= 0.005) or (mean_lum >= 0.995) or (std_lum < 1e-4)
+
+    # Noise estimate: MAD of the 5x5 high-pass response inside locally flat,
+    # non-clipped regions -- a convergence proxy, in gamma units.
+    lmean       = uniform_filter(lum, size=5)
+    hp          = lum - lmean
+    local_std   = np.sqrt(np.maximum(uniform_filter(lum ** 2, size=5) - lmean ** 2, 0.0))
+    flat        = (local_std < 0.02) & (lum > 0.02) & (lum < 0.98)
+    noise_sigma = (float(np.median(np.abs(hp[flat]))) * 1.4826) if flat.any() else 0.0
+
     # ── Run detectors ─────────────────────────────────────────────────────────
     bd_mask = detect_black_dots(lum)
     ff_mask = detect_fireflies(lum)
@@ -310,6 +356,8 @@ def analyze(path: str) -> dict:
 
     # ── Grade ─────────────────────────────────────────────────────────────────
     score = compute_score(bd_pmp, ff_pmp, ho_pmp)
+    if degenerate:
+        score = 0.0   # a degenerate (e.g. all-black) render is never an A+
     grade = score_to_grade(score)
 
     # ── Build structured report ────────────────────────────────────────────────
@@ -339,6 +387,8 @@ def analyze(path: str) -> dict:
             parts.append(f"{a['count']} {a['name'].replace('_', ' ')}")
     summary = ("No artifacts detected." if not parts
                else "Found: " + ", ".join(parts) + ".")
+    if degenerate:
+        summary = "DEGENERATE IMAGE (near-constant luminance). " + summary
 
     return {
         "path":       path,
@@ -347,6 +397,14 @@ def analyze(path: str) -> dict:
         "megapixels": round(mpx, 3),
         "score":      round(score, 1),
         "grade":      grade,
+        "sanity": {
+            "mean_lum":    round(mean_lum, 4),
+            "std_lum":     round(std_lum, 4),
+            "pct_black":   round(pct_black, 3),
+            "pct_white":   round(pct_white, 3),
+            "noise_sigma": round(noise_sigma, 5),
+            "degenerate":  bool(degenerate),
+        },
         "summary":    summary,
         "artifacts":  artifacts,
         # Keep masks for annotation (stripped before JSON output).
@@ -479,9 +537,17 @@ def print_report(report: dict, use_color: bool = True) -> None:
             print(f"  {'':16}  {a['distribution']['regions']} spatial clusters"
                   f"{'  ← concentrated region' if a['distribution']['clustered'] else ''}")
 
+    s = report["sanity"]
+    print(f"  {'sanity':<16}  mean {s['mean_lum']:.3f}  std {s['std_lum']:.3f}  "
+          f"black {s['pct_black']:.2f}%  white {s['pct_white']:.2f}%  "
+          f"noise_s {s['noise_sigma']:.5f}")
     print()
     print(f"  Grade: {_grade_str(report['grade'], report['score'], use_color)}")
     print(f"  {report['summary']}")
+    if "reference" in report:
+        r = report["reference"]
+        print(f"  vs reference:  RMSE(linear) {r['rmse_linear']:.5f}  "
+              f"PSNR {r['psnr_db']:.1f} dB  center40 RMSE {r['rmse_linear_center40']:.5f}")
     print(f"{'─' * 60}\n")
 
 
@@ -510,12 +576,24 @@ def print_comparison(reports: list[dict], use_color: bool = True) -> None:
         row += f"  {g:>{col_w}}"
     print(f"{'─' * len(header)}")
     print(row)
+    if any("reference" in r for r in reports):
+        for key, label in (("rmse_linear", "RMSE(lin)"), ("psnr_db", "PSNR dB")):
+            row = f"  {label:<16}"
+            for r in reports:
+                cell = f"{r['reference'][key]:.4f}" if "reference" in r else "-"
+                row += f"  {cell:>{col_w}}"
+            print(row)
     print(f"{'─' * len(header)}\n")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Windows consoles (cp1252) must not crash on the box-drawing chars below.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(
         description="Artifact detector and quality grader for path-traced renders.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -529,9 +607,19 @@ def main() -> None:
                     help="Print machine-readable JSON report to stdout.")
     ap.add_argument("--no-color", action="store_true",
                     help="Disable ANSI colour in terminal output.")
+    ap.add_argument("--reference", metavar="ref.png", default=None,
+                    help="High-spp reference render: adds linear-space RMSE/PSNR per image.")
     args = ap.parse_args()
 
     use_color = not args.no_color and sys.stdout.isatty()
+
+    ref_rgb = None
+    if args.reference:
+        if not Path(args.reference).exists():
+            sys.exit(f"Reference not found: {args.reference}")
+        ref_rgb = load_float(args.reference)
+        print(f"Reference: {args.reference}  ({ref_rgb.shape[1]}x{ref_rgb.shape[0]})",
+              file=sys.stderr)
 
     reports = []
     for path in args.images:
@@ -539,15 +627,20 @@ def main() -> None:
             print(f"File not found: {path}", file=sys.stderr)
             continue
 
-        print(f"Analysing {path}…", end=" ", flush=True)
+        print(f"Analysing {path}...", end=" ", flush=True, file=sys.stderr)
         report = analyze(path)
+        if ref_rgb is not None:
+            try:
+                report["reference"] = compare_to_reference(report["_rgb"], ref_rgb)
+            except ValueError as e:
+                print(f"  reference comparison skipped: {e}")
         reports.append(report)
-        print("done.")
+        print("done.", file=sys.stderr)
 
         if args.annotate:
             ann_path = str(Path(path).with_stem(Path(path).stem + "_qa"))
             build_annotated(report).save(ann_path)
-            print(f"  → annotated image saved to {ann_path}")
+            print(f"  -> annotated image saved to {ann_path}", file=sys.stderr)
 
     if not reports:
         sys.exit(1)
@@ -559,7 +652,7 @@ def main() -> None:
         for r in reports:
             c = {k: v for k, v in r.items() if not k.startswith("_")}
             clean.append(c)
-        print(json.dumps(clean if len(clean) > 1 else clean[0], indent=2))
+        print(json.dumps(clean, indent=2))   # always a list
     else:
         if len(reports) == 1:
             print_report(reports[0], use_color)
