@@ -15,7 +15,7 @@ look_at    = [0.0, 0.017, 0.0]
 vfov       = 30.0
 aperture   = 0.0
 focus_dist = 0.085
-move_speed = 0.2
+move_speed = 0.002   # scene is mm-scale (~0.1 units wide); 0.2 would cross it in one keypress
 
 [background]
 type  = "solid"
