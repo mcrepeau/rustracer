@@ -7,7 +7,7 @@
 # jewelry display), lit by four softbox panels like a store lightbox:
 # one big key panel overhead, two angled side panels, one rim panel behind.
 name = "LG625469749 oval diamond"
-max_samples = 512
+max_samples = 1024
 
 [camera]
 look_from  = [0.035, 0.032, -0.075]
@@ -17,9 +17,17 @@ aperture   = 0.0
 focus_dist = 0.085
 move_speed = 0.002   # scene is mm-scale (~0.1 units wide); 0.2 would cross it in one keypress
 
+# Procedural studio env map (4 softboxes on a gradient) - regenerate with
+# `py make_studio_softbox.py`. Bright rectangles reflect in the stone, like a
+# jewelry-store lightbox.
 [background]
-type  = "solid"
-color = [0.002, 0.002, 0.005]
+type = "env_map"
+path = "assets/studio_softbox.hdr"
+# alternatives:
+# type  = "solid"
+# color = [0.002, 0.002, 0.005]              # original near-black
+# type  = "env_map"
+# path  = "assets/sunset_puresky_4k.hdr"     # same sky as scene.toml
 
 [[objects]]
 shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
