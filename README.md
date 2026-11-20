@@ -24,7 +24,7 @@ Camera orbit around a gold chair and basketball, 144 frames at 24 fps rendered w
 cargo run --release                        # interactive viewer (scene.toml)
 cargo run --release -- --scene gem_LG625469749.toml   # interactive viewer, that scene file
 cargo run --release -- --render [options]  # headless PNG render (--scene <path.toml>, default scene.toml)
-cargo run --release -- --bench             # performance benchmark
+cargo run --release -- --bench             # performance benchmark (bench.toml; pass another file to bench it)
 ```
 
 ### Headless render options

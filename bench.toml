@@ -1,0 +1,94 @@
+# Benchmark scene for `rustracer --bench` (pass another file to bench that instead).
+# Stresses all major code paths at once: BVH traversal (127k-face OBJ mesh),
+# spectral glass + photon-map caustics, area-light NEE, sun NEE, SSS volume.
+# Fixed content on purpose - edit only when you intend to change the baseline.
+
+name = "Benchmark"
+max_samples = 256
+
+[camera]
+look_from  = [0.0, 3.4, -9.0]
+look_at    = [0.0, 2.247, 1.1993]
+vfov       = 36.0
+aperture   = 0.0
+focus_dist = 10.0
+move_speed = 0.3
+
+# Dusk sun ~10 deg elevation, dead ahead (+Z = azimuth 0), shining through the
+# window opening in the back wall.  High turbidity = warm orange-red sky.
+[background]
+type = "physical"
+sun_azimuth   = 0.0
+sun_elevation = 10.2
+turbidity     = 4.5
+
+# ── Room: x in [-5, 5], y in [0, 5], z in [-2, 9] ─────────────────────────────
+[[objects]]   # floor: checker
+shape    = { type = "quad", corner = [-5.0, 0.0, -2.0], u = [10.0, 0.0, 0.0], v = [0.0, 0.0, 11.0] }
+material = { type = "checker", even = [0.12, 0.12, 0.12], odd = [0.88, 0.88, 0.88], scale = 0.8 }
+
+[[objects]]   # left wall (warm red)
+shape    = { type = "quad", corner = [-5.0, 0.0, -2.0], u = [0.0, 0.0, 11.0], v = [0.0, 5.0, 0.0] }
+material = { type = "lambertian", color = [0.65, 0.10, 0.05] }
+
+[[objects]]   # right wall (cool blue)
+shape    = { type = "quad", corner = [5.0, 0.0, -2.0], u = [0.0, 0.0, 11.0], v = [0.0, 5.0, 0.0] }
+material = { type = "lambertian", color = [0.05, 0.15, 0.65] }
+
+# back wall: four panels around the window opening x in [-2, 2], y in [1.2, 4.2]
+[[objects]]
+shape    = { type = "quad", corner = [-5.0, 0.0, 9.0], u = [10.0, 0.0, 0.0], v = [0.0, 1.2, 0.0] }
+material = { type = "lambertian", color = [0.80, 0.80, 0.80] }
+[[objects]]
+shape    = { type = "quad", corner = [-5.0, 4.2, 9.0], u = [10.0, 0.0, 0.0], v = [0.0, 0.8, 0.0] }
+material = { type = "lambertian", color = [0.80, 0.80, 0.80] }
+[[objects]]
+shape    = { type = "quad", corner = [-5.0, 1.2, 9.0], u = [3.0, 0.0, 0.0], v = [0.0, 3.0, 0.0] }
+material = { type = "lambertian", color = [0.80, 0.80, 0.80] }
+[[objects]]
+shape    = { type = "quad", corner = [2.0, 1.2, 9.0], u = [3.0, 0.0, 0.0], v = [0.0, 3.0, 0.0] }
+material = { type = "lambertian", color = [0.80, 0.80, 0.80] }
+
+# ceiling: four panels around the light panel x in [-1.5, 1.5], z in [-0.5, 2.5]
+[[objects]]
+shape    = { type = "quad", corner = [-5.0, 5.0, -2.0], u = [10.0, 0.0, 0.0], v = [0.0, 0.0, 1.5] }
+material = { type = "lambertian", color = [0.80, 0.80, 0.80] }
+[[objects]]
+shape    = { type = "quad", corner = [-5.0, 5.0, 2.5], u = [10.0, 0.0, 0.0], v = [0.0, 0.0, 6.5] }
+material = { type = "lambertian", color = [0.80, 0.80, 0.80] }
+[[objects]]
+shape    = { type = "quad", corner = [-5.0, 5.0, -0.5], u = [3.5, 0.0, 0.0], v = [0.0, 0.0, 3.0] }
+material = { type = "lambertian", color = [0.80, 0.80, 0.80] }
+[[objects]]
+shape    = { type = "quad", corner = [1.5, 5.0, -0.5], u = [3.5, 0.0, 0.0], v = [0.0, 0.0, 3.0] }
+material = { type = "lambertian", color = [0.80, 0.80, 0.80] }
+
+[[lights]]    # ceiling light panel (6500 K blackbody in the old hardcoded scene)
+corner = [-1.5, 5.0, -0.5]
+u      = [3.0, 0.0, 0.0]
+v      = [0.0, 0.0, 3.0]
+color     = [8.0, 8.0, 8.0]   # ignored when temp_k is set
+temp_k    = 6500.0
+intensity = 8.0
+
+# flint-glass sphere on the window axis: dusk sun photons travel through it
+[[objects]]
+shape    = { type = "sphere", center = [0.0, 1.5, 2.5], radius = 1.5 }
+material = { type = "spectral_dielectric", ior = 1.6395, dispersion = 0.0309 }
+
+# SSS "marble" sphere, warm absorption tint
+[[objects]]
+shape    = { type = "sphere", center = [-3.0, 1.2, 1.0], radius = 1.2 }
+material = { type = "sss", albedo = [0.90, 0.87, 0.82], sigma_a = [0.10, 0.08, 0.05], ior = 1.5, density = 0.85, g = 0.30 }
+
+# brushed-gold PBR mesh, 127 026 faces - BVH + GGX stress
+[[objects]]
+shape     = { type = "mesh", path = "assets/water_glass.obj" }
+material  = { type = "pbr", albedo = [1.0, 0.78, 0.34], roughness = 0.25, metallic = 1.0 }
+scale     = 0.5387
+translate = [2.2509, 1.0856, 0.8167]
+
+[caustics]
+enabled       = true
+gather_radius = 0.5
+num_photons   = 500000

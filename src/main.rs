@@ -22,7 +22,6 @@ mod transform;
 mod camera;
 mod renderer;
 mod scene;
-mod scenes;
 mod scene_file;
 mod output;
 mod animation;
@@ -40,7 +39,6 @@ use renderer::{Background, render_tiles};
 #[cfg(feature = "denoise")]
 use renderer::{Background, render_tiles, render_aux_pass};
 use scene::SceneData;
-use scenes::build_benchmark_scene;   // only used by --bench now; scenes are TOML files
 use output::{to_rgb_u32, save_png, ToneMapper};
 
 use winit::{
@@ -90,7 +88,15 @@ fn run_bench() {
     println!("rustracer benchmark — {}×{}  {} threads\n", WIDTH, HEIGHT, threads);
 
     let mut scratch: Vec<Color> = Vec::new();
-    let mut scene = build_benchmark_scene();
+    // The benchmark scene is a plain TOML file (bench.toml by default) so the
+    // reference stays visible/editable; pass another file to bench that instead.
+    let path = std::env::args().nth(2).filter(|p| p.ends_with(".toml"))
+        .unwrap_or_else(|| "bench.toml".to_string());
+    println!("Scene: {path}\n");
+    let mut scene = match scene_file::load(&path) {
+        Ok(s)  => s,
+        Err(e) => { eprintln!("Failed to load '{path}': {e}"); std::process::exit(1); }
+    };
 
     print!("Building scene… "); let _ = std::io::Write::flush(&mut std::io::stdout());
     scene.rebuild_caustics();
@@ -180,7 +186,7 @@ fn print_help() {
     println!("  rustracer                      Interactive viewer (default scene: scene.toml)");
     println!("  rustracer --scene <path.toml>  Interactive viewer for that scene file ([R] reloads)");
     println!("  rustracer --render [options]   Headless render to PNG");
-    println!("  rustracer --bench              Performance benchmark");
+    println!("  rustracer --bench [scene.toml] Performance benchmark (default: bench.toml)");
     println!("  rustracer --help               Show this message\n");
     println!("RENDER OPTIONS:");
     println!("  --scene <path.toml>  Scene file to render (default: scene.toml)");

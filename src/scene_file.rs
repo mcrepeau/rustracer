@@ -7,8 +7,8 @@ use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
 use crate::material::{
-    Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric,
-    SpectralMetal, SpectralMetalVariant,
+    BlackbodyLight, Dielectric, DiffuseLight, Lambertian, PbrMaterial, PearlMaterial, SpectralDielectric,
+    SpectralMetal, SpectralMetalVariant, SSSMaterial,
 };
 use crate::cone::Cone;
 use crate::cylinder::Cylinder;
@@ -322,6 +322,15 @@ pub enum MaterialConfig {
         #[serde(default)]
         roughness: f32,
     },
+    /// Subsurface scattering (jade, marble, skin): albedo tint, absorption sigma_a,
+    /// boundary ior, density (scattering-coefficient scale) and HG asymmetry g.
+    Sss {
+        albedo:  [f32; 3],
+        sigma_a: [f32; 3],
+        ior:     f32,
+        density: f32,
+        g:       f32,
+    },
     Pearl {
         #[serde(default = "default_pearl_color")]
         base_color:      [f32; 3],
@@ -356,6 +365,12 @@ pub struct LightConfig {
     pub u:      [f32; 3],
     pub v:      [f32; 3],
     pub color:  [f32; 3],
+    /// If set, the emitter is a blackbody at this temperature (K) with `intensity`
+    /// (Planck spectrum, spectrally weighted); `color` is then ignored.
+    #[serde(default)]
+    pub temp_k:    Option<f32>,
+    #[serde(default)]
+    pub intensity: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -655,8 +670,10 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
     // Each entry creates a DiffuseLight quad in both the world and the NEE list.
     for (i, lc) in file.lights.iter().enumerate() {
         let _ = i;
-        let mat: Arc<dyn Material> =
-            Arc::new(DiffuseLight { emit: Texture::from(col(lc.color)) });
+        let mat: Arc<dyn Material> = match lc.temp_k {
+            Some(t) => Arc::new(BlackbodyLight::new(t, lc.intensity.unwrap_or(1.0))),
+            None    => Arc::new(DiffuseLight { emit: Texture::from(col(lc.color)) }),
+        };
         let corner = p3(lc.corner);
         let u      = v3(lc.u);
         let v      = v3(lc.v);
@@ -805,6 +822,9 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
 
         MaterialConfig::Pearl { base_color, ior, film_thickness, orient_strength, film_scale, luster_roughness } =>
             Arc::new(PearlMaterial { base_color: col(base_color), ior, film_thickness, orient_strength, film_scale, luster_roughness }),
+
+        MaterialConfig::Sss { albedo, sigma_a, ior, density, g } =>
+            Arc::new(SSSMaterial { albedo: col(albedo), sigma_a: col(sigma_a), ior, density, g }),
     })
 }
 
