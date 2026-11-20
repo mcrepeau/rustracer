@@ -36,6 +36,9 @@ pub struct SceneFile {
     pub objects:     Vec<ObjectConfig>,
     #[serde(default)]
     pub lights:      Vec<LightConfig>,
+    /// Gemstones described by the key fields of a grading report (IGI/GIA).
+    #[serde(default)]
+    pub gems:        Vec<GemConfig>,
     pub caustics:    Option<CausticsConfig>,
     #[serde(default = "default_max_samples")]
     pub max_samples: u32,
@@ -367,6 +370,49 @@ fn default_num_photons()   -> u32  { 500_000 }
 fn default_true()          -> bool { true  }
 fn default_gather_radius() -> f32  { 0.15  }
 fn default_wave_scale()    -> f32  { 1.0   }
+
+fn default_gem_scale_mm()  -> f32  { 0.001 }  // mm -> metres
+fn default_color_grade()   -> String { "D".to_string() }
+
+/// A gemstone ingested from a grading report (IGI/GIA).  The size comes from
+/// `measurements_mm` (L x W x depth, mm) when present, otherwise from `carat`
+/// via the round-brilliant approximation ct ~= 0.00355 * d_mm^3.  The cut is
+/// table_pct / crown_angle / pavilion_angle, exactly as reported.  The colour
+/// grade maps to a faint yellow-brown body tint (heuristic Beer-Lambert).
+#[derive(Deserialize)]
+pub struct GemConfig {
+    /// Free-text provenance, e.g. the report number.
+    #[serde(default)]
+    pub report:          String,
+    #[serde(default)]
+    pub carat:           Option<f32>,
+    /// [length, width, depth] in mm — overrides carat for the girdle diameter.
+    #[serde(default)]
+    pub measurements_mm: Option<[f32; 3]>,
+    #[serde(default = "default_table_pct")]
+    pub table_pct:       f32,
+    #[serde(default = "default_crown_angle")]
+    pub crown_angle:     f32,
+    #[serde(default = "default_pavilion_angle")]
+    pub pavilion_angle:  f32,
+    /// Reported total depth % — cross-checked against the angles (warning only).
+    #[serde(default)]
+    pub depth_pct:       Option<f32>,
+    #[serde(default = "default_color_grade")]
+    pub color_grade:     String,
+    /// Girdle centre in scene units.
+    pub center:          [f32; 3],
+    /// mm -> scene units applied to the size.
+    #[serde(default = "default_gem_scale_mm")]
+    pub scale_mm:        f32,
+    /// Same SRT placement transforms as objects.
+    #[serde(default)]
+    pub scale:           Option<f32>,
+    #[serde(default)]
+    pub rotate_y:        Option<f32>,
+    #[serde(default)]
+    pub translate:       Option<[f32; 3]>,
+}
 fn default_noise_scale()   -> f32  { 1.0   }
 fn default_table_pct()     -> f32  { 53.0  }
 fn default_crown_angle()   -> f32  { 34.5  }
@@ -385,6 +431,66 @@ pub fn load(path: &str) -> Result<SceneData, String> {
 }
 
 // ── Scene builder ─────────────────────────────────────────────────────────────
+
+/// Build an analytic round-brilliant Diamond from a grading report's key fields.
+fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
+    // Girdle diameter in mm: explicit measurements win, else carat weight.
+    let d_mm = if let Some(m) = g.measurements_mm {
+        if m[0] <= 0.0 || m[1] <= 0.0 { return Err("measurements_mm must be positive".into()); }
+        (m[0] + m[1]) / 2.0
+    } else if let Some(ct) = g.carat {
+        if ct <= 0.0 { return Err("carat must be positive".into()); }
+        (ct / 0.00355).cbrt()   // round brilliant: ct ~= 0.00355 * d_mm^3
+    } else {
+        return Err("provide either carat or measurements_mm".into());
+    };
+    if g.scale_mm <= 0.0 { return Err("scale_mm must be positive".into()); }
+    let radius = 0.5 * d_mm * g.scale_mm;
+
+    let params = DiamondParams {
+        table_pct:      g.table_pct,
+        crown_angle:    g.crown_angle,
+        pavilion_angle: g.pavilion_angle,
+    };
+
+    // Cross-check the reported total depth against the angles (warning only).
+    if let Some(depth) = g.depth_pct {
+        let table_r    = (params.table_pct / 100.0) * radius;
+        let crown_h    = (radius - table_r) * params.crown_angle.to_radians().tan();
+        let pavilion_h = radius * params.pavilion_angle.to_radians().tan();
+        let calc = (crown_h + pavilion_h) / (2.0 * radius) * 100.0;
+        if (calc - depth).abs() > 1.5 {
+            eprintln!("warning: gem '{}': reported depth {depth}% but angles give {calc:.1}%",
+                      g.report);
+        }
+    }
+
+    // Colour grade D..Z -> faint yellow-brown body tint (heuristic Beer-Lambert,
+    // per scene unit; a 6.5 mm stone at scale_mm=0.001 spans ~0.0065 units).
+    let sigma = match g.color_grade.trim().to_uppercase().chars().next() {
+        Some('D') | Some('E') | Some('F') => 0.0,
+        Some('G') => 50.0,
+        Some('H') => 80.0,
+        Some('I') => 120.0,
+        Some('J') => 170.0,
+        Some('K') => 230.0,
+        Some('L') | Some('M') => 300.0,
+        _         => 400.0,
+    };
+    let absorption = Color::new(1.0, 0.75, 0.35) * sigma;
+    let mat: Arc<dyn Material> = Arc::new(SpectralDielectric {
+        cauchy_b: 2.395,     // diamond
+        cauchy_c: 0.00585,
+        absorption,
+    });
+
+    let mut hittable: Arc<dyn Hittable> =
+        Arc::new(Diamond::new(p3(g.center), radius, params, mat));
+    if let Some(s) = g.scale     { hittable = Arc::new(UniformScale::new(hittable, s)); }
+    if let Some(a) = g.rotate_y  { hittable = Arc::new(Rotate::around_y(hittable, a)); }
+    if let Some(t) = g.translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
+    Ok(hittable)
+}
 
 fn build(file: SceneFile) -> Result<SceneData, String> {
     // ── Camera ────────────────────────────────────────────────────────────────
@@ -506,6 +612,12 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         if hittable.light_area() > 0.0 {
             lights.add_shared(Arc::clone(&hittable));
         }
+        static_objects.push(hittable);
+    }
+
+    // ── Gems from grading reports ─────────────────────────────────────────────
+    for (i, g) in file.gems.iter().enumerate() {
+        let hittable = build_gem(g).map_err(|e| format!("gems[{i}]: {e}"))?;
         static_objects.push(hittable);
     }
 
@@ -668,3 +780,72 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
 #[inline] fn v3([x, y, z]: [f32; 3]) -> Vec3   { Vec3::new(x, y, z) }
 #[inline] fn p3([x, y, z]: [f32; 3]) -> Point3 { Point3::new(x, y, z) }
 #[inline] fn col([r, g, b]: [f32; 3]) -> Color  { Color::new(r, g, b) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_gem(gem_block: &str) -> GemConfig {
+        let text = format!(
+            "name = \"t\"
+[camera]
+look_from = [0,0,-1]
+look_at = [0,0,0]
+[background]
+type = \"solid\"
+color = [0,0,0]
+{gem_block}"
+        );
+        let file: SceneFile = toml::from_str(&text).unwrap();
+        assert_eq!(file.gems.len(), 1);
+        file.gems.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn gem_carat_maps_to_girdle_diameter() {
+        let g = parse_gem("[[gems]]
+carat = 1.0
+center = [0,0,0]
+");
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        let width = bb.max.x - bb.min.x;
+        // 1 ct -> d = (1/0.00355)^(1/3) ~= 6.55 mm; scale_mm default 0.001 -> 0.00655 units.
+        // The bbox uses the 16-gon circumradius r/cos(pi/16), so width = d*scale/cos(pi/16).
+        let expected = (1.0f32 / 0.00355).cbrt() * 0.001 / (std::f32::consts::PI / 16.0).cos();
+        assert!((width - expected).abs() < 1e-6, "width {width} vs expected {expected}");
+    }
+
+    #[test]
+    fn gem_measurements_override_carat() {
+        let g = parse_gem("[[gems]]
+carat = 99.0
+measurements_mm = [6.50, 6.40, 4.01]
+center = [0,0,0]
+");
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        let width = bb.max.x - bb.min.x;
+        let expected = 6.45 * 0.001 / (std::f32::consts::PI / 16.0).cos();
+        assert!((width - expected).abs() < 1e-6, "width {width} vs expected {expected}");
+    }
+
+    #[test]
+    fn gem_requires_a_size_source() {
+        let g = parse_gem("[[gems]]
+center = [0,0,0]
+");
+        assert!(build_gem(&g).is_err());
+    }
+
+    #[test]
+    fn gem_defaults_to_tolkowsky_cut() {
+        let g = parse_gem("[[gems]]
+carat = 0.5
+center = [0,0,0]
+");
+        assert!((g.table_pct - 53.0).abs() < 1e-6);
+        assert!((g.crown_angle - 34.5).abs() < 1e-6);
+        assert!((g.pavilion_angle - 40.75).abs() < 1e-6);
+    }
+}

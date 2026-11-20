@@ -51,6 +51,19 @@ path = "assets/sunset_puresky_4k.hdr"
 #   textured_pbr        — albedo_path  (roughness_path  metallic_path  ao_path)  roughness  metallic
 #   pearl               — film_thickness  film_scale  orient_strength
 
+# ── Gems from grading reports ─────────────────────────────────────────────────
+# Key fields of an IGI/GIA report become an analytic round-brilliant diamond:
+#   [[gems]]
+#   report         = "IGI 245123456"          # free-text provenance
+#   measurements_mm = [6.51, 6.47, 4.01]      # L x W x depth, mm (or: carat = 1.02)
+#   table_pct      = 57.0                     # proportions (defaults: Tolkowsky 53/34.5/40.75)
+#   crown_angle    = 34.6
+#   pavilion_angle = 40.8
+#   depth_pct      = 61.8                     # optional; cross-checked vs angles (warning)
+#   color_grade    = "F"                      # D..Z -> faint body tint
+#   center         = [0.0, 0.004, 0.0]       # girdle centre, scene units
+#   scale_mm       = 0.001                    # mm -> scene units (default 0.001)
+
 # ── Floor ─────────────────────────────────────────────────────────────────────
 [[objects]]
 shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }
