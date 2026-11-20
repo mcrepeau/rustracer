@@ -100,6 +100,14 @@ pub trait Hittable: Send + Sync {
         self.hit(r, t_min, t_max).is_some()
     }
 
+    /// Transmittance along the ray over [t_min, t_max] — used for shadow rays.
+    /// 0 if an opaque surface is hit; otherwise the product of any media
+    /// transmittances crossed (Beer-Lambert). Default treats every hit as fully
+    /// opaque, i.e. exactly the old any_hit behaviour; media override this.
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        if self.any_hit(r, t_min, t_max) { 0.0 } else { 1.0 }
+    }
+
     /// Solid-angle PDF for sampling this hittable from `origin` in direction `dir` at `time`.
     fn pdf_value(&self, _origin: Point3, _dir: Vec3, _time: f32) -> f32 { 0.0 }
 
@@ -137,6 +145,15 @@ impl Hittable for HittableList {
 
     fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
         self.objects.iter().any(|obj| obj.any_hit(r, t_min, t_max))
+    }
+
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        let mut tr = 1.0f32;
+        for obj in &self.objects {
+            tr *= obj.transmittance(r, t_min, t_max);
+            if tr <= 0.0 { return 0.0; }
+        }
+        tr
     }
 
     fn bounding_box(&self) -> Option<Aabb> {

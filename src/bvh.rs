@@ -499,6 +499,51 @@ impl Hittable for BvhTree {
         false
     }
 
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        if self.nodes.is_empty() { return 1.0; }
+
+        // Same traversal as any_hit, but instead of stopping at the first opaque
+        // hit we multiply leaf transmittances — media attenuate (0 < tr < 1) and any
+        // opaque surface makes the product 0, at which point we can stop.
+        let mut stack = [0i32; 128];
+        let mut top = 1usize;
+        let mut overflow: Vec<i32> = Vec::new();
+        let mut tr = 1.0f32;
+
+        let ro = [r.origin.x,  r.origin.y,  r.origin.z];
+        let id = [r.inv_dir.x, r.inv_dir.y, r.inv_dir.z];
+
+        while top > 0 || !overflow.is_empty() {
+            let entry = if top > 0 { top -= 1; stack[top] } else { overflow.pop().unwrap() };
+            if entry < 0 {
+                tr *= self.objects[(-entry - 1) as usize].transmittance(r, t_min, t_max);
+                if tr <= 0.0 { return 0.0; }
+                continue;
+            }
+
+            let node = &self.nodes[entry as usize];
+
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            let (mask, _) = unsafe { test_children_avx2(node, ro, id, t_min, t_max) };
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            let (mask, _) = unsafe { test_children_sse(node, ro, id, t_min, t_max) };
+            #[cfg(target_arch = "aarch64")]
+            let (mask, _) = unsafe { test_children_neon(node, ro, id, t_min, t_max) };
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            let (mask, _) = test_children_scalar(node, ro, id, t_min, t_max);
+
+            if mask == 0 { continue; }
+
+            for c in 0..QBVH_WIDTH {
+                if mask & (1 << c) != 0 {
+                    if top < stack.len() { stack[top] = node.children[c]; top += 1; } else { overflow.push(node.children[c]); }
+                }
+            }
+        }
+
+        tr
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         if self.nodes.is_empty() { None } else { Some(self.bbox) }
     }

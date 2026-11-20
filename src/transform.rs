@@ -43,6 +43,16 @@ impl Hittable for UniformScale {
         self.object.any_hit(&scaled, t_min, t_max)
     }
 
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        let inv = 1.0 / self.factor;
+        let scaled = Ray::scatter_from(inv * r.origin, inv * r.direction, r);
+        // t is invariant under uniform scale, but a medium's physical path length
+        // scales by `factor`, so Beer-Lambert in object space underestimates
+        // attenuation by that factor: T_world = T_obj^factor (surfaces are 0/1,
+        // for which the powf is the identity).
+        self.object.transmittance(&scaled, t_min, t_max).powf(self.factor)
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         self.object.bounding_box().map(|bb| {
             Aabb::new(self.factor * bb.min, self.factor * bb.max)
@@ -75,6 +85,11 @@ impl Hittable for Translate {
     fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
         let moved = Ray::scatter_from(r.origin - self.offset, r.direction, r);
         self.object.any_hit(&moved, t_min, t_max)
+    }
+
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        let moved = Ray::scatter_from(r.origin - self.offset, r.direction, r);
+        self.object.transmittance(&moved, t_min, t_max)
     }
 
     fn bounding_box(&self) -> Option<Aabb> {
@@ -169,6 +184,15 @@ impl Hittable for Rotate {
             r,
         );
         self.object.any_hit(&rotated, t_min, t_max)
+    }
+
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        let rotated = Ray::scatter_from(
+            mat_apply_t(&self.fwd, r.origin),
+            mat_apply_t(&self.fwd, r.direction),
+            r,
+        );
+        self.object.transmittance(&rotated, t_min, t_max)
     }
 
     fn bounding_box(&self) -> Option<Aabb> { self.bbox }

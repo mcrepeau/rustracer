@@ -359,14 +359,15 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                             let sun_u      = sun_dir.unit();
                             let sun_sample = sample_sun_cone(sun_u, COS_SUN_MAX, rng);
                             let sun_shadow = Ray::new_at_time(rec.p, sun_sample, ray.time);
-                            if !world.any_hit(&sun_shadow, 0.001, f32::INFINITY) {
+                            let tr = world.transmittance(&sun_shadow, 0.001, f32::INFINITY);
+                            if tr > 0.0 {
                                 let brdf_cos = rec.mat.specular_brdf_cos(&ray, &rec, sun_sample);
                                 if brdf_cos.x > 0.0 || brdf_cos.y > 0.0 || brdf_cos.z > 0.0 {
                                     let p_mat     = rec.mat.specular_sampling_pdf(&ray, &rec, sun_sample);
                                     let sun_color = background.eval(sun_sample);
                                     let mis_d = p_sun * p_sun + p_mat * p_mat;
                                     if mis_d > 0.0 {
-                                        color += throughput * brdf_cos * sun_color * p_sun / mis_d;
+                                        color += throughput * tr * brdf_cos * sun_color * p_sun / mis_d;
                                     }
                                 }
                             }
@@ -400,7 +401,8 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                         let light_dir = lpdf.generate(rng);
                         let shadow    = Ray::new_at_time(rec.p, light_dir, ray.time);
                         if let Some(lrec) = lights.hit(&shadow, 0.001, f32::INFINITY) {
-                            if !world.any_hit(&shadow, 0.001, lrec.t * (1.0 - 1e-4)) {
+                            let tr = world.transmittance(&shadow, 0.001, lrec.t * (1.0 - 1e-4));
+                            if tr > 0.0 {
                                 let l_pdf = lpdf.value(light_dir);
                                 let brdf  = rec.mat.scattering_pdf(&ray, &rec, &shadow);
                                 // Denominator shared by ALL strategies that could have
@@ -411,7 +413,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                                 let mis_d = l_pdf*l_pdf + brdf*brdf + sun_p*sun_p + env_p*env_p;
                                 if mis_d > 0.0 && brdf > 0.0 {
                                     let nee_emit = lrec.mat.emitted_at(lrec.u, lrec.v, lrec.p, ray.wavelength, ray.spectral_weighted);
-                                    color += throughput * sr.attenuation * brdf * l_pdf * nee_emit / mis_d;
+                                    color += throughput * tr * sr.attenuation * brdf * l_pdf * nee_emit / mis_d;
                                 }
                             }
                         }
@@ -427,7 +429,8 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                             let sun_u      = sun_dir.unit();
                             let sun_sample = sample_sun_cone(sun_u, COS_SUN_MAX, rng);
                             let sun_shadow = Ray::new_at_time(rec.p, sun_sample, ray.time);
-                            if !world.any_hit(&sun_shadow, 0.001, f32::INFINITY) {
+                            let tr = world.transmittance(&sun_shadow, 0.001, f32::INFINITY);
+                            if tr > 0.0 {
                                 let brdf = rec.mat.scattering_pdf(&ray, &rec, &sun_shadow);
                                 if brdf > 0.0 {
                                     let sun_pdf   = 1.0 / (2.0 * PI * (1.0 - COS_SUN_MAX));
@@ -435,7 +438,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                                     let area_pdf  = if lights.objects.is_empty() { 0.0 }
                                                     else { lights.pdf_value(rec.p, sun_sample, ray.time) };
                                     let mis_d     = sun_pdf * sun_pdf + brdf * brdf + area_pdf * area_pdf;
-                                    color += throughput * sr.attenuation * brdf * sun_pdf * sun_color / mis_d;
+                                    color += throughput * tr * sr.attenuation * brdf * sun_pdf * sun_color / mis_d;
                                 }
                             }
                         }
@@ -449,14 +452,15 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                         let (env_dir, env_pdf) = em.sample_dir(rng);
                         if env_pdf > 0.0 {
                             let shadow = Ray::new_at_time(rec.p, env_dir, ray.time);
-                            if !world.any_hit(&shadow, 0.001, f32::INFINITY) {
+                            let tr = world.transmittance(&shadow, 0.001, f32::INFINITY);
+                            if tr > 0.0 {
                                 let brdf = rec.mat.scattering_pdf(&ray, &rec, &shadow);
                                 if brdf > 0.0 {
                                     let area_pdf = if lights.objects.is_empty() { 0.0 }
                                                    else { lights.pdf_value(rec.p, env_dir, ray.time) };
                                     let env_color = background.eval(env_dir);
                                     let mis_d = env_pdf * env_pdf + brdf * brdf + area_pdf * area_pdf;
-                                    color += throughput * sr.attenuation * brdf * env_pdf * env_color / mis_d;
+                                    color += throughput * tr * sr.attenuation * brdf * env_pdf * env_color / mis_d;
                                 }
                             }
                         }

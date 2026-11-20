@@ -63,8 +63,21 @@ pub(crate) fn hg_sample(v_in: Vec3, g: f32, rng: &mut dyn rand::RngCore) -> Vec3
 
 // ── Constant-density participating medium ─────────────────────────────────────
 
+/// Length of the ray segment inside `boundary`, clamped to [t_min, t_max]
+/// (in world units). Returns None if the ray misses the boundary or the
+/// clamped segment is empty.
+fn inside_length(boundary: &dyn Hittable, r: &Ray, t_min: f32, t_max: f32) -> Option<f32> {
+    let rec1 = boundary.hit(r, f32::NEG_INFINITY, f32::INFINITY)?;
+    let rec2 = boundary.hit(r, rec1.t + 0.0001, f32::INFINITY)?;
+    let t1 = rec1.t.max(0.0).max(t_min);
+    let t2 = rec2.t.min(t_max);
+    if t1 >= t2 { return None; }
+    Some((t2 - t1) * r.direction.length())
+}
+
 pub struct ConstantMedium {
     boundary:        Arc<dyn Hittable>,
+    density:         f32,
     neg_inv_density: f32,
     phase_fn:        Arc<dyn Material>,
 }
@@ -74,6 +87,7 @@ impl ConstantMedium {
     pub fn new(boundary: Arc<dyn Hittable>, density: f32, color: Color, g: f32) -> Self {
         Self {
             boundary,
+            density,
             neg_inv_density: -1.0 / density,
             phase_fn: Arc::new(HenyeyGreenstein { albedo: Texture::Solid(color), g }),
         }
@@ -123,6 +137,14 @@ impl Hittable for ConstantMedium {
     }
 
     fn any_hit(&self, _r: &Ray, _t_min: f32, _t_max: f32) -> bool { false }
+
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        // Homogeneous medium: exact Beer-Lambert over the inside segment.
+        match inside_length(&*self.boundary, r, t_min, t_max) {
+            Some(l) => (-self.density * l).exp(),
+            None    => 1.0,
+        }
+    }
 
     fn bounding_box(&self) -> Option<Aabb> {
         self.boundary.bounding_box()
@@ -211,6 +233,22 @@ impl Hittable for NoiseMedium {
 
     fn any_hit(&self, _r: &Ray, _t_min: f32, _t_max: f32) -> bool { false }
 
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        // Heterogeneous medium: deterministic midpoint quadrature of the optical
+        // depth along the inside segment (no RNG — shadow rays stay reproducible).
+        let Some(l) = inside_length(&*self.boundary, r, t_min, t_max) else { return 1.0 };
+        let rec1 = self.boundary.hit(r, f32::NEG_INFINITY, f32::INFINITY).unwrap();
+        let t1 = rec1.t.max(0.0).max(t_min);
+        const K: usize = 16;
+        let seg_t = l / r.direction.length();
+        let mut sum = 0.0f32;
+        for i in 0..K {
+            let t = t1 + seg_t * (i as f32 + 0.5) / K as f32;
+            sum += self.density_at(r.at(t));
+        }
+        (-sum / K as f32 * l).exp()
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         self.boundary.bounding_box()
     }
@@ -221,6 +259,62 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
+
+    struct DummyMat;
+    impl Material for DummyMat {
+        fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+    }
+
+    fn test_sphere(center: Point3, radius: f32) -> Arc<dyn Hittable> {
+        Arc::new(crate::sphere::Sphere::new(center, radius, Arc::new(DummyMat)))
+    }
+
+    #[test]
+    fn constant_medium_transmittance_beer_lambert() {
+        // Unit sphere at the origin, density 1.0.
+        let med = ConstantMedium::new(test_sphere(Point3::new(0.0, 0.0, 0.0), 1.0), 1.0, Color::new(1.0, 1.0, 1.0), 0.0);
+
+        // Ray through the center: inside chord length 2 → T = exp(-2).
+        let r = Ray::new(Point3::new(-5.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        let tr = med.transmittance(&r, 0.001, f32::INFINITY);
+        assert!((tr - (-2.0f32).exp()).abs() < 1e-6, "tr = {tr}");
+
+        // Ray that misses the boundary entirely → no attenuation.
+        let miss = Ray::new(Point3::new(-5.0, 5.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(med.transmittance(&miss, 0.001, f32::INFINITY), 1.0);
+
+        // Origin inside the medium, ray exits: entry clamps to t_min, so the
+        // inside segment is [0.001, 1] → length 0.999 → T = exp(-0.999).
+        let inside = Ray::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        let tr = med.transmittance(&inside, 0.001, f32::INFINITY);
+        assert!((tr - (-0.999f32).exp()).abs() < 1e-6, "tr = {tr}");
+
+        // t_max clipped inside the medium: segment [0.001, 0.5] → length ~0.499.
+        let tr = med.transmittance(&inside, 0.001, 0.5);
+        assert!((tr - (-(0.5f32 - 0.001)).exp()).abs() < 1e-5, "tr = {tr}");
+
+        // Volumes must not occlude via any_hit (that would zero the shadow ray
+        // before transmittance ever gets a say).
+        assert!(!med.any_hit(&r, 0.001, f32::INFINITY));
+    }
+
+    #[test]
+    fn transmittance_composes_across_list() {
+        use crate::hittable::HittableList;
+        let med = ConstantMedium::new(test_sphere(Point3::new(0.0, 0.0, 0.0), 1.0), 1.0, Color::new(1.0, 1.0, 1.0), 0.0);
+        let mut list = HittableList::new();
+        list.add(med);
+        // Opaque sphere blocking the ray, plus the medium.
+        list.add(crate::sphere::Sphere::new(Point3::new(-2.0, 0.0, 0.0), 0.5, Arc::new(DummyMat)));
+        let r = Ray::new(Point3::new(-5.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(list.transmittance(&r, 0.001, f32::INFINITY), 0.0);
+        // Ray missing the blocker but crossing the medium at y=0.9:
+        // chord = 2*sqrt(1 - 0.81).
+        let r2 = Ray::new(Point3::new(-5.0, 0.9, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        let l = 2.0 * (1.0f32 - 0.9 * 0.9).sqrt();
+        let tr = list.transmittance(&r2, 0.001, f32::INFINITY);
+        assert!((tr - (-l).exp()).abs() < 1e-5, "tr = {tr}, l = {l}");
+    }
 
     #[test]
     fn hg_sample_at_extreme_g_is_always_finite() {
