@@ -123,6 +123,7 @@ struct RenderArgs {
     convergence_pct:  f32,
     min_samples:      u32,
     no_photon_map:    bool,
+    frames:          Option<u32>,
     #[cfg(feature = "denoise")]
     denoise:    Option<f32>,
 }
@@ -141,6 +142,7 @@ impl Default for RenderArgs {
             convergence_pct: 99.0,
             min_samples:     128,
             no_photon_map:   false,
+            frames:          None,
             #[cfg(feature = "denoise")]
             denoise:    None,
         }
@@ -194,6 +196,7 @@ fn print_help() {
     println!("  --convergence <pct>  Convergence target in %% (default: 99.0; requires --adaptive)");
     println!("  --min-samples <n>    Minimum SPP before any pixel may be marked converged (default: 128; requires --adaptive)");
     println!("  --no-photon-map      Disable caustic photon map (faster, no caustics)");
+    println!("  --frames <n>         Render only the first N frames of a scene animation; 1 = single still (default: all)");
     #[cfg(feature = "denoise")]
     println!("  --denoise [strength] Run OIDN after render; optional strength in [0.0, 1.0] (default: 1.0)");
 }
@@ -223,6 +226,7 @@ fn parse_render_args() -> Result<RenderArgs, String> {
             "--min-samples"   => r.min_samples = val!().parse::<u32>()
                 .map_err(|e| format!("--min-samples: {e}"))?,
             "--no-photon-map" => r.no_photon_map = true,
+            "--frames"    => r.frames = Some(val!().parse::<u32>().map_err(|e| format!("--frames: {e}"))?),
             "--denoise"    => {
                 #[cfg(feature = "denoise")]
                 {
@@ -268,7 +272,10 @@ fn run_render(args: RenderArgs) {
     // Take animation out of the scene (if present) so we own it independently.
     let animation   = scene.animation.take();
     let total_frames = animation.as_ref().map_or(1u32, |a| a.total_frames().max(1));
-    let is_anim      = animation.is_some();
+    // --frames N caps the frame count; --frames 1 renders a plain single still
+    // (--output is then a file path, not a directory).
+    let total_frames = args.frames.map_or(total_frames, |n| n.min(total_frames).max(1));
+    let is_anim      = animation.is_some() && total_frames > 1;
 
     // ── One-time header ───────────────────────────────────────────────────────
     let tm_name = if args.tonemapper == ToneMapper::AgX { "AgX" } else { "ACES" };
