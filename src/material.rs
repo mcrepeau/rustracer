@@ -106,6 +106,22 @@ fn schlick(cosine: f32, ref_idx: f32) -> f32 {
     r0 + (1.0 - r0) * (u * u * u * u * u)
 }
 
+/// Exact unpolarised Fresnel reflectance for a dielectric boundary.
+/// `eta` = η_i/η_t (IOR ratio, incident over transmitted) and `cos_theta_i` is the
+/// cosine of the incident angle measured in the *incident* medium — correct on
+/// both sides of the boundary, unlike Schlick applied with the ratio.
+/// Returns 1.0 when the transmitted angle is beyond the critical angle (TIR).
+#[inline]
+fn fresnel_dielectric(cos_theta_i: f32, eta: f32) -> f32 {
+    let sin2_i = (1.0 - cos_theta_i * cos_theta_i).max(0.0);
+    let sin2_t = eta * eta * sin2_i;
+    if sin2_t >= 1.0 { return 1.0; } // total internal reflection
+    let cos_t = (1.0 - sin2_t).sqrt();
+    let rs = (eta * cos_theta_i - cos_t) / (eta * cos_theta_i + cos_t);
+    let rp = (eta * cos_t - cos_theta_i) / (eta * cos_t + cos_theta_i);
+    (rs * rs + rp * rp) * 0.5
+}
+
 /// Dielectric boundary scatter shared by all glass-like materials.
 /// Returns `(exit_direction, reflected)` where `reflected` is true for TIR
 /// or Fresnel reflection and false for refraction.
@@ -115,7 +131,9 @@ fn dielectric_boundary(ior: f32, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn 
     let unit      = r_in.direction.unit();
     let cos_theta = (-unit).dot(rec.normal).min(1.0);
     let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-    let reflected = ratio * sin_theta > 1.0 || schlick(cos_theta, ratio) > rng.gen::<f32>();
+    // Exact Fresnel (Rs/Rp) instead of Schlick: Schlick with the IOR ratio used the
+    // wrong-side angle on exit and is off by up to ~0.04 near grazing incidence.
+    let reflected = ratio * sin_theta > 1.0 || fresnel_dielectric(cos_theta, ratio) > rng.gen::<f32>();
     let direction = if reflected {
         unit.reflect(rec.normal)
     } else {
@@ -1337,5 +1355,24 @@ mod tests {
         let frac = transmitted as f32 / n as f32;
         assert!(frac > 0.90,
             "≥90% should transmit at normal incidence (Schlick r₀≈4%), got {:.1}%", frac * 100.0);
+    }
+
+    #[test]
+    fn fresnel_dielectric_normal_incidence_is_r0() {
+        // F(0°) = ((n−1)/(n+1))² = 0.04 for n = 1.5, entering or exiting.
+        assert!((fresnel_dielectric(1.0, 1.0 / 1.5) - 0.04).abs() < 1e-6);
+        assert!((fresnel_dielectric(1.0, 1.5) - 0.04).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fresnel_dielectric_grazing_is_one_and_tir_is_one() {
+        assert!((fresnel_dielectric(0.0, 1.0 / 1.5) - 1.0).abs() < 1e-6, "grazing must be total reflection");
+        // Exiting glass at cos=0.5 (sin=0.866 > 1/1.5): beyond critical angle → TIR.
+        assert_eq!(fresnel_dielectric(0.5, 1.5), 1.0);
+        // Monotone increasing in the incident angle.
+        let f30 = fresnel_dielectric(30f32.to_radians().cos(), 1.0 / 1.5);
+        let f60 = fresnel_dielectric(60f32.to_radians().cos(), 1.0 / 1.5);
+        let f85 = fresnel_dielectric(85f32.to_radians().cos(), 1.0 / 1.5);
+        assert!(f30 < f60 && f60 < f85, "Fresnel must increase with angle: {f30} < {f60} < {f85}");
     }
 }

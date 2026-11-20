@@ -49,8 +49,20 @@ impl PhotonMap {
         let up          = if sun_down.x.abs() < 0.999 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
         let t           = sun_down.cross(up).unit();
         let b           = sun_down.cross(t);
-        let disk_center = sun_dir.unit() * 30.0;
-        let disk_area   = PI * DISK_R * DISK_R;
+        // Size the emission disk to the scene instead of a hardcoded radius: centre it
+        // on the scene AABB and give it the AABB bounding-sphere radius (pushed out
+        // along the sun direction), which provably covers the scene's projection.
+        // The old fixed disk (centre sun_dir*30, R=20) could miss most geometry in
+        // large scenes, leaving the photon map nearly empty.
+        let (disk_center, disk_r) = match world.bounding_box() {
+            Some(bb) => {
+                let c = (bb.min + bb.max) * 0.5;
+                let r = (bb.max - bb.min).length() * 0.5;
+                (c + sun_dir.unit() * r, r.max(1.0))
+            }
+            None => (sun_dir.unit() * 30.0, DISK_R), // no bounds: old fallback
+        };
+        let disk_area   = PI * disk_r * disk_r;
         let power       = sun_color * (disk_area / (num_photons as f32 * PI));
 
         let mut photons: Vec<KdPhoton> = (0..num_photons)
@@ -59,7 +71,7 @@ impl PhotonMap {
                 let mut rng = SmallRng::seed_from_u64(
                     (i as u64).wrapping_mul(6_364_136_223_846_793_005) ^ 0x9E3779B97F4A7C15,
                 );
-                let r   = DISK_R * rng.gen::<f32>().sqrt();
+                let r   = disk_r * rng.gen::<f32>().sqrt();
                 let phi = 2.0 * PI * rng.gen::<f32>();
                 let origin = disk_center + t * (r * phi.cos()) + b * (r * phi.sin());
                 trace_photon(world, origin, sun_down, power, &mut rng)

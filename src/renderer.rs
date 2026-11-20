@@ -568,6 +568,8 @@ pub fn render_aux_pass(
 /// Render one sample pass into `scratch` in parallel.
 /// `strata` = floor(sqrt(max_samples)); controls the stratified-sampling grid size.
 /// `converged`: optional per-pixel mask — `true` pixels are skipped (scratch written as black).
+/// `frame_time`: animation time window [t0, t1) for this frame's motion blur;
+/// `None` keeps the previous behaviour (uniform time over [0, 1)).
 #[allow(clippy::too_many_arguments)]
 pub fn render_tiles(
     scratch:     &mut [Color],
@@ -582,6 +584,7 @@ pub fn render_tiles(
     lights:      &HittableList,
     bg_scale:    f32,
     photon_map:  Option<&PhotonMap>,
+    frame_time:  Option<(f32, f32)>,
 ) {
     let w        = width  as usize;
     let w_denom  = (width  - 1).max(1) as f32;
@@ -631,6 +634,10 @@ pub fn render_tiles(
             let u = (col as f32 + u_jitter) / w_denom;
             let v = (ray_y as f32 + v_jitter) / h_denom;
             let mut cam_ray = camera.get_ray(u, v, &mut rng);
+            // Animation frames blur over their own time slice [t0, t1), not [0, 1).
+            if let Some((t0, t1)) = frame_time {
+                cam_ray.time = t0 + rng.gen::<f32>() * (t1 - t0);
+            }
             // Sample a hero wavelength uniformly over the visible spectrum.
             cam_ray.wavelength = rng.gen_range(380.0_f32..700.0);
             *out = ray_color(&cam_ray, world, background, lights, bg_scale, photon_map, &mut rng);

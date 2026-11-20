@@ -77,7 +77,7 @@ fn bench_scene(scene: &SceneData, scratch: &mut Vec<Color>, samples: u32) -> Dur
     let strata = compute_strata(samples);
     let t0 = Instant::now();
     for s in 0..samples {
-        render_tiles(scratch, None, s, strata, WIDTH, HEIGHT, &camera, world, &scene.background, &scene.lights, 1.0, scene.photon_map.as_deref());
+        render_tiles(scratch, None, s, strata, WIDTH, HEIGHT, &camera, world, &scene.background, &scene.lights, 1.0, scene.photon_map.as_deref(), None);
     }
     t0.elapsed()
 }
@@ -324,11 +324,17 @@ fn run_render(args: RenderArgs) {
         accumulator.iter_mut().for_each(|c| *c = Color::default());
         scratch.iter_mut().for_each(|c| *c = Color::default());
         let mut pixel_samples = if adaptive { vec![0u32;   n_px] } else { Vec::new() };
-        let mut var_m2_lum    = if adaptive { vec![0.0f32; n_px] } else { Vec::new() };
+        let mut var_m2    = if adaptive { vec![Color::default(); n_px] } else { Vec::new() };
         let mut adap_conv     = if adaptive { vec![false;  n_px] } else { Vec::new() };
         let mut n_converged   = 0usize;
 
         // ── Render loop ───────────────────────────────────────────────────────
+        // Animation: each frame motion-blurs over its own slice of the timeline
+        // [frame/fps, (frame+1)/fps), not over the whole [0, 1) range.
+        let frame_time = animation.as_ref().map(|a| {
+            let t0 = frame_idx as f32 / a.fps;
+            (t0, t0 + 1.0 / a.fps)
+        });
         let t0 = Instant::now();
         let mut s = 0u32;
         loop {
@@ -341,14 +347,14 @@ fn run_render(args: RenderArgs) {
                          if adaptive { Some(adap_conv.as_slice()) } else { None },
                          s, strata, args.width, args.height, &camera,
                          scene.world.as_ref(), &scene.background,
-                         &scene.lights, 1.0, scene.photon_map.as_deref());
+                         &scene.lights, 1.0, scene.photon_map.as_deref(), frame_time);
 
             accumulate_sample(&mut accumulator, &scratch, s,
-                              &mut pixel_samples, &mut var_m2_lum, &adap_conv);
+                              &mut pixel_samples, &mut var_m2, &adap_conv);
             s += 1;
 
             if adaptive && s >= min_samples {
-                n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2_lum, &accumulator);
+                n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2, &accumulator);
             }
 
             let target_reached = n_converged as f32 >= n_px as f32 * convergence_pct / 100.0;
@@ -466,7 +472,7 @@ fn accumulate_sample(
     scratch:       &[Color],
     cur_sample:    u32,
     pixel_samples: &mut [u32],
-    var_m2_lum:    &mut [f32],
+    var_m2:    &mut [Color],
     adap_conv:     &[bool],
 ) {
     if pixel_samples.is_empty() {
@@ -487,7 +493,7 @@ fn accumulate_sample(
     } else {
         accumulator.par_iter_mut()
             .zip(scratch.par_iter())
-            .zip(var_m2_lum.par_iter_mut())
+            .zip(var_m2.par_iter_mut())
             .zip(pixel_samples.par_iter_mut())
             .zip(adap_conv.par_iter())
             .for_each(|((((a, &sc), m2), n), &conv)| {
@@ -495,16 +501,19 @@ fn accumulate_sample(
                 // Drop non-finite samples entirely — see the non-adaptive branch above.
                 if !sc.x.is_finite() || !sc.y.is_finite() || !sc.z.is_finite() { return; }
                 let old_n    = *n;
-                let old_mean = if old_n > 0 { luminance(*a) / old_n as f32 } else { 0.0 };
-                let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
-                    let ratio = luminance(sc) / old_mean;
+                let old_mean = if old_n > 0 { *a / old_n as f32 } else { Color::default() };
+                // Firefly clamp still keys on luminance (a chromatic spike is still a spike).
+                let old_lum  = luminance(old_mean);
+                let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_lum > 1e-6 {
+                    let ratio = luminance(sc) / old_lum;
                     if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
                 } else { sc };
                 *a  += sc;
                 *n  += 1;
-                let sc_lum   = luminance(sc);
-                let new_mean = luminance(*a) / *n as f32;
-                *m2 += (sc_lum - old_mean) * (sc_lum - new_mean);
+                // Per-channel Welford update: variance is tracked for R, G, B
+                // independently so chromatic noise is visible to mark_converged.
+                let new_mean = *a / *n as f32;
+                *m2 += (sc - old_mean) * (sc - new_mean);
             });
     }
 }
@@ -513,20 +522,29 @@ fn accumulate_sample(
 fn mark_converged(
     adap_conv:     &mut [bool],
     pixel_samples: &[u32],
-    var_m2_lum:    &[f32],
+    var_m2:    &[Color],
     accumulator:   &[Color],
 ) -> usize {
     adap_conv.par_iter_mut()
         .zip(pixel_samples.par_iter())
-        .zip(var_m2_lum.par_iter())
+        .zip(var_m2.par_iter())
         .zip(accumulator.par_iter())
         .for_each(|(((conv, &n), &m2), &acc)| {
             if *conv { return; }
-            let mean_lum = luminance(acc) / n as f32;
-            if mean_lum < 1e-4 { *conv = true; return; }
-            let variance = m2 / (n - 1).max(1) as f32;
-            let std_err  = (variance / n as f32).sqrt();
-            if std_err / mean_lum < ADAPTIVE_THRESHOLD { *conv = true; }
+            // Per-channel relative standard error: a pixel is converged only when
+            // EVERY non-dark channel is below the threshold. Channels with
+            // mean < 1e-4 are exempt, so a pixel whose luminance is dark but that
+            // has one bright channel (e.g. a saturated caustic) is still tracked.
+            let mean = acc / n.max(1) as f32;
+            let mut all_ok = true;
+            for c in 0..3 {
+                let m = mean[c];
+                if m < 1e-4 { continue; }
+                let variance = m2[c] / (n - 1).max(1) as f32;
+                let std_err  = (variance / n as f32).sqrt();
+                if std_err / m >= ADAPTIVE_THRESHOLD { all_ok = false; break; }
+            }
+            if all_ok { *conv = true; }
         });
     adap_conv.iter().filter(|&&c| c).count()
 }
@@ -692,7 +710,7 @@ fn main() {
     let     min_adaptive_samples: u32 = 128;
     let mut photon_map_on  = true;
     let mut pixel_samples: Vec<u32>   = Vec::new(); // allocated only when adaptive_on
-    let mut var_m2_lum:   Vec<f32>    = Vec::new();
+    let mut var_m2:   Vec<Color>    = Vec::new();
     let mut adap_conv:    Vec<bool>   = Vec::new();
     let mut n_converged   = 0usize;
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
@@ -708,7 +726,7 @@ fn main() {
             () => {
                 accumulator.fill(Color::default());
                 pixel_samples.fill(0);
-                var_m2_lum.fill(0.0);
+                var_m2.fill(Color::default());
                 adap_conv.fill(false);
                 n_converged = 0;
                 samples = 0;
@@ -754,7 +772,7 @@ fn main() {
                         scratch.clear();      scratch.resize(n, Color::default());
                         if adaptive_on {
                             pixel_samples.clear(); pixel_samples.resize(n, 0);
-                            var_m2_lum.clear();    var_m2_lum.resize(n, 0.0);
+                            var_m2.clear();    var_m2.resize(n, Color::default());
                             adap_conv.clear();     adap_conv.resize(n, false);
                             n_converged = 0;
                         }
@@ -934,11 +952,11 @@ fn main() {
                                     if adaptive_on {
                                         let n = (win_w * win_h) as usize;
                                         pixel_samples = vec![0u32;   n];
-                                        var_m2_lum    = vec![0.0f32; n];
+                                        var_m2    = vec![Color::default(); n];
                                         adap_conv     = vec![false;  n];
                                     } else {
                                         pixel_samples = Vec::new();
-                                        var_m2_lum    = Vec::new();
+                                        var_m2    = Vec::new();
                                         adap_conv     = Vec::new();
                                         n_converged   = 0;
                                     }
@@ -1053,14 +1071,14 @@ fn main() {
                     let pm = if photon_map_on { scene.photon_map.as_deref() } else { None };
                     render_tiles(&mut scratch, conv_mask, samples, strata, win_w, win_h, &camera,
                                  scene.world.as_ref(), &scene.background, &scene.lights, bg_scale,
-                                 pm);
+                                 pm, None);
 
                     accumulate_sample(&mut accumulator, &scratch, samples,
-                                      &mut pixel_samples, &mut var_m2_lum, &adap_conv);
+                                      &mut pixel_samples, &mut var_m2, &adap_conv);
                     samples += 1;
 
                     if adaptive_on && samples >= min_adaptive_samples {
-                        n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2_lum, &accumulator);
+                        n_converged = mark_converged(&mut adap_conv, &pixel_samples, &var_m2, &accumulator);
                     }
 
                     // Build the aux buffers once per render sequence (first sample),
