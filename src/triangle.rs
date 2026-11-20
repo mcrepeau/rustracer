@@ -91,7 +91,10 @@ impl Hittable for Triangle {
         let b0 = 1.0 - b1 - b2;
         let p  = r.at(t);
         // Interpolate shading normal, tangent, and UV using barycentric coordinates.
-        let sn  = (b0 * self.n0 + b1 * self.n1 + b2 * self.n2).unit();
+        // Opposing vertex normals can cancel at a barycentric point -> 0/0 NaN;
+        // fall back to the geometric face normal in that case.
+        let sn_raw = b0 * self.n0 + b1 * self.n1 + b2 * self.n2;
+        let sn  = if sn_raw.length_squared() > 1e-12 { sn_raw.unit() } else { e1.cross(e2).unit() };
         let u   = b0 * self.uv0.0 + b1 * self.uv1.0 + b2 * self.uv2.0;
         let v   = b0 * self.uv0.1 + b1 * self.uv1.1 + b2 * self.uv2.1;
         // Gram-Schmidt: re-orthogonalize tangent against the shading normal.
@@ -187,6 +190,30 @@ mod tests {
             let pdf = tri.pdf_value(origin, d, 0.0);
             assert!(pdf > 0.0, "generated direction must have positive pdf");
         }
+    }
+
+    #[test]
+    fn triangle_zero_interpolated_normal_falls_back_to_face_normal() {
+        // Vertex normals (0,0,1), (0,0,-1), (0,0,1) sum to (0,0,1) at b0=b2... use
+        // n0=(0,0,1), n1=(0,0,-1), n2=(0,0,0): at b0=b1=0.5, b2=0 the interp is zero.
+        let n_pos = Vec3::new(0.0, 0.0, 1.0);
+        let n_neg = Vec3::new(0.0, 0.0, -1.0);
+        let n_zero = Vec3::new(0.0, 0.0, 0.0);
+        let t = Vec3::new(1.0, 0.0, 0.0);
+        let tri = Triangle::new(
+            Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0),
+            n_pos, n_neg, n_zero, t, t, t, (0.0, 0.0), (1.0, 0.0), (0.5, 1.0), Arc::new(DummyMat),
+        );
+        // Ray through the midpoint of edge v0-v1: barycentric b0=b1=0.5, b2=0 ->
+        // interpolated normal = 0.5*n_pos + 0.5*n_neg + 0*n_zero = 0.
+        let r = Ray::new(Point3::new(0.5, 0.0, -1.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = tri.hit(&r, 0.001, f32::INFINITY).expect("should hit");
+        assert!(rec.normal.x.is_finite() && rec.normal.y.is_finite() && rec.normal.z.is_finite(),
+            "normal must be finite, got {:?}", rec.normal);
+        // Back-face hit: HitRecord::new flips the face normal toward the ray,
+        // so the fallback (0,0,1) comes back as (0,0,-1).
+        assert!((rec.normal - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-5,
+            "should fall back to face normal (flipped to (0,0,-1)), got {:?}", rec.normal);
     }
 
     #[test]

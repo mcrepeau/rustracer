@@ -214,8 +214,9 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
 
     // Solar disc: rays within ~1.3° of sun and above horizon get a bright warm-white return
     if cos_gamma > COS_SUN_MAX && sun.y > 0.0 && d.y > 0.0 {
-        // Brightness scaled proportionally to the smaller solid angle so total
-        // solar irradiance is preserved: old_Ω/new_Ω = 0.0003/0.0000108 ≈ 27.8.
+        // The disc solid angle is Omega = 2*pi*(1 - COS_SUN_MAX) ~= 6.79e-5 sr;
+        // the 111x factor boosts per-steradian radiance so the disc irradiance
+        // (yz * Omega * 111 ~= 7.5e-3 * yz) matches the original wide-disc sun.
         let disc = yz * 111.0;
         return Color::new(disc, disc * 0.95, disc * 0.85);
     }

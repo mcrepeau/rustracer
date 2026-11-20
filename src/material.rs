@@ -335,11 +335,12 @@ impl Material for Dielectric {
 ///
 /// The ray carries a wavelength λ ∈ [380, 700] nm sampled once per path.
 /// At each boundary event the IOR is evaluated via the Cauchy equation
-/// n(λ) = B + C/λ² (λ in μm), and refracted rays are weighted by the CIE
-/// colour-matching function for that wavelength — normalised so that
-/// E_λ[weight] = (1,1,1).  This produces smooth spectral dispersion (rainbows,
-/// coloured diamond fire) rather than the coarse R/G/B bands of the 3-channel
-/// approach.  Reflections carry (1,1,1) since Fresnel is nearly achromatic.
+/// n(λ) = B + C/λ² (λ in μm), so refracted rays bend by a
+/// wavelength-dependent angle -- smooth spectral dispersion (rainbows, diamond
+/// fire) without the coarse R/G/B bands of a 3-channel approach.  The CMF weight
+/// is NOT applied here (unlike SpectralMetal): attenuation stays white, keeping
+/// diffuse surfaces and photon-map caustics downstream of the glass achromatic.
+/// Reflections carry (1,1,1) since Fresnel is nearly achromatic.
 ///
 /// Cauchy parameters for common materials (B, C in μm²):
 /// - Crown glass:  cauchy_b ≈ 1.507, cauchy_c ≈ 0.00375
@@ -406,8 +407,7 @@ impl SpectralMetalVariant {
 /// Physically-based conductor using spectral complex IOR (n + ik) sampled at
 /// the hero wavelength.
 ///
-/// On the first spectral bounce `spectral_to_rgb(λ)` is folded in (exactly as
-/// `SpectralDielectric` does) so brightness encodes the full spectral Fresnel.
+/// On the first spectral bounce `spectral_to_rgb(λ)` is folded in (SpectralDielectric deliberately does not, to keep downstream diffuse white) so brightness encodes the full spectral Fresnel.
 /// Subsequent bounces scale the RGB triple by the scalar F(λ), which is
 /// equivalent to multiplying spectral power by F at the same wavelength.
 ///

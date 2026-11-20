@@ -94,6 +94,12 @@ impl<'a> HitRecord<'a> {
 }
 
 pub trait Hittable: Send + Sync {
+    /// Intersect the ray over [t_min, t_max].
+    /// NOTE: shapes differ on whether t == t_max counts as a hit (sphere/quad/
+    /// triangle/disk accept it via `t > t_max` rejection; cylinder/cone reject it
+    /// via `t >= best_t`).  Not observable today because the renderer shrinks
+    /// shadow-ray t_max (lrec.t * (1 - 1e-4)), but unify before relying on exact
+    /// boundary hits.
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>>;
     fn bounding_box(&self) -> Option<Aabb>;
 

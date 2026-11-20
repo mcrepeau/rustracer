@@ -442,6 +442,12 @@ unsafe fn test_children_neon(
 
 // Scalar fallback for targets without SIMD support.
 #[allow(dead_code, clippy::needless_range_loop)]
+/// Scalar slab test.
+/// NOTE: Rust's f32::min/max drop one-sided NaN, so a ray lying exactly on a box
+/// face with a zero direction component (inv_dir = inf, (min-ro)*inf = 0*inf = NaN)
+/// can HIT here but MISS in the SIMD paths above (_CMP_LE_OQ / cmple_ps treat NaN
+/// as false).  Only reachable at exact boundary coordinates; the scalar path is the
+/// more permissive one, so this is documented rather than "fixed".
 fn test_children_scalar(
     node:  &QbvhNode,
     ro:    [f32; 3],

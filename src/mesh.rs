@@ -65,9 +65,12 @@ pub fn load_obj(path: &str, mat: Arc<dyn Material>) -> Result<Arc<dyn Hittable>,
             if face_n_raw.length_squared() < 1e-16 { continue; }
             let face_n = face_n_raw.unit();
 
-            let n0 = if has_normals { get_nor(i0) } else { face_n };
-            let n1 = if has_normals { get_nor(i1) } else { face_n };
-            let n2 = if has_normals { get_nor(i2) } else { face_n };
+            // OBJ files frequently store un-normalized vertex normals; normalize at
+            // load so per-hit .unit() isn't masking scale (zero-length -> face normal).
+            let fix_n = |n: Vec3| if n.length_squared() > 1e-12 { n.unit() } else { face_n };
+            let n0 = if has_normals { fix_n(get_nor(i0)) } else { face_n };
+            let n1 = if has_normals { fix_n(get_nor(i1)) } else { face_n };
+            let n2 = if has_normals { fix_n(get_nor(i2)) } else { face_n };
 
             let uv0 = if has_texcoords { get_uv(i0) } else { (0.0, 0.0) };
             let uv1 = if has_texcoords { get_uv(i1) } else { (1.0, 0.0) };
