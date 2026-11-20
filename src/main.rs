@@ -177,6 +177,7 @@ fn print_help() {
     println!("rustracer — path tracer\n");
     println!("USAGE:");
     println!("  rustracer                      Interactive viewer");
+    println!("  rustracer --scene <path.toml>  Interactive viewer, file scene = that file (scene 4, [R] reloads)");
     println!("  rustracer --render [options]   Headless render to PNG");
     println!("  rustracer --bench              Performance benchmark");
     println!("  rustracer --help               Show this message\n");
@@ -630,6 +631,22 @@ fn main() {
         _ => {}
     }
 
+    // Top-level `--scene <path.toml>` (interactive mode only): the hot-reloadable
+    // file scene (slot 4, [R] to reload) loads this file instead of scene.toml.
+    let mut file_scene = String::from("scene.toml");
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if let Some(pos) = args.iter().position(|a| a == "--scene") {
+            if let Some(p) = args.get(pos + 1) {
+                if !p.ends_with(".toml") || p == "--render" {
+                    // not a file path — leave default
+                } else {
+                    file_scene = p.clone();
+                }
+            }
+        }
+    }
+
     println!("Building scenes…");
     println!("Scene 0: Benchmark (32 768-triangle mesh + spectral glass + caustics)");
     let s_bench = build_benchmark_scene();
@@ -641,10 +658,10 @@ fn main() {
     let s3 = build_nextweek_scene();
     let mut scenes: Vec<SceneData> = vec![s1, s2, s3];
 
-    // Scene 4: hot-reloadable file scene
-    match scene_file::load("scene.toml") {
-        Ok(s)  => { println!("Scene 4: {} (scene.toml)", s.name); scenes.push(s); }
-        Err(e) => println!("scene.toml not loaded — {e}"),
+    // Scene 4: hot-reloadable file scene (scene.toml, or --scene <path.toml>)
+    match scene_file::load(&file_scene) {
+        Ok(s)  => { println!("Scene 4: {} ({})", s.name, file_scene); scenes.push(s); }
+        Err(e) => println!("{file_scene} not loaded — {e}"),
     }
 
     scenes.push(s_bench);
@@ -656,6 +673,7 @@ fn main() {
 
     print_controls();
 
+    let file_scene_evt = file_scene.clone();
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title("Ray Tracer")
@@ -805,7 +823,7 @@ fn main() {
                                     if scenes.len() >= 5 {
                                         switch_scene!(3);
                                     } else {
-                                        println!("scene.toml not loaded — edit the file and press [R] to reload it");
+                                        println!("{} not loaded — edit the file and press [R] to reload it", file_scene_evt);
                                     }
                                 }
                                 VirtualKeyCode::P => {
@@ -945,7 +963,7 @@ fn main() {
                                     window.request_redraw();
                                 }
                                 VirtualKeyCode::R if scene_idx == 3 => {
-                                    match scene_file::load("scene.toml") {
+                                    match scene_file::load(&file_scene_evt) {
                                         Ok(s) => {
                                             println!("Reloaded: {}", s.name);
                                             scenes[3] = s;
