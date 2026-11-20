@@ -35,9 +35,6 @@ pub trait Material: Send + Sync {
     /// True for diffuse materials that should accumulate caustic photons.
     /// Specular, transmissive, and emissive materials return false (default).
     fn can_receive_caustics(&self) -> bool { false }
-    /// True if this material produces spectrally-boosted (3× single-channel)
-    /// attenuation that can spike photon power inside a refractive object.
-    fn is_spectral(&self) -> bool { false }
 
     /// Evaluate the full specular BRDF × cos(θ_i) for outgoing direction `wi`.
     /// Returns a non-zero Color only for materials that implement specular NEE.

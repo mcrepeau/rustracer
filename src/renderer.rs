@@ -336,7 +336,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                 //   MIS  — after a diffuse bounce: the previous iteration already added
                 //          a NEE estimate for direct lighting, so the BRDF-sample path
                 //          that lands on the light gets the complementary MIS weight
-                //          w_brdf = p_brdf / (p_brdf + p_nee) to avoid double-counting
+                //          w_brdf = p_brdf² / (p_brdf² + Σ p_nee²) to avoid double-counting
                 //          while still capturing unsampled directions.
                 //   1.0  — no area lights in the scene (no NEE at all).
                 let emit_w = if prev_specular || lights.objects.is_empty() { 1.0 }
@@ -392,9 +392,9 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                         }
                     }
 
-                    // ── Direct lighting: explicit NEE with MIS power heuristic ──
-                    // w_nee = p_nee / (p_nee + p_brdf)
-                    // The estimator simplifies to: attenuation * brdf * L_e / (p_nee + p_brdf)
+                    // ── Direct lighting: explicit NEE with MIS power heuristic (β=2) ──
+                    // w_nee = p_nee² / (p_nee² + p_brdf² + p_sun² + p_env²)
+                    // The estimator simplifies to: attenuation * brdf * L_e * p_nee / (Σ p²)
                     if !lights.objects.is_empty() {
                         let lpdf      = HittablePdf::new(lights, rec.p, ray.time);
                         let light_dir = lpdf.generate(rng);
@@ -403,7 +403,12 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                             if !world.any_hit(&shadow, 0.001, lrec.t * (1.0 - 1e-4)) {
                                 let l_pdf = lpdf.value(light_dir);
                                 let brdf  = rec.mat.scattering_pdf(&ray, &rec, &shadow);
-                                let mis_d = l_pdf * l_pdf + brdf * brdf;
+                                // Denominator shared by ALL strategies that could have
+                                // sampled this direction (area / BRDF / sun / env),
+                                // so the MIS weights partition unity.
+                                let sun_p = sun_pdf_value(light_dir, background);
+                                let env_p = env_pdf_value(light_dir, background);
+                                let mis_d = l_pdf*l_pdf + brdf*brdf + sun_p*sun_p + env_p*env_p;
                                 if mis_d > 0.0 && brdf > 0.0 {
                                     let nee_emit = lrec.mat.emitted_at(lrec.u, lrec.v, lrec.p, ray.wavelength, ray.spectral_weighted);
                                     color += throughput * sr.attenuation * brdf * l_pdf * nee_emit / mis_d;
@@ -459,7 +464,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
 
                     // ── Indirect lighting: cosine-weighted BRDF sample ────────────
                     // Also compute the MIS weight for the case where this ray hits a
-                    // light next iteration: w_brdf = p_brdf / (p_brdf + p_nee).
+                    // light next iteration: w_brdf = p_brdf² / (p_brdf² + Σ p_nee²).
                     let cpdf     = CosinePdf::new(rec.mat.shading_normal(&rec));
                     let ind_dir  = cpdf.generate(rng);
                     let pdf_val  = cpdf.value(ind_dir);
@@ -468,14 +473,17 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                     let scat_pdf  = rec.mat.scattering_pdf(&ray, &rec, &scattered);
                     if scat_pdf <= 0.0 { break; }
 
-                    let nee_pdf_for_ind = {
+                    // Sum of SQUARES of every NEE strategy's pdf (power heuristic β=2
+                    // over multiple techniques) — NOT the square of the sum — so that
+                    // w_brdf + Σ w_nee = 1 for any given direction.
+                    let nee_pdf_sq = {
                         let area = if lights.objects.is_empty() { 0.0 }
                                    else { lights.pdf_value(rec.p, ind_dir, ray.time) };
                         let sun  = sun_pdf_value(ind_dir, background);
                         let env  = env_pdf_value(ind_dir, background);
-                        area + sun + env
+                        area*area + sun*sun + env*env
                     };
-                    prev_mis_w_brdf = (pdf_val * pdf_val) / (pdf_val * pdf_val + nee_pdf_for_ind * nee_pdf_for_ind).max(1e-8);
+                    prev_mis_w_brdf = (pdf_val * pdf_val) / (pdf_val * pdf_val + nee_pdf_sq).max(1e-8);
 
                     throughput    *= sr.attenuation * (scat_pdf / pdf_val);
                     ray            = scattered;

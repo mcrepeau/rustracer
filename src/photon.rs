@@ -23,7 +23,8 @@ pub const PHOTON_MAX_DEPTH: i32 = 12;
 ///
 /// Photons are emitted from a light source and stored only when they reach a
 /// diffuse surface after at least one specular/transmissive bounce (caustic
-/// path).  `irradiance()` returns the Epanechnikov-filtered estimate
+/// path — plain glass included, not just spectral materials).
+/// `irradiance()` returns the Epanechnikov-filtered estimate
 /// pre-divided by π, so the caller multiplies by albedo to get radiance.
 /// Photons whose stored surface normal opposes the shading normal are
 /// rejected, preventing caustic "leakage" through opaque surfaces.
@@ -217,7 +218,6 @@ fn trace_photon(
     let mut dir          = dir;
     let mut power        = power;
     let mut spec_depth   = 0u32;
-    let mut hit_spectral = false;
     let wavelength       = rng.gen_range(380.0_f32..700.0);
 
     for _ in 0..PHOTON_MAX_DEPTH {
@@ -227,13 +227,15 @@ fn trace_photon(
         let sr  = rec.mat.scatter(&ray, &rec, rng)?;
 
         if sr.skip_pdf {
-            if rec.mat.is_spectral() { hit_spectral = true; }
+            // Any specular/transmissive bounce counts toward the caustic path —
+            // plain (non-spectral) glass included.  Spectral CMF spikes are handled
+            // by the luminance clamp at storage below.
             power     *= sr.attenuation;
             pos        = sr.ray.origin;
             dir        = sr.ray.direction;
             spec_depth += 1;
         } else {
-            if spec_depth > 0 && hit_spectral && rec.mat.can_receive_caustics() {
+            if spec_depth > 0 && rec.mat.can_receive_caustics() {
                 // Clamp spectral spikes once at storage, not per bounce.
                 let lum = power.luminance();
                 if lum > 15.0 { power *= 15.0 / lum; }

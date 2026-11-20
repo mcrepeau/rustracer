@@ -273,8 +273,6 @@ impl Material for SpectralDielectric {
         let scattered = Ray::scatter_from(rec.p, direction, r_in);
         Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
     }
-
-    fn is_spectral(&self) -> bool { true }
 }
 
 /// Which metal to use for `SpectralMetal`.
@@ -422,7 +420,6 @@ impl Material for SpectralMetal {
         ggx_ndf(h_n, alpha) * smith_g1(cos_o, alpha) / (4.0 * cos_o)
     }
 
-    fn is_spectral(&self)                              -> bool  { true }
     fn albedo_hint(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
 }
 
