@@ -1,5 +1,5 @@
 use std::f32::consts::PI;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use image::RgbImage;
 use rand::{Rng, RngCore};
@@ -172,6 +172,98 @@ fn smith_g1(cos_theta: f32, alpha: f32) -> f32 {
 fn smith_g1_aniso(cos_theta: f32, tx: f32, ty: f32, ax: f32, ay: f32) -> f32 {
     let denom = cos_theta + (cos_theta*cos_theta + ax*ax*tx*tx + ay*ay*ty*ty).sqrt();
     (2.0 * cos_theta / denom.max(1e-6)).clamp(0.0, 1.0)
+}
+
+/// Smith Lambda for isotropic GGX: Lambda = 1/G1 - 1 = (sqrt(1 + a^2 tan^2(th)) - 1) / 2.
+#[inline]
+fn smith_lambda(cos_theta: f32, alpha: f32) -> f32 {
+    let a2 = alpha * alpha;
+    let c2 = cos_theta * cos_theta;
+    ((a2 + (1.0 - a2) * c2).sqrt() - cos_theta) / (2.0 * cos_theta)
+}
+
+/// Smith Lambda for anisotropic GGX.
+#[inline]
+fn smith_lambda_aniso(cos_theta: f32, tx: f32, ty: f32, ax: f32, ay: f32) -> f32 {
+    ((cos_theta*cos_theta + ax*ax*tx*tx + ay*ay*ty*ty).sqrt() - cos_theta) / (2.0 * cos_theta)
+}
+
+/// Height-correlated Smith G2 (Heitz 2014): G2(wo, wi) = 1 / (1 + Lambda(wo) + Lambda(wi)).
+/// Unlike the separable G1(wo)*G1(wi), this does not double-count masking-shadowing,
+/// which is where most of the high-roughness energy loss comes from.
+#[inline]
+fn smith_g2_height_correlated(lam_o: f32, lam_i: f32) -> f32 {
+    1.0 / (1.0 + lam_o + lam_i)
+}
+
+// -- Single-scattering energy LUT -------------------------------------------------
+// E_ss(mu, alpha) = directional albedo of WHITE GGX with height-correlated G2,
+// estimated once by deterministic VNDF Monte Carlo and bilinearly sampled.
+// The specular lobe is multiplied by 1/E_ss (Kulla-Conty-style energy
+// compensation, applied identically in the BRDF and the VNDF weight so MIS
+// stays consistent) so a white furnace returns ~1 at every roughness.
+
+const E_N_MU: usize = 64;
+const E_N_ALPHA: usize = 64;
+
+fn build_e_lut() -> [[f32; E_N_ALPHA]; E_N_MU] {
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+    let mut lut = [[1.0f32; E_N_ALPHA]; E_N_MU];
+    // 64x64 jittered (stratified) VNDF samples per texel: far lower variance than
+    // pure MC at the same sample count, so the compensation factor stays accurate.
+    const G: usize = 64;
+    for i in 0..E_N_MU {
+        let mu = (i as f32 + 0.5) / E_N_MU as f32;
+        for j in 0..E_N_ALPHA {
+            let alpha = ((j as f32 + 0.5) / E_N_ALPHA as f32).max(1e-3);
+            let mut rng = SmallRng::seed_from_u64((i * E_N_ALPHA + j) as u64 + 0x9E3779B9);
+            let wo_ts = Vec3::new(0.0, 0.0, mu);
+            let lam_o = smith_lambda(mu, alpha);
+            let mut sum = 0.0f64;
+            for k in 0..G {
+                for l in 0..G {
+                    let xi1 = (k as f32 + rng.gen::<f32>()) / G as f32;
+                    let xi2 = (l as f32 + rng.gen::<f32>()) / G as f32;
+                    let m_ts  = vndf_sample_aniso(wo_ts, alpha, alpha, xi1, xi2);
+                    let vo_h  = wo_ts.dot(m_ts).max(0.0);
+                    let wi_ts = 2.0 * vo_h * m_ts - wo_ts;
+                    if wi_ts.z <= 0.0 { continue; }
+                    let lam_i = smith_lambda(wi_ts.z, alpha);
+                    // VNDF estimator weight at F = 1: G2_hc/G1(wo) = (1+lam_o)/(1+lam_o+lam_i)
+                    sum += ((1.0 + lam_o) / (1.0 + lam_o + lam_i)) as f64;
+                }
+            }
+            lut[i][j] = (sum / (G * G) as f64) as f32;
+        }
+    }
+    lut
+}
+
+static E_LUT: LazyLock<[[f32; E_N_ALPHA]; E_N_MU]> = LazyLock::new(build_e_lut);
+
+/// Bilinear sample of E_ss(mu_o, alpha).
+fn e_ss_lut(mu_o: f32, alpha: f32) -> f32 {
+    let x = (mu_o.clamp(0.0, 1.0) * E_N_MU as f32 - 0.5).clamp(0.0, (E_N_MU - 1) as f32);
+    let y = (alpha.clamp(0.0, 1.0) * E_N_ALPHA as f32 - 0.5).clamp(0.0, (E_N_ALPHA - 1) as f32);
+    let i0 = x as usize;
+    let j0 = y as usize;
+    let i1 = (i0 + 1).min(E_N_MU - 1);
+    let j1 = (j0 + 1).min(E_N_ALPHA - 1);
+    let fx = x - i0 as f32;
+    let fy = y - j0 as f32;
+    let e00 = E_LUT[i0][j0];
+    let e10 = E_LUT[i1][j0];
+    let e01 = E_LUT[i0][j1];
+    let e11 = E_LUT[i1][j1];
+    (e00 * (1.0 - fx) + e10 * fx) * (1.0 - fy) + (e01 * (1.0 - fx) + e11 * fx) * fy
+}
+
+/// Multi-scatter energy-compensation factor for the GGX lobe: 1/E_ss(mu_o, alpha),
+/// clamped so grazing angles cannot blow up the VNDF weight.
+#[inline]
+fn specular_energy_comp(mu_o: f32, alpha: f32) -> f32 {
+    (1.0 / e_ss_lut(mu_o, alpha).max(0.05)).min(10.0)
 }
 
 /// Sample a microfacet normal from the anisotropic GGX VNDF (Heitz 2018).
@@ -373,18 +465,21 @@ impl Material for SpectralMetal {
         let (ior_n, ior_k) = self.variant.ior_at(lambda);
         let fresnel = fresnel_conductor(cos_h, ior_n, ior_k);
 
-        // VNDF weight is F × G1(wi).  For a perfect mirror G1 = 1.
-        let g1_wi = if self.roughness == 0.0 {
+        // VNDF estimator weight: F x G2_hc/G1(wo) x energy compensation, where
+        // G2_hc/G1(wo) = (1+Lam_o)/(1+Lam_o+Lam_i) <= 1.  Perfect mirror => 1.
+        let weight = if self.roughness == 0.0 {
             1.0
         } else {
             let alpha = (self.roughness * self.roughness).max(1e-4);
-            smith_g1(dir.dot(n).max(0.0), alpha)
+            let lam_o = smith_lambda(cos_o, alpha);
+            let lam_i = smith_lambda(dir.dot(n).max(0.0), alpha);
+            ((1.0 + lam_o) / (1.0 + lam_o + lam_i)) * specular_energy_comp(cos_o, alpha)
         };
 
         let attenuation = if r_in.spectral_weighted {
-            Color::new(fresnel * g1_wi, fresnel * g1_wi, fresnel * g1_wi)
+            Color::new(fresnel * weight, fresnel * weight, fresnel * weight)
         } else {
-            spectral_to_rgb(lambda) * (fresnel * g1_wi)
+            spectral_to_rgb(lambda) * (fresnel * weight)
         };
         let mut scattered = Ray::scatter_from(rec.p, dir, r_in);
         if !r_in.spectral_weighted { scattered.spectral_weighted = true; }
@@ -409,14 +504,15 @@ impl Material for SpectralMetal {
 
         let alpha = (self.roughness * self.roughness).max(1e-4);
         let d     = ggx_ndf(h_n, alpha);
-        let g1_o  = smith_g1(cos_o, alpha);
-        let g1_i  = smith_g1(cos_i, alpha);
+        let lam_o = smith_lambda(cos_o, alpha);
+        let lam_i = smith_lambda(cos_i, alpha);
+        let g2    = smith_g2_height_correlated(lam_o, lam_i);
 
         let lambda = r_in.wavelength;
         let (ior_n, ior_k) = self.variant.ior_at(lambda);
         let fresnel = fresnel_conductor(wo_h, ior_n, ior_k);
 
-        let val = d * fresnel * g1_o * g1_i / (4.0 * cos_o);
+        let val = d * fresnel * g2 / (4.0 * cos_o) * specular_energy_comp(cos_o, alpha);
 
         if r_in.spectral_weighted {
             Color::new(val, val, val)
@@ -729,7 +825,9 @@ impl Material for PbrMaterial {
             if cos_i <= 0.0 { return None; }
 
             let f_coat = schlick(vo_h, 1.0 / 1.5_f32) * self.clearcoat;
-            let g1_wi  = smith_g1(cos_i, alpha_coat);
+            let lam_o  = smith_lambda(cos_o, alpha_coat);
+            let lam_i  = smith_lambda(cos_i, alpha_coat);
+            let w_ggxc = ((1.0 + lam_o) / (1.0 + lam_o + lam_i)) * specular_energy_comp(cos_o, alpha_coat);
 
             let film = if self.film_thickness > 0.0 {
                 nacre_color(vo_h, self.film_ior, self.film_thickness)
@@ -737,9 +835,9 @@ impl Material for PbrMaterial {
                 Color::new(1.0, 1.0, 1.0)
             };
 
-            // VNDF weight: F_coat · film · G1(wi) / p_coat
+            // VNDF weight: F_coat · film · (G2_hc/G1(wo) · comp) / p_coat
             Some(ScatterRecord {
-                attenuation: film * (f_coat * g1_wi / p_coat),
+                attenuation: film * (f_coat * w_ggxc / p_coat),
                 ray:         Ray::scatter_from(rec.p, wi, r_in),
                 skip_pdf:    true,
             })
@@ -771,11 +869,13 @@ impl Material for PbrMaterial {
                 if cos_i <= 0.0 { return None; }
 
                 let wi_ts = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
-                let g1_wi = smith_g1_aniso(wi_ts.z, wi_ts.x, wi_ts.y, ax, ay);
+                let lam_o = smith_lambda_aniso(cos_o, wo_ts.x, wo_ts.y, ax, ay);
+                let lam_i = smith_lambda_aniso(cos_i, wi_ts.x, wi_ts.y, ax, ay);
+                let w_ggx = ((1.0 + lam_o) / (1.0 + lam_o + lam_i)) * specular_energy_comp(cos_o, alpha);
                 let f     = schlick_color(vo_h, f0);
 
                 Some(ScatterRecord {
-                    attenuation: f * g1_wi / (p_spec * (1.0 - p_coat)),
+                    attenuation: f * w_ggx / (p_spec * (1.0 - p_coat)),
                     ray:         Ray::scatter_from(rec.p, wi, r_in),
                     skip_pdf:    true,
                 })
@@ -839,22 +939,23 @@ impl Material for PbrMaterial {
 
         let mut result = Color::default();
 
-        // Clearcoat lobe: film · D · F_coat · G1(wo) · G1(wi) / (4 · cos_o)
+        // Clearcoat lobe: film · D · F_coat · G2_hc / (4 · cos_o) · comp
         if self.clearcoat > 1e-3 {
             let alpha_coat = (self.clearcoat_roughness * self.clearcoat_roughness).max(1e-4);
             let d     = ggx_ndf(h_n, alpha_coat);
-            let g1_o  = smith_g1(cos_o, alpha_coat);
-            let g1_i  = smith_g1(cos_i, alpha_coat);
+            let lam_o = smith_lambda(cos_o, alpha_coat);
+            let lam_i = smith_lambda(cos_i, alpha_coat);
+            let g2    = smith_g2_height_correlated(lam_o, lam_i);
             let f_c   = schlick(wo_h, 1.0 / 1.5_f32) * self.clearcoat;
             let film  = if self.film_thickness > 0.0 {
                 nacre_color(wo_h, self.film_ior, self.film_thickness)
             } else {
                 Color::new(1.0, 1.0, 1.0)
             };
-            result += film * (d * f_c * g1_o * g1_i / (4.0 * cos_o));
+            result += film * (d * f_c * g2 / (4.0 * cos_o) * specular_energy_comp(cos_o, alpha_coat));
         }
 
-        // Base specular lobe: F · D · G1(wo) · G1(wi) / (4 · cos_o)
+        // Base specular lobe: F · D · G2_hc / (4 · cos_o) · comp
         {
             let alpha  = (roughness * roughness).max(1e-4_f32);
             let aspect = (1.0 - 0.9 * self.anisotropy.clamp(0.0, 1.0)).max(0.001_f32).sqrt();
@@ -868,10 +969,11 @@ impl Material for PbrMaterial {
             let wo_ts = Vec3::new(wo.dot(t), wo.dot(b), cos_o);
             let wi_ts = Vec3::new(wi.dot(t), wi.dot(b), cos_i);
             let d     = ggx_ndf_aniso(h_ts, ax, ay);
-            let g1_o  = smith_g1_aniso(cos_o, wo_ts.x, wo_ts.y, ax, ay);
-            let g1_i  = smith_g1_aniso(cos_i, wi_ts.x, wi_ts.y, ax, ay);
+            let lam_o = smith_lambda_aniso(cos_o, wo_ts.x, wo_ts.y, ax, ay);
+            let lam_i = smith_lambda_aniso(cos_i, wi_ts.x, wi_ts.y, ax, ay);
+            let g2    = smith_g2_height_correlated(lam_o, lam_i);
             let f     = schlick_color(wo_h, f0);
-            result += f * (d * g1_o * g1_i / (4.0 * cos_o));
+            result += f * (d * g2 / (4.0 * cos_o) * specular_energy_comp(cos_o, alpha));
         }
 
         result
@@ -1246,22 +1348,22 @@ mod tests {
             tangent:    Vec3::default(),
             shading:    std::sync::OnceLock::new(),
         };
-        let mut sum   = 0.0f64;
-        let mut count = 0usize;
+        let mut sum = 0.0f64;
         for _ in 0..n {
+            // A None scatter terminates the path and contributes 0, so the furnace
+            // albedo averages over ALL attempts (not just successful ones).
             if let Some(sr) = mat.scatter(&ray, &rec, rng) {
-                sum   += luma(sr.attenuation) as f64;
-                count += 1;
+                sum += luma(sr.attenuation) as f64;
             }
         }
-        if count == 0 { return 0.0; }
-        sum / count as f64
+        sum / n as f64
     }
 
     #[test]
     fn white_furnace_metallic_no_energy_gain() {
-        // F·G1(wi) ≤ 1 must hold at every roughness — single-scattering GGX
-        // loses energy at high roughness (expected) but must never gain it.
+        // Height-correlated G2 + 1/E_ss compensation should make the white furnace
+        // return ~1 at every roughness (separable G2 gave ~0.5-0.65 at r=0.9).
+        // MC noise + LUT error allow a few % either way, but never real gain.
         for &roughness in &[0.1f32, 0.5, 0.9] {
             let mat = PbrMaterial {
                 albedo:    Color::new(1.0, 1.0, 1.0),
@@ -1273,9 +1375,69 @@ mod tests {
             };
             let mut rng  = SmallRng::seed_from_u64(42);
             let mean = white_furnace_mean(&mat, 8000, &mut rng);
-            assert!(mean <= 1.0 + 1e-6,
-                "white metallic furnace (roughness={roughness}) mean={mean:.4} — energy gain");
+            assert!(mean > 0.85 && mean <= 1.0 + 0.05,
+                "white metallic furnace (roughness={roughness}) mean={mean:.4} -- expected ~1.0");
         }
+    }
+
+    #[test]
+    fn smith_lambda_equals_inverse_g1_minus_one() {
+        for &alpha in &[0.01f32, 0.1, 0.5, 1.0] {
+            for &c in &[0.05f32, 0.3, 0.7, 1.0] {
+                let lam = smith_lambda(c, alpha);
+                let g1  = smith_g1(c, alpha);
+                assert!((lam - (1.0 / g1 - 1.0)).abs() < 1e-5,
+                    "Lambda != 1/G1 - 1 at c={c}, a={alpha}: {lam} vs {}", 1.0 / g1 - 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn g2_height_correlated_dominates_separable() {
+        // 1/(1+Lo+Li) >= 1/((1+Lo)(1+Li)) = G1o*G1i  since Lo*Li >= 0.
+        for &alpha in &[0.05f32, 0.3, 1.0] {
+            for &co in &[0.2f32, 0.6, 1.0] {
+                for &ci in &[0.2f32, 0.6, 1.0] {
+                    let lo = smith_lambda(co, alpha);
+                    let li = smith_lambda(ci, alpha);
+                    let g2_hc = smith_g2_height_correlated(lo, li);
+                    let g2_sep = smith_g1(co, alpha) * smith_g1(ci, alpha);
+                    assert!(g2_hc >= g2_sep - 1e-6 && g2_hc <= 1.0 + 1e-6,
+                        "G2_hc={g2_hc} vs G2_sep={g2_sep} at a={alpha} co={co} ci={ci}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn e_lut_is_unit_interval_and_comp_bounded() {
+        for &mu in &[0.02f32, 0.25, 0.5, 0.9, 1.0] {
+            for &alpha in &[0.01f32, 0.25, 0.7, 1.0] {
+                let e = e_ss_lut(mu, alpha);
+                assert!(e > 0.0 && e <= 1.0 + 1e-4, "E_ss({mu},{alpha}) = {e}");
+                let c = specular_energy_comp(mu, alpha);
+                assert!(c >= 1.0 - 1e-6 && c <= 10.0, "comp({mu},{alpha}) = {c}");
+            }
+        }
+        // smooth limit: E -> 1 as alpha -> 0
+        assert!(e_ss_lut(1.0, 0.001) > 0.99, "E_ss(1, tiny alpha) should be ~1");
+    }
+
+    #[test]
+    fn rough_white_metal_recovers_energy_via_compensation() {
+        // r=0.9 white metal in a furnace: separable Smith gave ~0.55; with
+        // height-correlated G2 + 1/E_ss compensation it must be near 1.
+        let mat = PbrMaterial {
+            albedo:    Color::new(1.0, 1.0, 1.0),
+            metallic:  1.0,
+            roughness: 0.9,
+            clearcoat: 0.0,
+            sheen:     0.0,
+            ..PbrMaterial::default()
+        };
+        let mut rng = SmallRng::seed_from_u64(7);
+        let mean = white_furnace_mean(&mat, 20000, &mut rng);
+        assert!(mean > 0.9, "rough white metal furnace mean={mean:.4} -- energy not recovered");
     }
 
     #[test]
@@ -1292,8 +1454,8 @@ mod tests {
         };
         let mut rng  = SmallRng::seed_from_u64(123);
         let mean = white_furnace_mean(&mat, 8000, &mut rng);
-        assert!(mean > 0.95, "smooth white metallic furnace mean={mean:.4} — too lossy");
-        assert!(mean <= 1.0 + 1e-6, "smooth white metallic furnace mean={mean:.4} — energy gain");
+        assert!(mean > 0.95, "smooth white metallic furnace mean={mean:.4} -- too lossy");
+        assert!(mean <= 1.0 + 0.05, "smooth white metallic furnace mean={mean:.4} -- energy gain");
     }
 
     // ── Dielectric ────────────────────────────────────────────────────────────
