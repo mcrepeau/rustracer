@@ -16,7 +16,7 @@ pub struct SceneData {
     /// Enable caustic photon mapping for this scene.
     pub enable_caustics: bool,
     /// Area-light emitter for the photon map when `Background` is not
-    /// `Physical`.  Fields: (origin, U-extent, V-extent, emission colour).
+    /// `Physical` or `EnvMap` (sampled by luminance).  Fields: (origin, U-extent, V-extent, emission colour).
     pub caustic_quad:          Option<(Point3, Vec3, Vec3, Color)>,
     /// Photon gather radius in world units.  Must match the scene's spatial
     /// scale: ~0.15 for unit-scale scenes, ~10 for 0–555 coordinate scenes.
@@ -48,6 +48,23 @@ impl SceneData {
             let sun_color = self.background.eval(power_dir) * std::f32::consts::PI;
             self.photon_map = Some(Arc::new(
                 PhotonMap::build(world.as_ref(), sun_dir, sun_color, n, r)
+            ));
+        } else if let Background::EnvMap(em) = &self.background {
+            // No sun and no area light: emit photons from a directional disk
+            // facing a bright direction importance-sampled from the env map's
+            // luminance CDF (fixed seed -> deterministic map). For the studio
+            // light-tent map this lands on the overhead key glow.
+            use rand::SeedableRng;
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(0xC0FFEE);
+            let mut dir = Vec3::new(0.0, 1.0, 0.0);
+            for _ in 0..8 {
+                let (d, _) = em.sample_dir(&mut rng);
+                dir = dir + d;
+            }
+            let dir   = dir.unit();
+            let color = self.background.eval(dir) * std::f32::consts::PI;
+            self.photon_map = Some(Arc::new(
+                PhotonMap::build(world.as_ref(), dir, color, n, r)
             ));
         } else if let Some((origin, u, v, color)) = self.caustic_quad {
             self.photon_map = Some(Arc::new(

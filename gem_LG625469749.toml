@@ -4,8 +4,8 @@
 # depth 61.8%, girdle medium-to-slightly-thick pointed, polish/symmetry Excellent.
 #
 # Staging: the stone floats ~15 mm above the floor (invisible mount, as in a
-# jewelry display), lit by four softbox panels like a store lightbox:
-# one big key panel overhead, two angled side panels, one rim panel behind.
+# jewelry display). All light comes from the studio env map below (a light
+# tent); caustics are emitted from the map's brightest direction.
 name = "LG625469749 oval diamond"
 max_samples = 1024
 
@@ -19,8 +19,8 @@ move_speed = 0.002   # scene is mm-scale (~0.1 units wide); 0.2 would cross it i
 
 # Procedural "light tent" env map: near-uniform bright background (even light
 # from all sides) plus very soft glows at the softbox positions - regenerate
-# with `py make_studio_softbox.py`. Directional light/caustics come from the
-# [[lights]] quads below, not from this map.
+# with `py make_studio_softbox.py`. All lighting - and the caustic photon
+# source - comes from this map; no [[lights]] needed.
 [background]
 type = "env_map"
 path = "assets/studio_softbox.hdr"
@@ -39,32 +39,6 @@ path = "assets/studio_softbox.hdr"
 [[objects]]
 shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
 material = { type = "pbr", albedo = [0.04, 0.04, 0.05], roughness = 0.25, metallic = 0.0 }
-
-# ── Softbox panels (jewelry-store style) ─────────────────────────────────────
-# First entry is also the photon-map (caustics) source.
-[[lights]]                                     # key: big panel overhead
-corner = [-0.05, 0.13, -0.05]
-u      = [0.10, 0.0, 0.0]
-v      = [0.0, 0.0, 0.10]
-color  = [14.0, 14.0, 14.0]
-
-[[lights]]                                     # left side, angled in
-corner = [-0.13, 0.015, -0.05]
-u      = [0.0, 0.09, 0.0]
-v      = [0.03, 0.0, 0.10]
-color  = [7.0, 7.5, 8.5]
-
-[[lights]]                                     # right side, angled in
-corner = [0.13, 0.02, -0.06]
-u      = [0.0, 0.08, 0.0]
-v      = [-0.03, 0.0, 0.10]
-color  = [8.5, 7.5, 7.0]
-
-[[lights]]                                     # rim/back panel, slightly high
-corner = [-0.045, 0.11, 0.11]
-u      = [0.09, 0.0, 0.0]
-v      = [0.0, -0.03, 0.09]
-color  = [5.0, 6.0, 8.0]
 
 [[gems]]
 report          = "LG625469749 (IGI 2024-03-09, lab-grown CVD Type IIa)"
