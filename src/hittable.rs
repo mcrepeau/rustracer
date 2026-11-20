@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use rand::RngCore;
 use crate::aabb::Aabb;
 use crate::vec3::{Color, Point3, Vec3};
@@ -55,6 +55,16 @@ pub trait Material: Send + Sync {
     fn shading_normal(&self, rec: &HitRecord<'_>) -> Vec3 {
         rec.normal
     }
+
+}
+
+/// Per-hit shading parameters, lazily cached in the HitRecord.
+#[derive(Clone, Copy)]
+pub struct ShadingParams {
+    pub normal:    Vec3,
+    pub albedo:    Color,
+    pub roughness: f32,
+    pub metallic:  f32,
 }
 
 pub struct HitRecord<'a> {
@@ -68,13 +78,15 @@ pub struct HitRecord<'a> {
     /// Surface tangent in world space, used for normal-map TBN construction.
     /// Zero for shapes that don't compute tangents (spheres, planes, etc.).
     pub tangent: Vec3,
+    /// Lazily-filled per-hit shading cache (filled by PbrMaterial::params).
+    pub shading: OnceLock<ShadingParams>,
 }
 
 impl<'a> HitRecord<'a> {
     pub fn new(p: Point3, t: f32, mat: &'a dyn Material, r: &Ray, outward_normal: Vec3) -> Self {
         let front_face = r.direction.dot(outward_normal) < 0.0;
         let normal = if front_face { outward_normal } else { -outward_normal };
-        Self { p, normal, mat, t, u: 0.0, v: 0.0, front_face, tangent: Vec3::default() }
+        Self { p, normal, mat, t, u: 0.0, v: 0.0, front_face, tangent: Vec3::default(), shading: OnceLock::new() }
     }
 }
 

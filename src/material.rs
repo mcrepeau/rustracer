@@ -6,7 +6,7 @@ use rand::{Rng, RngCore};
 use crate::output::srgb_decode;
 use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
-use crate::hittable::{HitRecord, Material, ScatterRecord};
+use crate::hittable::{HitRecord, Material, ScatterRecord, ShadingParams};
 use crate::texture::Texture;
 use crate::spectrum::{cauchy_ior, copper_ior, fresnel_conductor, gold_ior, planck_raw, silver_ior, spectral_to_rgb};
 use crate::volume::hg_sample;
@@ -656,22 +656,35 @@ impl PbrMaterial {
     fn metallic_at(&self, u: f32, v: f32) -> f32 {
         self.metallic_tex.as_ref().map_or(self.metallic, |t| sample_linear(t, u, v))
     }
+
+    /// Per-hit shading params, computed once and cached in the HitRecord.
+    /// scatter / scattering_pdf / specular_* / shading_normal all read from here,
+    /// so the texture maps are fetched once per hit instead of ~8-10 times per bounce.
+    fn params<'a>(&self, rec: &'a HitRecord<'a>) -> &'a ShadingParams {
+        rec.shading.get_or_init(|| ShadingParams {
+            normal:    self.tbn_normal(rec),
+            albedo:    self.albedo_at(rec.u, rec.v),
+            roughness: self.roughness_at(rec.u, rec.v),
+            metallic:  self.metallic_at(rec.u, rec.v),
+        })
+    }
 }
 
 impl Material for PbrMaterial {
     fn shading_normal(&self, rec: &HitRecord<'_>) -> Vec3 {
-        self.tbn_normal(rec)
+        self.params(rec).normal
     }
 
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
-        let n = self.tbn_normal(rec);
+        let p     = self.params(rec);
+        let n         = p.normal;
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         if cos_o <= 0.0 { return None; }
 
-        let albedo    = self.albedo_at(rec.u, rec.v);
-        let roughness = self.roughness_at(rec.u, rec.v);
-        let metallic  = self.metallic_at(rec.u, rec.v);
+        let albedo    = p.albedo;
+        let roughness = p.roughness;
+        let metallic  = p.metallic;
         let alpha = (roughness * roughness).max(1e-4_f32);
         let f0    = Color::new(0.04, 0.04, 0.04) * (1.0 - metallic)
                   + albedo * metallic;
@@ -795,20 +808,21 @@ impl Material for PbrMaterial {
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {
-        let cosine = self.tbn_normal(rec).dot(scattered.direction.unit());
+        let cosine = self.params(rec).normal.dot(scattered.direction.unit());
         (cosine / PI).max(0.0)
     }
 
     fn specular_brdf_cos(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> Color {
-        let n     = self.tbn_normal(rec);
+        let p     = self.params(rec);
+        let n         = p.normal;
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         let cos_i = wi.dot(n);
         if cos_o <= 0.0 || cos_i <= 0.0 { return Color::default(); }
 
-        let albedo    = self.albedo_at(rec.u, rec.v);
-        let roughness = self.roughness_at(rec.u, rec.v);
-        let metallic  = self.metallic_at(rec.u, rec.v);
+        let albedo    = p.albedo;
+        let roughness = p.roughness;
+        let metallic  = p.metallic;
         let h    = (wo + wi).unit();
         let wo_h = wo.dot(h).max(0.0);
         let h_n  = h.dot(n).max(0.0);
@@ -856,15 +870,16 @@ impl Material for PbrMaterial {
     }
 
     fn specular_sampling_pdf(&self, r_in: &Ray, rec: &HitRecord<'_>, wi: Vec3) -> f32 {
-        let n     = self.tbn_normal(rec);
+        let p     = self.params(rec);
+        let n         = p.normal;
         let wo    = (-r_in.direction).unit();
         let cos_o = wo.dot(n);
         let cos_i = wi.dot(n);
         if cos_o <= 0.0 || cos_i <= 0.0 { return 0.0; }
 
-        let albedo   = self.albedo_at(rec.u, rec.v);
-        let roughness = self.roughness_at(rec.u, rec.v);
-        let metallic  = self.metallic_at(rec.u, rec.v);
+        let albedo   = p.albedo;
+        let roughness = p.roughness;
+        let metallic  = p.metallic;
         let h   = (wo + wi).unit();
         let h_n = h.dot(n).max(0.0);
         let f0  = Color::new(0.04, 0.04, 0.04) * (1.0 - metallic)
@@ -1221,6 +1236,7 @@ mod tests {
             t: 1.0, u: 0.0, v: 0.0,
             front_face: true,
             tangent:    Vec3::default(),
+            shading:    std::sync::OnceLock::new(),
         };
         let mut sum   = 0.0f64;
         let mut count = 0usize;
@@ -1283,6 +1299,7 @@ mod tests {
             t: 1.0, u: 0.0, v: 0.0,
             front_face: true,
             tangent:    Vec3::default(),
+            shading:    std::sync::OnceLock::new(),
         }
     }
 
@@ -1333,6 +1350,7 @@ mod tests {
             t: 1.0, u: 0.0, v: 0.0,
             front_face: false,
             tangent:    Vec3::default(),
+            shading:    std::sync::OnceLock::new(),
         };
         let mut rng = SmallRng::seed_from_u64(0);
         for _ in 0..50 {
