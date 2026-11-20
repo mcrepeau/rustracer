@@ -17,9 +17,10 @@ aperture   = 0.0
 focus_dist = 0.085
 move_speed = 0.002   # scene is mm-scale (~0.1 units wide); 0.2 would cross it in one keypress
 
-# Procedural studio env map (4 softboxes on a gradient) - regenerate with
-# `py make_studio_softbox.py`. Bright rectangles reflect in the stone, like a
-# jewelry-store lightbox.
+# Procedural "light tent" env map: near-uniform bright background (even light
+# from all sides) plus very soft glows at the softbox positions - regenerate
+# with `py make_studio_softbox.py`. Directional light/caustics come from the
+# [[lights]] quads below, not from this map.
 [background]
 type = "env_map"
 path = "assets/studio_softbox.hdr"
