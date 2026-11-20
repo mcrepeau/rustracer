@@ -1,0 +1,45 @@
+# Scene for the stone graded in LG625469749.pdf (IGI, March 9, 2024):
+# laboratory-grown (CVD, Type IIa) OVAL BRILLIANT, 1.50 ct, color E, VVS2,
+# 8.99 x 6.42 x 3.97 mm, table 58%, crown 16% / pavilion 41% of minor axis,
+# depth 61.8%, girdle medium-to-slightly-thick pointed, polish/symmetry Excellent.
+name = "LG625469749 oval diamond"
+max_samples = 512
+
+[camera]
+look_from  = [0.030, 0.022, -0.070]
+look_at    = [0.0, 0.0025, 0.0]
+vfov       = 30.0
+aperture   = 0.0
+focus_dist = 0.077
+move_speed = 0.2
+
+[background]
+type  = "solid"
+color = [0.003, 0.003, 0.006]
+
+[[objects]]
+shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
+material = { type = "pbr", albedo = [0.05, 0.05, 0.06], roughness = 0.3, metallic = 0.0 }
+
+[[lights]]
+corner = [-0.03, 0.10, -0.05]
+u      = [0.06, 0.0, 0.0]
+v      = [0.0, 0.0, 0.06]
+color  = [10.0, 10.0, 10.0]
+
+[[gems]]
+report          = "LG625469749 (IGI 2024-03-09, lab-grown CVD Type IIa)"
+carat           = 1.50
+measurements_mm = [8.99, 6.42, 3.97]   # L x W x depth, mm -> oval ratio 1.40
+table_pct       = 58.0
+crown_pct       = 16.0                 # % of minor axis -> ~37.3 deg
+pavilion_pct    = 41.0                 # % of minor axis -> ~39.3 deg
+depth_pct       = 61.8
+color_grade     = "E"
+center          = [0.0, 0.00264, 0.0]  # girdle centre: pavilion depth 2.63 mm rests on floor
+scale_mm        = 0.001                # mm -> metres
+
+[caustics]
+enabled       = true
+gather_radius = 0.008
+num_photons   = 300000

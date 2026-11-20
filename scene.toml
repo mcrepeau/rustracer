@@ -55,10 +55,11 @@ path = "assets/sunset_puresky_4k.hdr"
 # Key fields of an IGI/GIA report become an analytic round-brilliant diamond:
 #   [[gems]]
 #   report         = "IGI 245123456"          # free-text provenance
-#   measurements_mm = [6.51, 6.47, 4.01]      # L x W x depth, mm (or: carat = 1.02)
+#   measurements_mm = [8.99, 6.42, 3.97]      # L x W x depth, mm (or: carat = 1.50);
+#                                             # L != W -> oval (ratio L/W), W sets radius
 #   table_pct      = 57.0                     # proportions (defaults: Tolkowsky 53/34.5/40.75)
-#   crown_angle    = 34.6
-#   pavilion_angle = 40.8
+#   crown_angle    = 34.6                     # degrees (or IGI-style crown_pct = 16)
+#   pavilion_angle = 40.8                     # degrees (or IGI-style pavilion_pct = 41)
 #   depth_pct      = 61.8                     # optional; cross-checked vs angles (warning)
 #   color_grade    = "F"                      # D..Z -> faint body tint
 #   center         = [0.0, 0.004, 0.0]       # girdle centre, scene units

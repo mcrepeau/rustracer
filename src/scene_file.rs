@@ -180,6 +180,9 @@ pub enum ShapeConfig {
         crown_angle:    f32,
         #[serde(default = "default_pavilion_angle")]
         pavilion_angle: f32,
+        /// Girdle stretch along X (length/width); 1.0 = round.  radius = semi-minor axis.
+        #[serde(default = "default_oval_ratio")]
+        oval_ratio:     f32,
     },
     InfinitePlane {
         point:  [f32; 3],
@@ -395,6 +398,14 @@ pub struct GemConfig {
     pub crown_angle:     f32,
     #[serde(default = "default_pavilion_angle")]
     pub pavilion_angle:  f32,
+    /// IGI-style proportions diagram: crown height as % of the minor axis.
+    /// When present, overrides crown_angle (converted via the facet geometry).
+    #[serde(default)]
+    pub crown_pct:       Option<f32>,
+    /// IGI-style proportions diagram: pavilion depth as % of the minor axis.
+    /// When present, overrides pavilion_angle.
+    #[serde(default)]
+    pub pavilion_pct:    Option<f32>,
     /// Reported total depth % — cross-checked against the angles (warning only).
     #[serde(default)]
     pub depth_pct:       Option<f32>,
@@ -417,6 +428,7 @@ fn default_noise_scale()   -> f32  { 1.0   }
 fn default_table_pct()     -> f32  { 53.0  }
 fn default_crown_angle()   -> f32  { 34.5  }
 fn default_pavilion_angle()-> f32  { 40.75 }
+fn default_oval_ratio()    -> f32  { 1.0   }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -434,33 +446,49 @@ pub fn load(path: &str) -> Result<SceneData, String> {
 
 /// Build an analytic round-brilliant Diamond from a grading report's key fields.
 fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
-    // Girdle diameter in mm: explicit measurements win, else carat weight.
-    let d_mm = if let Some(m) = g.measurements_mm {
+    // Size: explicit measurements win, else carat weight.  With measurements,
+    // the minor axis W sets the radius and L/W the oval ratio (round if ~equal).
+    let (w_mm, oval_ratio) = if let Some(m) = g.measurements_mm {
         if m[0] <= 0.0 || m[1] <= 0.0 { return Err("measurements_mm must be positive".into()); }
-        (m[0] + m[1]) / 2.0
+        let (l, w) = if m[0] >= m[1] { (m[0], m[1]) } else { (m[1], m[0]) };
+        let ratio = if (l - w) / w > 0.02 { l / w } else { 1.0 };
+        (w, ratio)
     } else if let Some(ct) = g.carat {
         if ct <= 0.0 { return Err("carat must be positive".into()); }
-        (ct / 0.00355).cbrt()   // round brilliant: ct ~= 0.00355 * d_mm^3
+        ((ct / 0.00355).cbrt(), 1.0)   // round brilliant: ct ~= 0.00355 * d_mm^3
     } else {
         return Err("provide either carat or measurements_mm".into());
     };
     if g.scale_mm <= 0.0 { return Err("scale_mm must be positive".into()); }
-    let radius = 0.5 * d_mm * g.scale_mm;
+    let radius = 0.5 * w_mm * g.scale_mm;
+
+    // IGI-style crown/pavilion percentages are fractions of the MINOR axis;
+    // convert to facet angles via the (round-space) facet geometry.
+    let table_r = (g.table_pct / 100.0) * radius;
+    let crown_angle = match g.crown_pct {
+        Some(p) => (p / 100.0 * w_mm * g.scale_mm / (radius - table_r)).atan().to_degrees(),
+        None    => g.crown_angle,
+    };
+    let pavilion_angle = match g.pavilion_pct {
+        Some(p) => (p / 100.0 * w_mm * g.scale_mm / radius).atan().to_degrees(),
+        None    => g.pavilion_angle,
+    };
 
     let params = DiamondParams {
         table_pct:      g.table_pct,
-        crown_angle:    g.crown_angle,
-        pavilion_angle: g.pavilion_angle,
+        crown_angle,
+        pavilion_angle,
+        oval_ratio,
     };
 
-    // Cross-check the reported total depth against the angles (warning only).
+    // Cross-check the reported total depth against the facet heights (warning
+    // only; the reported depth includes the girdle, which we do not model).
     if let Some(depth) = g.depth_pct {
-        let table_r    = (params.table_pct / 100.0) * radius;
-        let crown_h    = (radius - table_r) * params.crown_angle.to_radians().tan();
-        let pavilion_h = radius * params.pavilion_angle.to_radians().tan();
+        let crown_h    = (radius - table_r) * crown_angle.to_radians().tan();
+        let pavilion_h = radius * pavilion_angle.to_radians().tan();
         let calc = (crown_h + pavilion_h) / (2.0 * radius) * 100.0;
-        if (calc - depth).abs() > 1.5 {
-            eprintln!("warning: gem '{}': reported depth {depth}% but angles give {calc:.1}%",
+        if (calc - depth).abs() > 6.0 {
+            eprintln!("warning: gem '{}': reported depth {depth}% but proportions give {calc:.1}% (girdle excluded)",
                       g.report);
         }
     }
@@ -587,10 +615,10 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                         Arc::new(Cone { center: p3(center), radius, height, mat }),
                     ShapeConfig::Disk { center, normal, radius } =>
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
-                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle } =>
+                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio } =>
                         Arc::new(Diamond::new(
                             p3(center), radius,
-                            DiamondParams { table_pct, crown_angle, pavilion_angle },
+                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio },
                             mat,
                         )),
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
@@ -826,7 +854,8 @@ center = [0,0,0]
         let h = build_gem(&g).unwrap();
         let bb = h.bounding_box().unwrap();
         let width = bb.max.x - bb.min.x;
-        let expected = 6.45 * 0.001 / (std::f32::consts::PI / 16.0).cos();
+        // minor axis W = 6.40 sets the radius; L/W = 1.016 < 2% -> round
+        let expected = 6.40 * 0.001 / (std::f32::consts::PI / 16.0).cos();
         assert!((width - expected).abs() < 1e-6, "width {width} vs expected {expected}");
     }
 
@@ -836,6 +865,51 @@ center = [0,0,0]
 center = [0,0,0]
 ");
         assert!(build_gem(&g).is_err());
+    }
+
+    #[test]
+    fn gem_oval_measurements_set_ratio_and_radius() {
+        // IGI LG625469749-style: 8.99 x 6.42 x 3.97 mm oval
+        let g = parse_gem("[[gems]]
+measurements_mm = [8.99, 6.42, 3.97]
+table_pct = 58.0
+center = [0,0,0]
+");
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        let wx = bb.max.x - bb.min.x;
+        let wz = bb.max.z - bb.min.z;
+        let circ = (std::f32::consts::PI / 16.0).cos();
+        // semi-minor r = 6.42/2 mm -> z width = 6.42*0.001/circ; x stretched by 8.99/6.42
+        assert!((wz - 6.42 * 0.001 / circ).abs() < 1e-6, "wz {wz}");
+        assert!((wx / wz - 8.99 / 6.42).abs() < 1e-4, "ratio {} vs {}", wx / wz, 8.99 / 6.42);
+    }
+
+    #[test]
+    fn gem_igi_percentages_convert_to_angles() {
+        // 16% crown / 41% pavilion of the 6.42 mm minor axis, table 58%:
+        // crown_h = 1.0272 mm over run (r - table_r) = 1.3482 mm -> 37.3 deg
+        // pavilion_h = 2.6322 mm over r = 3.21 mm -> 39.35 deg
+        let g = parse_gem("[[gems]]
+measurements_mm = [8.99, 6.42, 3.97]
+table_pct = 58.0
+crown_pct = 16.0
+pavilion_pct = 41.0
+center = [0,0,0]
+");
+        let r_mm = 6.42 / 2.0f32;
+        let table_r = 0.58 * r_mm;
+        let exp_crown = (0.16 * 6.42 / (r_mm - table_r)).atan().to_degrees();
+        let exp_pav   = (0.41 * 6.42 / r_mm).atan().to_degrees();
+        // build_gem doesn't expose params; rebuild the same math here and check
+        // the constructed diamond's bbox height matches crown_h + pavilion_h.
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        let h_mm = (bb.max.y - bb.min.y) / 0.001;
+        let exp_h = 0.16 * 6.42 + 0.41 * 6.42;
+        assert!((h_mm - exp_h).abs() < 0.02, "height {h_mm} mm vs expected {exp_h} mm");
+        assert!((exp_crown - 37.3).abs() < 0.2 && (exp_pav - 39.35).abs() < 0.2,
+                "angles {exp_crown} / {exp_pav}");
     }
 
     #[test]

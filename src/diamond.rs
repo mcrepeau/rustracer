@@ -21,11 +21,14 @@ pub struct DiamondParams {
     /// Pavilion main facet angle from the girdle plane, in degrees.
     /// GIA ideal: 40.6–41.0 °. Tolkowsky: 40.75 °.
     pub pavilion_angle: f32,
+    /// Girdle stretch along X (length / width).  1.0 = round brilliant;
+    /// e.g. 1.40 for an 8.99 x 6.42 mm oval.  `radius` is the semi-MINOR axis.
+    pub oval_ratio: f32,
 }
 
 impl Default for DiamondParams {
     fn default() -> Self {
-        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75 }
+        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0 }
     }
 }
 
@@ -52,14 +55,24 @@ pub struct Diamond {
 impl Diamond {
     pub fn new(center: Point3, radius: f32, params: DiamondParams, mat: Arc<dyn Material>) -> Self {
         let r          = radius;
+        let q          = params.oval_ratio.max(0.05);   // girdle stretch along X
         let table_r    = (params.table_pct / 100.0) * r;
         let crown_h    = (r - table_r) * params.crown_angle.to_radians().tan();
         let pavilion_h = r             * params.pavilion_angle.to_radians().tan();
 
         let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity(17);
 
+        // Push a facet plane given its ROUND-space unit normal `n` and a point
+        // `g` on it: the oval shape is the round shape scaled by S = diag(q,1,1),
+        // which maps plane (n, d) to (unit(S^-1 n), unit(S^-1 n) . (S g)).
+        let mut push_plane = |n: Vec3, g: Vec3| {
+            let nw = Vec3::new(n.x / q, n.y, n.z).unit();
+            let gw = Vec3::new(q * g.x, g.y, g.z);
+            planes.push((nw, nw.dot(gw)));
+        };
+
         // ── Table ──────────────────────────────────────────────────────────────
-        planes.push((Vec3::new(0.0, 1.0, 0.0), center.y + crown_h));
+        push_plane(Vec3::new(0.0, 1.0, 0.0), Vec3::new(center.x, center.y + crown_h, center.z));
 
         // ── Crown main facets (8, bezel facets) ───────────────────────────────
         // At azimuth θ = k · 45°.  The face runs from the girdle edge (r, 0) to
@@ -71,7 +84,7 @@ impl Diamond {
             let n = Vec3::new(c * crown_h, r - table_r, s * crown_h).unit();
             // Face passes through the girdle edge at this azimuth.
             let girdle_pt = Vec3::new(center.x + c * r, center.y, center.z + s * r);
-            planes.push((n, n.dot(girdle_pt)));
+            push_plane(n, girdle_pt);
         }
 
         // ── Pavilion main facets (8) ──────────────────────────────────────────
@@ -83,15 +96,15 @@ impl Diamond {
             let (s, c) = phi.sin_cos();
             let n = Vec3::new(c * pavilion_h, -r, s * pavilion_h).unit();
             let girdle_pt = Vec3::new(center.x + c * r, center.y, center.z + s * r);
-            planes.push((n, n.dot(girdle_pt)));
+            push_plane(n, girdle_pt);
         }
 
         // ── Bounding box ───────────────────────────────────────────────────────
         // Circumradius of the 16-gon girdle = r / cos(π/16) ≈ 1.020 r.
         let circ_r = r / (PI / 16.0_f32).cos();
         let bbox = Aabb::new(
-            center - Vec3::new(circ_r, pavilion_h, circ_r),
-            center + Vec3::new(circ_r, crown_h,    circ_r),
+            center - Vec3::new(circ_r * q, pavilion_h, circ_r),
+            center + Vec3::new(circ_r * q, crown_h,    circ_r),
         );
 
         Self { planes, bbox, mat, center, crown_h, pavilion_h }
