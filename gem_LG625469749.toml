@@ -42,7 +42,7 @@ enabled       = true
 gather_radius = 0.008
 num_photons   = 300000
 
-# --- Animation: 360-degree orbit around the stone (same mechanics as diamond.toml) ---
+# --- Animation: 360-degree orbit around the stone ([animation.orbit] mechanics) ---
 # Headless render writes one PNG per frame into the output dir:
 #   cargo run --release --features denoise -- --render --scene gem_LG625469749.toml --preset final --width 480 --height 300 --output frames
 # then assemble with the ffmpeg command printed after the last frame.

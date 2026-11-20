@@ -1,5 +1,5 @@
 # Benchmark scene for `rustracer --bench` (pass another file to bench that instead).
-# Stresses all major code paths at once: BVH traversal (127k-face OBJ mesh),
+# Stresses all major code paths at once: BVH traversal (tracked OBJ mesh),
 # spectral glass + photon-map caustics, area-light NEE, sun NEE, SSS volume.
 # Fixed content on purpose - edit only when you intend to change the baseline.
 
@@ -81,12 +81,13 @@ material = { type = "spectral_dielectric", ior = 1.6395, dispersion = 0.0309 }
 shape    = { type = "sphere", center = [-3.0, 1.2, 1.0], radius = 1.2 }
 material = { type = "sss", albedo = [0.90, 0.87, 0.82], sigma_a = [0.10, 0.08, 0.05], ior = 1.5, density = 0.85, g = 0.30 }
 
-# brushed-gold PBR mesh, 127 026 faces - BVH + GGX stress
+# brushed-gold PBR mesh (tracked basketball.obj, 1 400 faces) - BVH + GGX stress,
+# centred at (3, 1.2, 1) with radius 1.2
 [[objects]]
-shape     = { type = "mesh", path = "assets/water_glass.obj" }
+shape     = { type = "mesh", path = "assets/basketball.obj" }
 material  = { type = "pbr", albedo = [1.0, 0.78, 0.34], roughness = 0.25, metallic = 1.0 }
-scale     = 0.5387
-translate = [2.2509, 1.0856, 0.8167]
+scale     = 0.1043
+translate = [3.0, 0.0019, 1.0]
 
 [caustics]
 enabled       = true

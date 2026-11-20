@@ -9,14 +9,14 @@
 !examples/*.exr
 !examples/*.mp4
 
-# Local scene files
-diamond.toml
-
 # macOS
 .DS_Store
 
 # Claude Code session data
 .claude/
+
+# IDE
+.idea/
 
 # Miscellaneous
 path/

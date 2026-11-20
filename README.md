@@ -297,9 +297,8 @@ Frame files are `{slug}_{frame:04d}.png`. Use `--frames 1` for a single still (`
 ## Scenes shipped in the repo
 
 1. **`scene.toml`** — default demo: old wooden chair and basketball OBJ meshes with PBR textures (normal map on the basketball), concrete disk floor, sunset HDR env map, orbit animation.
-2. **`diamond.toml`** — round brilliant diamond under a Preetham sun sky with caustics and a turntable animation.
-3. **`gem_LG625469749.toml`** — your IGI-graded stone as an oval brilliant (`[[gems]]`), floating in a procedural studio light-tent HDR (`assets/studio_softbox.hdr`), caustics on.
-4. **`bench.toml`** — the `--bench` reference scene (room + blackbody panel + spectral-glass caustics + SSS + 127k-face mesh).
+2. **`gem_LG625469749.toml`** — your IGI-graded stone as an oval brilliant (`[[gems]]`), floating in a procedural studio light-tent HDR (`assets/studio_softbox.hdr`), caustics on.
+3. **`bench.toml`** — the `--bench` reference scene (room + blackbody panel + spectral-glass caustics + SSS + OBJ mesh).
 
 ## Implementation notes
 
