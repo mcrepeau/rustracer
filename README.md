@@ -30,7 +30,7 @@ cargo run --release -- --bench             # performance benchmark
 
 ```
 --scene <name>       random | cornell | nextweek | <path.toml>
---samples <n>        samples per pixel (default: scene maximum; unused with --adaptive)
+--samples <n>        samples per pixel (default: scene maximum; with --adaptive, the hard SPP cap)
 --width  <n>         output width  in pixels (default: 1200)
 --height <n>         output height in pixels (default: 800)
 --exposure <f>       exposure multiplier (default: 1.0)

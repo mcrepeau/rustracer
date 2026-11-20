@@ -183,7 +183,7 @@ fn print_help() {
     println!("RENDER OPTIONS:");
     println!("  --scene <name>       benchmark|0  random|1  cornell|2  nextweek|3  <path.toml>");
     println!("                       Default: random");
-    println!("  --samples <n>        Samples per pixel (default: scene maximum; unused with --adaptive)");
+    println!("  --samples <n>        Samples per pixel (default: scene maximum; with --adaptive, the hard SPP cap)");
     println!("  --width  <n>         Output width  in pixels (default: {WIDTH})");
     println!("  --height <n>         Output height in pixels (default: {HEIGHT})");
     println!("  --exposure <f>       Exposure multiplier     (default: 1.0)");
@@ -332,7 +332,10 @@ fn run_render(args: RenderArgs) {
         let t0 = Instant::now();
         let mut s = 0u32;
         loop {
-            if !adaptive && s >= samples_max { break; }
+            // Hard SPP cap in both modes. In adaptive mode this is --samples (or
+            // the scene default) even when the convergence target is not reached,
+            // so a few never-converging pixels cannot hang the render forever.
+            if s >= samples_max { break; }
 
             render_tiles(&mut scratch,
                          if adaptive { Some(adap_conv.as_slice()) } else { None },
@@ -370,6 +373,11 @@ fn run_render(args: RenderArgs) {
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             }
             if adaptive && target_reached { break; }
+        }
+        if adaptive && (n_converged as f32) < (n_px as f32) * convergence_pct / 100.0 {
+            let pct = n_converged as f32 * 100.0 / n_px.max(1) as f32;
+            println!("\n  Warning: {:.1}% convergence target not reached — stopped at the {samples_max}-spp cap ({pct:.1}% converged).",
+                     convergence_pct);
         }
         let actual_spp        = s;
         let pixel_samples_opt = if adaptive { Some(pixel_samples) } else { None };
@@ -465,6 +473,10 @@ fn accumulate_sample(
         accumulator.par_iter_mut()
             .zip(scratch.par_iter())
             .for_each(|(a, &sc)| {
+                // Drop non-finite samples entirely (no accumulate, no count):
+                // an inf/NaN sample would otherwise poison the running mean and,
+                // via the firefly clamp (inf * 0 = NaN), the accumulator forever.
+                if !sc.x.is_finite() || !sc.y.is_finite() || !sc.z.is_finite() { return; }
                 let old_mean = if cur_sample > 0 { luminance(*a) / cur_sample as f32 } else { 0.0 };
                 let sc = if cur_sample >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
                     let ratio = luminance(sc) / old_mean;
@@ -480,6 +492,8 @@ fn accumulate_sample(
             .zip(adap_conv.par_iter())
             .for_each(|((((a, &sc), m2), n), &conv)| {
                 if conv { return; }
+                // Drop non-finite samples entirely — see the non-adaptive branch above.
+                if !sc.x.is_finite() || !sc.y.is_finite() || !sc.z.is_finite() { return; }
                 let old_n    = *n;
                 let old_mean = if old_n > 0 { luminance(*a) / old_n as f32 } else { 0.0 };
                 let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
