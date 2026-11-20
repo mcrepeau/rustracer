@@ -2,30 +2,54 @@
 # laboratory-grown (CVD, Type IIa) OVAL BRILLIANT, 1.50 ct, color E, VVS2,
 # 8.99 x 6.42 x 3.97 mm, table 58%, crown 16% / pavilion 41% of minor axis,
 # depth 61.8%, girdle medium-to-slightly-thick pointed, polish/symmetry Excellent.
+#
+# Staging: the stone floats ~15 mm above the floor (invisible mount, as in a
+# jewelry display), lit by four softbox panels like a store lightbox:
+# one big key panel overhead, two angled side panels, one rim panel behind.
 name = "LG625469749 oval diamond"
 max_samples = 512
 
 [camera]
-look_from  = [0.030, 0.022, -0.070]
-look_at    = [0.0, 0.0025, 0.0]
+look_from  = [0.035, 0.032, -0.075]
+look_at    = [0.0, 0.017, 0.0]
 vfov       = 30.0
 aperture   = 0.0
-focus_dist = 0.077
+focus_dist = 0.085
 move_speed = 0.2
 
 [background]
 type  = "solid"
-color = [0.003, 0.003, 0.006]
+color = [0.002, 0.002, 0.005]
 
 [[objects]]
 shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
-material = { type = "pbr", albedo = [0.05, 0.05, 0.06], roughness = 0.3, metallic = 0.0 }
+material = { type = "pbr", albedo = [0.04, 0.04, 0.05], roughness = 0.25, metallic = 0.0 }
 
-[[lights]]
-corner = [-0.03, 0.10, -0.05]
-u      = [0.06, 0.0, 0.0]
-v      = [0.0, 0.0, 0.06]
-color  = [10.0, 10.0, 10.0]
+# ── Softbox panels (jewelry-store style) ─────────────────────────────────────
+# First entry is also the photon-map (caustics) source.
+[[lights]]                                     # key: big panel overhead
+corner = [-0.05, 0.13, -0.05]
+u      = [0.10, 0.0, 0.0]
+v      = [0.0, 0.0, 0.10]
+color  = [14.0, 14.0, 14.0]
+
+[[lights]]                                     # left side, angled in
+corner = [-0.13, 0.015, -0.05]
+u      = [0.0, 0.09, 0.0]
+v      = [0.03, 0.0, 0.10]
+color  = [7.0, 7.5, 8.5]
+
+[[lights]]                                     # right side, angled in
+corner = [0.13, 0.02, -0.06]
+u      = [0.0, 0.08, 0.0]
+v      = [-0.03, 0.0, 0.10]
+color  = [8.5, 7.5, 7.0]
+
+[[lights]]                                     # rim/back panel, slightly high
+corner = [-0.045, 0.11, 0.11]
+u      = [0.09, 0.0, 0.0]
+v      = [0.0, -0.03, 0.09]
+color  = [5.0, 6.0, 8.0]
 
 [[gems]]
 report          = "LG625469749 (IGI 2024-03-09, lab-grown CVD Type IIa)"
@@ -36,7 +60,7 @@ crown_pct       = 16.0                 # % of minor axis -> ~37.3 deg
 pavilion_pct    = 41.0                 # % of minor axis -> ~39.3 deg
 depth_pct       = 61.8
 color_grade     = "E"
-center          = [0.0, 0.00264, 0.0]  # girdle centre: pavilion depth 2.63 mm rests on floor
+center          = [0.0, 0.0176, 0.0]   # girdle centre: pavilion (2.63 mm) + 15 mm air gap
 scale_mm        = 0.001                # mm -> metres
 
 [caustics]
