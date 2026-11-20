@@ -18,7 +18,9 @@ pub struct UniformScale {
 
 impl UniformScale {
     pub fn new(object: Arc<dyn Hittable>, factor: f32) -> Self {
-        debug_assert!(factor > 0.0, "UniformScale factor must be positive; negative scale flips normals");
+        // Hard assert (not debug_assert): in release, factor <= 0 gives NaN rays and
+        // an inverted AABB, silently breaking every hit on the object.
+        assert!(factor > 0.0, "UniformScale factor must be positive; negative scale flips normals");
         Self { object, factor }
     }
 }

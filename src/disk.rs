@@ -111,6 +111,7 @@ pub struct Disk {
 
 impl Disk {
     pub fn new(center: Point3, normal: Vec3, radius: f32, mat: Arc<dyn Material>) -> Self {
+        assert!(normal.length_squared() > 1e-12, "Disk::new: zero normal would give NaN hits");
         let n = normal.unit();
         let (u_axis, v_axis) = n.onb();
         Self { center, normal: n, radius, mat, u_axis, v_axis }
@@ -120,7 +121,7 @@ impl Disk {
 impl Hittable for Disk {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let denom = self.normal.dot(r.direction);
-        if denom.abs() < 1e-8 { return None; }
+        if !(denom.abs() >= 1e-8) { return None; } // NaN-safe: NaN fails the >=, so we return None
         let t = self.normal.dot(self.center - r.origin) / denom;
         if t < t_min || t > t_max { return None; }
         let p   = r.at(t);
@@ -136,7 +137,7 @@ impl Hittable for Disk {
     fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
         // Occlusion test: stop after the t and radius checks, skip the HitRecord.
         let denom = self.normal.dot(r.direction);
-        if denom.abs() < 1e-8 { return false; }
+        if !(denom.abs() >= 1e-8) { return false; } // NaN-safe — see hit()
         let t = self.normal.dot(self.center - r.origin) / denom;
         if t < t_min || t > t_max { return false; }
         let off = r.at(t) - self.center;

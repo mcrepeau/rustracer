@@ -635,7 +635,9 @@ impl PbrMaterial {
                 let ng   = rec.normal;
                 let t    = rec.tangent;
                 let b    = ng.cross(t);
-                return (t * ts_n.x + b * ts_n.y + ng * ts_n.z).unit();
+                let perturbed = t * ts_n.x + b * ts_n.y + ng * ts_n.z;
+                // A texel of (0.5, 0.5, 0.5) maps to a zero tangent-space normal → 0/0 NaN.
+                return if perturbed.length_squared() > 1e-12 { perturbed.unit() } else { rec.normal };
             }
         }
         rec.normal

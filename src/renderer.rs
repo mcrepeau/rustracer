@@ -272,7 +272,7 @@ fn preetham_sky(dir: Vec3, sun_dir: Vec3, turbidity: f32) -> Color {
 // ── Sun sampling helpers ──────────────────────────────────────────────────────
 
 /// Uniform solid-angle PDF for the solar disc cone; returns 0 outside the disc.
-/// The disc half-angle matches the `cos_gamma > 0.9997` threshold in preetham_sky.
+/// The disc half-angle matches the `cos_gamma > COS_SUN_MAX` (0.9999892) threshold in preetham_sky.
 fn sun_pdf_value(dir: Vec3, background: &Background) -> f32 {
     use std::f32::consts::PI;
     if let Background::Physical { sun_dir, .. } = background {
@@ -472,6 +472,10 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                     let scattered = Ray::scatter_from(rec.p, ind_dir, &ray);
                     let scat_pdf  = rec.mat.scattering_pdf(&ray, &rec, &scattered);
                     if scat_pdf <= 0.0 { break; }
+                    // A normal-mapped shading normal can tilt the cosine sample below the
+                    // geometric surface; such a ray would start under the surface and leak
+                    // through — absorb it instead.
+                    if ind_dir.dot(rec.normal) <= 0.0 { break; }
 
                     // Sum of SQUARES of every NEE strategy's pdf (power heuristic β=2
                     // over multiple techniques) — NOT the square of the sum — so that

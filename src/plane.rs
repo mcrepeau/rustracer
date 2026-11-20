@@ -29,6 +29,7 @@ impl InfinitePlane {
         wave_scale:     f32,
         mat:            Arc<dyn Material>,
     ) -> Self {
+        assert!(normal.length_squared() > 1e-12, "InfinitePlane::new: zero normal would give NaN hits");
         let n = normal.unit();
         let (u_axis, v_axis) = n.onb();
         Self { point, normal: n, wave_amplitude, wave_scale, mat, u_axis, v_axis }
@@ -38,7 +39,7 @@ impl InfinitePlane {
 impl Hittable for InfinitePlane {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let denom = self.normal.dot(r.direction);
-        if denom.abs() < 1e-8 { return None; }
+        if !(denom.abs() >= 1e-8) { return None; } // NaN-safe: NaN fails the >=, so we return None
         let t = self.normal.dot(self.point - r.origin) / denom;
         if t < t_min || t > t_max { return None; }
         let p   = r.at(t);
@@ -77,7 +78,7 @@ impl Hittable for InfinitePlane {
     fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
         // Occlusion test: skip the wave-bump normal and UV computation entirely.
         let denom = self.normal.dot(r.direction);
-        if denom.abs() < 1e-8 { return false; }
+        if !(denom.abs() >= 1e-8) { return false; } // NaN-safe — see hit()
         let t = self.normal.dot(self.point - r.origin) / denom;
         t >= t_min && t <= t_max
     }

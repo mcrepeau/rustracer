@@ -323,9 +323,9 @@ fn run_render(args: RenderArgs) {
         // ── Reset per-frame state ─────────────────────────────────────────────
         accumulator.iter_mut().for_each(|c| *c = Color::default());
         scratch.iter_mut().for_each(|c| *c = Color::default());
-        let mut pixel_samples = if adaptive { vec![0u32;   n_px] } else { Vec::new() };
-        let mut var_m2    = if adaptive { vec![Color::default(); n_px] } else { Vec::new() };
-        let mut adap_conv     = if adaptive { vec![false;  n_px] } else { Vec::new() };
+        let mut pixel_samples = vec![0u32; n_px];
+        let mut var_m2        = vec![Color::default(); n_px];
+        let mut adap_conv     = vec![false; n_px];
         let mut n_converged   = 0usize;
 
         // ── Render loop ───────────────────────────────────────────────────────
@@ -349,7 +349,7 @@ fn run_render(args: RenderArgs) {
                          scene.world.as_ref(), &scene.background,
                          &scene.lights, 1.0, scene.photon_map.as_deref(), frame_time);
 
-            accumulate_sample(&mut accumulator, &scratch, s,
+            accumulate_sample(&mut accumulator, &scratch,
                               &mut pixel_samples, &mut var_m2, &adap_conv);
             s += 1;
 
@@ -386,7 +386,7 @@ fn run_render(args: RenderArgs) {
                      convergence_pct);
         }
         let actual_spp        = s;
-        let pixel_samples_opt = if adaptive { Some(pixel_samples) } else { None };
+        let pixel_samples_opt = Some(pixel_samples);
 
         let elapsed = t0.elapsed();
         println!("\n\n  Rendered in {:.2}s  ({:.1} ms/spp)\n",
@@ -465,57 +465,42 @@ fn run_render(args: RenderArgs) {
 fn luminance(c: Color) -> f32 { c.luminance() }
 
 /// Accumulates one rendered sample into the accumulator with firefly clamping.
-/// When `pixel_samples` is non-empty, per-pixel adaptive bookkeeping is updated;
-/// otherwise the global `cur_sample` count is used for the clamp threshold.
+/// Per-pixel sample counts are always tracked; `adap_conv` is all-false when
+/// adaptive sampling is off, so converged-pixel skipping is a no-op there.
 fn accumulate_sample(
     accumulator:   &mut [Color],
     scratch:       &[Color],
-    cur_sample:    u32,
     pixel_samples: &mut [u32],
-    var_m2:    &mut [Color],
+    var_m2:        &mut [Color],
     adap_conv:     &[bool],
 ) {
-    if pixel_samples.is_empty() {
-        accumulator.par_iter_mut()
-            .zip(scratch.par_iter())
-            .for_each(|(a, &sc)| {
-                // Drop non-finite samples entirely (no accumulate, no count):
-                // an inf/NaN sample would otherwise poison the running mean and,
-                // via the firefly clamp (inf * 0 = NaN), the accumulator forever.
-                if !sc.x.is_finite() || !sc.y.is_finite() || !sc.z.is_finite() { return; }
-                let old_mean = if cur_sample > 0 { luminance(*a) / cur_sample as f32 } else { 0.0 };
-                let sc = if cur_sample >= FIREFLY_MIN_SAMPLES && old_mean > 1e-6 {
-                    let ratio = luminance(sc) / old_mean;
-                    if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
-                } else { sc };
-                *a += sc;
-            });
-    } else {
-        accumulator.par_iter_mut()
-            .zip(scratch.par_iter())
-            .zip(var_m2.par_iter_mut())
-            .zip(pixel_samples.par_iter_mut())
-            .zip(adap_conv.par_iter())
-            .for_each(|((((a, &sc), m2), n), &conv)| {
-                if conv { return; }
-                // Drop non-finite samples entirely — see the non-adaptive branch above.
-                if !sc.x.is_finite() || !sc.y.is_finite() || !sc.z.is_finite() { return; }
-                let old_n    = *n;
-                let old_mean = if old_n > 0 { *a / old_n as f32 } else { Color::default() };
-                // Firefly clamp still keys on luminance (a chromatic spike is still a spike).
-                let old_lum  = luminance(old_mean);
-                let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_lum > 1e-6 {
-                    let ratio = luminance(sc) / old_lum;
-                    if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
-                } else { sc };
-                *a  += sc;
-                *n  += 1;
-                // Per-channel Welford update: variance is tracked for R, G, B
-                // independently so chromatic noise is visible to mark_converged.
-                let new_mean = *a / *n as f32;
-                *m2 += (sc - old_mean) * (sc - new_mean);
-            });
-    }
+    accumulator.par_iter_mut()
+        .zip(scratch.par_iter())
+        .zip(pixel_samples.par_iter_mut())
+        .zip(var_m2.par_iter_mut())
+        .zip(adap_conv.par_iter())
+        .for_each(|((((a, &sc), n), m2), &conv)| {
+            if conv { return; }
+            // Drop non-finite samples entirely (no accumulate, no count): an inf/NaN
+            // sample would otherwise poison the running mean and, via the firefly
+            // clamp (inf * 0 = NaN), the accumulator forever. Because `n` counts only
+            // finite samples, the clamp divisor stays exact even when drops occur.
+            if !sc.x.is_finite() || !sc.y.is_finite() || !sc.z.is_finite() { return; }
+            let old_n    = *n;
+            let old_mean = if old_n > 0 { *a / old_n as f32 } else { Color::default() };
+            // Firefly clamp keys on luminance (a chromatic spike is still a spike).
+            let old_lum  = luminance(old_mean);
+            let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_lum > 1e-6 {
+                let ratio = luminance(sc) / old_lum;
+                if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
+            } else { sc };
+            *a  += sc;
+            *n  += 1;
+            // Per-channel Welford update: variance is tracked for R, G, B
+            // independently so chromatic noise is visible to mark_converged.
+            let new_mean = *a / *n as f32;
+            *m2 += (sc - old_mean) * (sc - new_mean);
+        });
 }
 
 /// Updates per-pixel convergence flags and returns the count of converged pixels.
@@ -531,6 +516,9 @@ fn mark_converged(
         .zip(accumulator.par_iter())
         .for_each(|(((conv, &n), &m2), &acc)| {
             if *conv { return; }
+            // n == 0 means every sample was dropped as non-finite — leave it
+            // unconverged rather than freezing the pixel as black.
+            if n == 0 { return; }
             // Per-channel relative standard error: a pixel is converged only when
             // EVERY non-dark channel is below the threshold. Channels with
             // mean < 1e-4 are exempt, so a pixel whose luminance is dark but that
@@ -709,9 +697,9 @@ fn main() {
     let mut adaptive_on         = false;
     let     min_adaptive_samples: u32 = 128;
     let mut photon_map_on  = true;
-    let mut pixel_samples: Vec<u32>   = Vec::new(); // allocated only when adaptive_on
-    let mut var_m2:   Vec<Color>    = Vec::new();
-    let mut adap_conv:    Vec<bool>   = Vec::new();
+    let mut pixel_samples: Vec<u32>   = vec![0; (WIDTH * HEIGHT) as usize];
+    let mut var_m2:   Vec<Color>    = vec![Color::default(); (WIDTH * HEIGHT) as usize];
+    let mut adap_conv:    Vec<bool>   = vec![false; (WIDTH * HEIGHT) as usize];
     let mut n_converged   = 0usize;
     let mut pressed           = std::collections::HashSet::<VirtualKeyCode>::new();
     let mut exposure          = 1.0f32;
@@ -770,12 +758,10 @@ fn main() {
                         let n = (win_w * win_h) as usize;
                         accumulator.clear();  accumulator.resize(n, Color::default());
                         scratch.clear();      scratch.resize(n, Color::default());
-                        if adaptive_on {
-                            pixel_samples.clear(); pixel_samples.resize(n, 0);
-                            var_m2.clear();    var_m2.resize(n, Color::default());
-                            adap_conv.clear();     adap_conv.resize(n, false);
-                            n_converged = 0;
-                        }
+                        pixel_samples.clear(); pixel_samples.resize(n, 0);
+                        var_m2.clear();    var_m2.resize(n, Color::default());
+                        adap_conv.clear();     adap_conv.resize(n, false);
+                        n_converged = 0;
                         samples = 0;
                         cam_dirty = true;
                     }
@@ -833,13 +819,13 @@ fn main() {
                                                 .collect();
                                             save_png(&blended, 1, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, Some(samples), None);
                                         } else {
-                                            let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                                            let ps = Some(pixel_samples.as_slice());
                                             save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                         }
                                     }
                                     #[cfg(not(feature = "denoise"))]
                                     {
-                                        let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                                        let ps = Some(pixel_samples.as_slice());
                                         save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
                                     }
                                 }
@@ -911,7 +897,7 @@ fn main() {
                                     oidn_on = !oidn_on;
                                     if oidn_on {
                                         if samples > 0 && !denoise_running.load(Ordering::Acquire) {
-                                            let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                                            let ps = Some(pixel_samples.as_slice());
                                             spawn_denoiser(win_w, win_h, &accumulator, samples, ps,
                                                 &aux_albedo, &aux_normal,
                                                 &denoised, &denoise_running, &denoise_epoch);
@@ -949,17 +935,7 @@ fn main() {
                                 VirtualKeyCode::Slash => { print_controls(); }
                                 VirtualKeyCode::V => {
                                     adaptive_on = !adaptive_on;
-                                    if adaptive_on {
-                                        let n = (win_w * win_h) as usize;
-                                        pixel_samples = vec![0u32;   n];
-                                        var_m2    = vec![Color::default(); n];
-                                        adap_conv     = vec![false;  n];
-                                    } else {
-                                        pixel_samples = Vec::new();
-                                        var_m2    = Vec::new();
-                                        adap_conv     = Vec::new();
-                                        n_converged   = 0;
-                                    }
+                                    n_converged = 0;
                                     reset_accum!();
                                     window.request_redraw();
                                 }
@@ -1073,7 +1049,7 @@ fn main() {
                                  scene.world.as_ref(), &scene.background, &scene.lights, bg_scale,
                                  pm, None);
 
-                    accumulate_sample(&mut accumulator, &scratch, samples,
+                    accumulate_sample(&mut accumulator, &scratch,
                                       &mut pixel_samples, &mut var_m2, &adap_conv);
                     samples += 1;
 
@@ -1093,7 +1069,7 @@ fn main() {
 
                     #[cfg(feature = "denoise")]
                     if oidn_on && samples % 32 == 0 && !denoise_running.load(Ordering::Acquire) {
-                        let ps = if adaptive_on { Some(pixel_samples.as_slice()) } else { None };
+                        let ps = Some(pixel_samples.as_slice());
                         spawn_denoiser(win_w, win_h, &accumulator, samples, ps,
                             &aux_albedo, &aux_normal,
                             &denoised, &denoise_running, &denoise_epoch);

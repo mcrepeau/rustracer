@@ -44,7 +44,7 @@ impl Hittable for Sphere {
         let center = self.center_at(r.time);
         let oc = r.origin - center;
         let a = r.direction.length_squared();
-        if a == 0.0 { return None; } // zero-length direction: roots would be NaN, and NaN passes the range check
+        if !(a > 0.0) { return None; } // zero OR NaN direction: roots would be NaN, and NaN passes the range check
         let half_b = oc.dot(r.direction);
         let c = oc.length_squared() - self.radius * self.radius;
         let disc = half_b * half_b - a * c;
@@ -68,7 +68,7 @@ impl Hittable for Sphere {
         let center = self.center_at(r.time);
         let oc     = r.origin - center;
         let a      = r.direction.length_squared();
-        if a == 0.0 { return false; } // zero-length direction — see hit()
+        if !(a > 0.0) { return false; } // zero or NaN direction — see hit()
         let half_b = oc.dot(r.direction);
         let c      = oc.length_squared() - self.radius * self.radius;
         let disc   = half_b * half_b - a * c;

@@ -22,8 +22,10 @@ impl Quad {
         let n      = u.cross(v);
         let area   = n.length();
         // Fail fast at scene construction: a degenerate quad would give a NaN
-        // normal (n / 0) that silently poisons every hit on it.
-        assert!(area > 1e-12, "Quad::new: degenerate quad — u and v are parallel or zero (cross length {area})");
+        // normal (n / 0) that silently poisons every hit on it. Relative threshold
+        // so legitimately tiny quads in small-scale scenes don't panic.
+        assert!(area > 1e-6 * u.length() * v.length(),
+            "Quad::new: degenerate quad — u and v are parallel or zero (cross length {area})");
         let normal = n / area;      // unit normal
         let d      = normal.dot(q);
         let w      = n / n.dot(n);
@@ -34,7 +36,7 @@ impl Quad {
 impl Hittable for Quad {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let denom = self.normal.dot(r.direction);
-        if denom.abs() < 1e-8 { return None; }
+        if !(denom.abs() >= 1e-8) { return None; } // NaN-safe: NaN fails the >=, so we return None
 
         let t = (self.d - self.normal.dot(r.origin)) / denom;
         if t < t_min || t > t_max { return None; }
@@ -56,7 +58,7 @@ impl Hittable for Quad {
 
     fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
         let denom = self.normal.dot(r.direction);
-        if denom.abs() < 1e-8 { return false; }
+        if !(denom.abs() >= 1e-8) { return false; } // NaN-safe — see hit()
         let t = (self.d - self.normal.dot(r.origin)) / denom;
         if t < t_min || t > t_max { return false; }
         let p      = r.at(t);

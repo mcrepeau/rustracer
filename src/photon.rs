@@ -49,21 +49,32 @@ impl PhotonMap {
         let up          = if sun_down.x.abs() < 0.999 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
         let t           = sun_down.cross(up).unit();
         let b           = sun_down.cross(t);
-        // Size the emission disk to the scene instead of a hardcoded radius: centre it
-        // on the scene AABB and give it the AABB bounding-sphere radius (pushed out
-        // along the sun direction), which provably covers the scene's projection.
-        // The old fixed disk (centre sun_dir*30, R=20) could miss most geometry in
-        // large scenes, leaving the photon map nearly empty.
+        // Size the emission disk to the scene: centre it on the scene AABB (pushed out
+        // along the sun direction) with the AABB bounding-sphere radius, which provably
+        // covers the scene's projection onto the disk plane. Two guards keep the disk
+        // from becoming huge in scenes with proxy geometry: the AABB is clipped to
+        // ±SCENE_CLIP per axis (InfinitePlane reports ±1e5), and the radius is capped
+        // at DISK_R_MAX (an infinite-plane scene's AABB is all proxy, so its raw radius
+        // would waste ~every photon and leave the caustic map empty). The cap covers
+        // the central ~2·DISK_R_MAX region; wider scenes get partial coverage.
+        const SCENE_CLIP: f32 = 1.0e3;
+        const DISK_R_MAX: f32 = 50.0;
         let (disk_center, disk_r) = match world.bounding_box() {
             Some(bb) => {
-                let c = (bb.min + bb.max) * 0.5;
-                let r = (bb.max - bb.min).length() * 0.5;
+                let clip = |v: f32| v.clamp(-SCENE_CLIP, SCENE_CLIP);
+                let min = Vec3::new(clip(bb.min.x), clip(bb.min.y), clip(bb.min.z));
+                let max = Vec3::new(clip(bb.max.x), clip(bb.max.y), clip(bb.max.z));
+                let c = (min + max) * 0.5;
+                let r = ((max - min).length() * 0.5).min(DISK_R_MAX);
                 (c + sun_dir.unit() * r, r.max(1.0))
             }
             None => (sun_dir.unit() * 30.0, DISK_R), // no bounds: old fallback
         };
         let disk_area   = PI * disk_r * disk_r;
         let power       = sun_color * (disk_area / (num_photons as f32 * PI));
+        // Scale the storage luminance clamp with the per-photon mean power so it
+        // stays proportional to the sun at any disk size (15.0 was tuned for R=20).
+        let lum_clamp   = 15.0 * disk_area / (PI * DISK_R * DISK_R);
 
         let mut photons: Vec<KdPhoton> = (0..num_photons)
             .into_par_iter()
@@ -74,7 +85,7 @@ impl PhotonMap {
                 let r   = disk_r * rng.gen::<f32>().sqrt();
                 let phi = 2.0 * PI * rng.gen::<f32>();
                 let origin = disk_center + t * (r * phi.cos()) + b * (r * phi.sin());
-                trace_photon(world, origin, sun_down, power, &mut rng)
+                trace_photon(world, origin, sun_down, lum_clamp, power, &mut rng)
             })
             .collect();
 
@@ -115,7 +126,7 @@ impl PhotonMap {
                 let dir = sin_theta * phi.cos() * t_axis
                         + sin_theta * phi.sin() * b_axis
                         + cos_theta * normal;
-                trace_photon(world, origin, dir, power, &mut rng)
+                trace_photon(world, origin, dir, 15.0, power, &mut rng)
             })
             .collect();
 
@@ -220,9 +231,10 @@ fn kd_gather(nodes: &[KdPhoton], pos: &[f32; 3], r2: f32, normal: &[f32; 3], acc
 // ── photon tracing ────────────────────────────────────────────────────────────
 
 fn trace_photon(
-    world:  &dyn Hittable,
-    origin: Point3,
-    dir:    Vec3,
+    world:     &dyn Hittable,
+    origin:    Point3,
+    dir:       Vec3,
+    lum_clamp: f32,
     power:  Color,
     rng:    &mut SmallRng,
 ) -> Option<KdPhoton> {
@@ -250,7 +262,7 @@ fn trace_photon(
             if spec_depth > 0 && rec.mat.can_receive_caustics() {
                 // Clamp spectral spikes once at storage, not per bounce.
                 let lum = power.luminance();
-                if lum > 15.0 { power *= 15.0 / lum; }
+                if lum > lum_clamp { power *= lum_clamp / lum; }
                 let nor = rec.normal;
                 return Some(KdPhoton {
                     pos:   [rec.p.x, rec.p.y, rec.p.z],
