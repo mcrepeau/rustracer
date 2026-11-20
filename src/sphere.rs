@@ -40,6 +40,14 @@ impl Sphere {
 }
 
 impl Hittable for Sphere {
+    fn light_area(&self) -> f32 {
+        if self.mat.is_emissive() {
+            4.0 * std::f32::consts::PI * self.radius * self.radius
+        } else {
+            0.0
+        }
+    }
+
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let center = self.center_at(r.time);
         let oc = r.origin - center;

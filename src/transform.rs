@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use rand::RngCore;
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::ray::Ray;
@@ -53,6 +54,19 @@ impl Hittable for UniformScale {
         self.object.transmittance(&scaled, t_min, t_max).powf(self.factor)
     }
 
+    fn light_area(&self) -> f32 { self.object.light_area() * self.factor * self.factor }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3, time: f32) -> f32 {
+        // Solid angle is invariant under uniform scale when the origin scales too:
+        // dist^2/(cos*area) is unchanged, and CDF weights keep their ratios.
+        self.object.pdf_value((1.0 / self.factor) * origin, dir, time)
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, time: f32) -> Vec3 {
+        // World direction to a scaled sample point equals the local direction.
+        self.object.pdf_generate((1.0 / self.factor) * origin, rng, time)
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         self.object.bounding_box().map(|bb| {
             Aabb::new(self.factor * bb.min, self.factor * bb.max)
@@ -90,6 +104,16 @@ impl Hittable for Translate {
     fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
         let moved = Ray::scatter_from(r.origin - self.offset, r.direction, r);
         self.object.transmittance(&moved, t_min, t_max)
+    }
+
+    fn light_area(&self) -> f32 { self.object.light_area() }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3, time: f32) -> f32 {
+        self.object.pdf_value(origin - self.offset, dir, time)
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, time: f32) -> Vec3 {
+        self.object.pdf_generate(origin - self.offset, rng, time)
     }
 
     fn bounding_box(&self) -> Option<Aabb> {
@@ -193,6 +217,18 @@ impl Hittable for Rotate {
             r,
         );
         self.object.transmittance(&rotated, t_min, t_max)
+    }
+
+    fn light_area(&self) -> f32 { self.object.light_area() }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3, time: f32) -> f32 {
+        // Rotation preserves solid angles; map origin/dir into object space.
+        self.object.pdf_value(mat_apply_t(&self.fwd, origin), mat_apply_t(&self.fwd, dir), time)
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, time: f32) -> Vec3 {
+        let d_local = self.object.pdf_generate(mat_apply_t(&self.fwd, origin), rng, time);
+        mat_apply(&self.fwd, d_local)
     }
 
     fn bounding_box(&self) -> Option<Aabb> { self.bbox }

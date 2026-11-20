@@ -1,7 +1,9 @@
 use std::sync::Arc;
+use rand::{Rng, RngCore};
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable, HittableList};
 use crate::ray::Ray;
+use crate::vec3::{Point3, Vec3};
 
 const NUM_BUCKETS: usize = 12;
 
@@ -33,6 +35,10 @@ pub struct BvhTree {
     nodes:   Vec<QbvhNode>,
     objects: Vec<Arc<dyn Hittable>>,
     bbox:    Aabb,
+    /// Prefix sums of `light_area()` over `objects` (in leaf order): the CDF used
+    /// to pick an emissive leaf with probability proportional to its area.
+    light_prefix: Vec<f32>,
+    light_total:  f32,
 }
 
 fn surface_area(b: &Aabb) -> f32 {
@@ -203,7 +209,76 @@ impl BvhTree {
             bboxes[0] = boxes[0];
             nodes.push(QbvhNode::from_children(children, &bboxes));
         }
-        Self { nodes, objects, bbox }
+        let mut light_prefix = Vec::with_capacity(objects.len());
+        let mut acc = 0.0f32;
+        for o in &objects {
+            acc += o.light_area();
+            light_prefix.push(acc);
+        }
+        Self { nodes, objects, bbox, light_prefix, light_total: acc }
+    }
+
+    /// Like hit(), but also returns the leaf index of the closest hit
+    /// (needed by pdf_value to look up the leaf's light-CDF weight).
+    pub(crate) fn hit_index(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<(HitRecord<'_>, usize)> {
+        if self.nodes.is_empty() { return None; }
+
+        // Inline stack for the common case — zero heap allocation per ray (a plain
+        // Vec here measurably slowed every ray down). A degenerate SAH split can in
+        // principle produce a tree deeper than any fixed array, so overflow spills
+        // into a lazily-allocated Vec instead of panicking (the original fixed
+        // [i32; 128] + debug_assert! was an index-out-of-bounds panic in release).
+        let mut stack = [0i32; 128];
+        let mut top = 1usize;
+        let mut overflow: Vec<i32> = Vec::new();
+        let mut best: Option<(HitRecord<'_>, usize)> = None;
+        let mut closest = t_max;
+
+        let ro = [r.origin.x,  r.origin.y,  r.origin.z];
+        let id = [r.inv_dir.x, r.inv_dir.y, r.inv_dir.z];
+
+        while top > 0 || !overflow.is_empty() {
+            let entry = if top > 0 { top -= 1; stack[top] } else { overflow.pop().unwrap() };
+            if entry < 0 {
+                let prim_idx = (-entry - 1) as usize;
+                if let Some(rec) = self.objects[prim_idx].hit(r, t_min, closest) {
+                    closest = rec.t;
+                    best    = Some((rec, prim_idx));
+                }
+                continue;
+            }
+
+            let node = &self.nodes[entry as usize];
+
+            // N-wide AABB test: compile-time selected SIMD path.
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+            let (mask, t_near) = unsafe { test_children_avx2(node, ro, id, t_min, closest) };
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            let (mask, t_near) = unsafe { test_children_sse(node, ro, id, t_min, closest) };
+            #[cfg(target_arch = "aarch64")]
+            let (mask, t_near) = unsafe { test_children_neon(node, ro, id, t_min, closest) };
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            let (mask, t_near) = test_children_scalar(node, ro, id, t_min, closest);
+
+            if mask == 0 { continue; }
+
+            // Collect hits sorted far-to-near so nearest is popped first.
+            let mut hits   = [(f32::INFINITY, i32::MIN); QBVH_WIDTH];
+            let mut n_hits = 0usize;
+            for c in 0..QBVH_WIDTH {
+                if mask & (1 << c) != 0 {
+                    hits[n_hits] = (t_near[c], node.children[c]);
+                    n_hits += 1;
+                }
+            }
+            hits[..n_hits].sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+
+            for &(_, child) in &hits[..n_hits] {
+                if top < stack.len() { stack[top] = child; top += 1; } else { overflow.push(child); }
+            }
+        }
+
+        best
     }
 
     fn build(
@@ -394,64 +469,7 @@ fn test_children_scalar(
 impl Hittable for BvhTree {
     #[allow(clippy::needless_range_loop)]
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
-        if self.nodes.is_empty() { return None; }
-
-        // Inline stack for the common case — zero heap allocation per ray (a plain
-        // Vec here measurably slowed every ray down). A degenerate SAH split can in
-        // principle produce a tree deeper than any fixed array, so overflow spills
-        // into a lazily-allocated Vec instead of panicking (the original fixed
-        // [i32; 128] + debug_assert! was an index-out-of-bounds panic in release).
-        let mut stack = [0i32; 128];
-        let mut top = 1usize;
-        let mut overflow: Vec<i32> = Vec::new();
-        let mut best: Option<HitRecord<'_>> = None;
-        let mut closest = t_max;
-
-        let ro = [r.origin.x,  r.origin.y,  r.origin.z];
-        let id = [r.inv_dir.x, r.inv_dir.y, r.inv_dir.z];
-
-        while top > 0 || !overflow.is_empty() {
-            let entry = if top > 0 { top -= 1; stack[top] } else { overflow.pop().unwrap() };
-            if entry < 0 {
-                let prim_idx = (-entry - 1) as usize;
-                if let Some(rec) = self.objects[prim_idx].hit(r, t_min, closest) {
-                    closest = rec.t;
-                    best    = Some(rec);
-                }
-                continue;
-            }
-
-            let node = &self.nodes[entry as usize];
-
-            // N-wide AABB test: compile-time selected SIMD path.
-            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-            let (mask, t_near) = unsafe { test_children_avx2(node, ro, id, t_min, closest) };
-            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
-            let (mask, t_near) = unsafe { test_children_sse(node, ro, id, t_min, closest) };
-            #[cfg(target_arch = "aarch64")]
-            let (mask, t_near) = unsafe { test_children_neon(node, ro, id, t_min, closest) };
-            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-            let (mask, t_near) = test_children_scalar(node, ro, id, t_min, closest);
-
-            if mask == 0 { continue; }
-
-            // Collect hits sorted far-to-near so nearest is popped first.
-            let mut hits   = [(f32::INFINITY, i32::MIN); QBVH_WIDTH];
-            let mut n_hits = 0usize;
-            for c in 0..QBVH_WIDTH {
-                if mask & (1 << c) != 0 {
-                    hits[n_hits] = (t_near[c], node.children[c]);
-                    n_hits += 1;
-                }
-            }
-            hits[..n_hits].sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-
-            for &(_, child) in &hits[..n_hits] {
-                if top < stack.len() { stack[top] = child; top += 1; } else { overflow.push(child); }
-            }
-        }
-
-        best
+        self.hit_index(r, t_min, t_max).map(|(rec, _)| rec)
     }
 
     fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
@@ -544,6 +562,29 @@ impl Hittable for BvhTree {
         tr
     }
 
+    fn light_area(&self) -> f32 { self.light_total }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3, time: f32) -> f32 {
+        if self.light_total <= 0.0 { return 0.0; }
+        let r = Ray::new(origin, dir);
+        let Some((_, idx)) = self.hit_index(&r, 0.001, f32::INFINITY) else { return 0.0; };
+        // Selection weight of the hit leaf in the light CDF (0 = not a light).
+        let w = if idx == 0 { self.light_prefix[0] }
+                else { self.light_prefix[idx] - self.light_prefix[idx - 1] };
+        if w <= 0.0 { return 0.0; }
+        (w / self.light_total) * self.objects[idx].pdf_value(origin, dir, time)
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, time: f32) -> Vec3 {
+        if self.light_total <= 0.0 || self.light_prefix.is_empty() {
+            return Vec3::new(1.0, 0.0, 0.0);
+        }
+        // Inverse CDF over leaf areas, then let the leaf sample toward itself.
+        let target = rng.gen::<f32>() * self.light_total;
+        let idx = self.light_prefix.partition_point(|&p| p < target).min(self.objects.len() - 1);
+        self.objects[idx].pdf_generate(origin, rng, time)
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         if self.nodes.is_empty() { None } else { Some(self.bbox) }
     }
@@ -559,6 +600,63 @@ mod tests {
     struct DummyMat;
     impl Material for DummyMat {
         fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+    }
+
+    struct LightMat;
+    impl Material for LightMat {
+        fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+        fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> crate::vec3::Color { crate::vec3::Color::new(1.0, 1.0, 1.0) }
+        fn is_emissive(&self) -> bool { true }
+    }
+
+    fn emissive_tri(x: f32, mat: Arc<dyn Material>) -> crate::triangle::Triangle {
+        let v0 = Point3::new(x, 0.0, 0.0);
+        let v1 = Point3::new(x + 1.0, 0.0, 0.0);
+        let v2 = Point3::new(x, 1.0, 0.0);
+        let n  = Vec3::new(0.0, 0.0, 1.0);
+        let t  = Vec3::new(1.0, 0.0, 0.0);
+        crate::triangle::Triangle::new(v0, v1, v2, n, n, n, t, t, t, (0.0, 0.0), (1.0, 0.0), (0.5, 1.0), mat)
+    }
+
+    #[test]
+    fn bvh_light_cdf_samples_only_emissive_leaves() {
+        use rand::SeedableRng;
+        let mut list = HittableList::new();
+        // Two emissive triangles (area 0.5 each) and one non-emissive sphere.
+        list.add(emissive_tri(0.0, Arc::new(LightMat)));
+        list.add(emissive_tri(5.0, Arc::new(LightMat)));
+        list.add(unit_sphere_at(Point3::new(0.0, 5.0, 0.0)));
+        let bvh = BvhTree::from_list(list);
+        assert!(bvh.light_area() > 0.0);
+
+        let origin = Point3::new(0.5, 0.25, -10.0);
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+        let mut saw_left = false;
+        let mut saw_right = false;
+        for _ in 0..4000 {
+            let d   = bvh.pdf_generate(origin, &mut rng, 0.0);
+            let pdf = bvh.pdf_value(origin, d, 0.0);
+            assert!(pdf > 0.0, "generated direction must have positive pdf, got {pdf}");
+            // pdf must equal (leaf area / total) * tri pdf = 0.5/1.0 * dist^2/(cos*0.5)
+            if d.x > 0.1 { saw_right = true; } else { saw_left = true; }
+        }
+        assert!(saw_left && saw_right, "both emissive triangles should be sampled");
+
+        // Direction hitting the non-emissive sphere -> pdf 0.
+        let to_sphere = (Point3::new(0.0, 5.0, 0.0) - origin).unit();
+        assert_eq!(bvh.pdf_value(origin, to_sphere, 0.0), 0.0);
+        // Direction missing everything -> 0.
+        assert_eq!(bvh.pdf_value(origin, Vec3::new(0.0, 0.0, -1.0), 0.0), 0.0);
+    }
+
+    #[test]
+    fn bvh_without_lights_has_zero_pdf() {
+        let mut list = HittableList::new();
+        list.add(unit_sphere_at(Point3::new(0.0, 0.0, 0.0)));
+        let bvh = BvhTree::from_list(list);
+        assert_eq!(bvh.light_area(), 0.0);
+        let origin = Point3::new(0.0, 0.0, -5.0);
+        assert_eq!(bvh.pdf_value(origin, Vec3::new(0.0, 0.0, 1.0), 0.0), 0.0);
     }
 
     fn unit_sphere_at(center: Point3) -> crate::sphere::Sphere {

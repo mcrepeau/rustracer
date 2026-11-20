@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rand::{Rng, RngCore};
+
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable, Material};
 use crate::ray::Ray;
@@ -107,6 +109,7 @@ pub struct Disk {
     pub mat:    Arc<dyn Material>,
     u_axis:     Vec3,
     v_axis:     Vec3,
+    area:       f32,
 }
 
 impl Disk {
@@ -114,11 +117,33 @@ impl Disk {
         assert!(normal.length_squared() > 1e-12, "Disk::new: zero normal would give NaN hits");
         let n = normal.unit();
         let (u_axis, v_axis) = n.onb();
-        Self { center, normal: n, radius, mat, u_axis, v_axis }
+        let area = std::f32::consts::PI * radius * radius;
+        Self { center, normal: n, radius, mat, u_axis, v_axis, area }
     }
 }
 
 impl Hittable for Disk {
+    fn light_area(&self) -> f32 {
+        if self.mat.is_emissive() { self.area } else { 0.0 }
+    }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3, _time: f32) -> f32 {
+        let r = Ray::new(origin, dir);
+        let Some(rec) = self.hit(&r, 0.001, f32::INFINITY) else { return 0.0; };
+        let dist2 = (rec.p - origin).length_squared();
+        let cos_theta = dir.unit().dot(rec.normal).abs();
+        if cos_theta < 1e-8 || self.area <= 0.0 { return 0.0; }
+        dist2 / (cos_theta * self.area)
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, _time: f32) -> Vec3 {
+        // Uniform point in the disk: r = R*sqrt(u), theta = 2*pi*v.
+        let r     = self.radius * rng.gen::<f32>().sqrt();
+        let theta = 2.0 * std::f32::consts::PI * rng.gen::<f32>();
+        let p = self.center + r * (theta.cos() * self.u_axis + theta.sin() * self.v_axis);
+        (p - origin).unit()
+    }
+
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let denom = self.normal.dot(r.direction);
         if !(denom.abs() >= 1e-8) { return None; } // NaN-safe: NaN fails the >=, so we return None

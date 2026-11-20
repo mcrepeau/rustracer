@@ -94,6 +94,10 @@ impl Hittable for Quad {
         let point = self.q + r1 * self.u + r2 * self.v;
         (point - origin).unit()
     }
+
+    fn light_area(&self) -> f32 {
+        if self.mat.is_emissive() { self.area } else { 0.0 }
+    }
 }
 
 #[cfg(test)]

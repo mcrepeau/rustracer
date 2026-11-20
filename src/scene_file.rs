@@ -433,6 +433,8 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
 
     // ── Static objects ────────────────────────────────────────────────────────
     let mut static_objects: Vec<Arc<dyn Hittable>> = Vec::new();
+    // Created up front so emissive objects found below can join the NEE light list.
+    let mut lights = HittableList::new();
 
     // A throwaway Lambertian is used as the boundary-shape material for volume
     // types; it is never actually sampled — the HG phase function inside the
@@ -498,13 +500,17 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         if let Some(s) = scale    { hittable = Arc::new(UniformScale::new(hittable, s)); }
         if let Some(a) = rotate_y { hittable = Arc::new(Rotate::around_y(hittable, a)); }
         if let Some(t) = translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
+        // Emissive, NEE-sampleable objects (e.g. an OBJ mesh with a light material,
+        // an emissive sphere) join the light list so NEE targets them explicitly;
+        // the same Arc serves both world and lights.
+        if hittable.light_area() > 0.0 {
+            lights.add_shared(Arc::clone(&hittable));
+        }
         static_objects.push(hittable);
     }
 
     // ── Lights ────────────────────────────────────────────────────────────────
     // Each entry creates a DiffuseLight quad in both the world and the NEE list.
-    let mut lights = HittableList::new();
-
     for (i, lc) in file.lights.iter().enumerate() {
         let _ = i;
         let mat: Arc<dyn Material> =

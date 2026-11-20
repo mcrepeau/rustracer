@@ -19,6 +19,9 @@ impl Material for DiffuseLight {
     fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
     fn emitted(&self, u: f32, v: f32, p: Point3) -> Color { self.emit.value(u, v, p) }
     fn albedo_hint(&self, u: f32, v: f32, p: Point3) -> Color { self.emitted(u, v, p) }
+    fn is_emissive(&self) -> bool {
+        self.emit.value(0.5, 0.5, Point3::new(0.0, 0.0, 0.0)).luminance() > 0.0
+    }
 }
 
 /// Area light with a physically-based blackbody spectral power distribution.
@@ -61,6 +64,7 @@ impl BlackbodyLight {
 impl Material for BlackbodyLight {
     fn scatter(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _rng: &mut dyn RngCore) -> Option<ScatterRecord> { None }
     fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color { self.avg_color }
+    fn is_emissive(&self) -> bool { self.intensity > 0.0 }
     fn emitted_at(&self, _u: f32, _v: f32, _p: Point3, lambda: f32, spectral_weighted: bool) -> Color {
         if spectral_weighted {
             // CMF is already baked into the path throughput from the first spectral
@@ -805,6 +809,10 @@ impl Material for PbrMaterial {
 
     fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> Color {
         self.emission * self.emission_strength
+    }
+
+    fn is_emissive(&self) -> bool {
+        self.emission_strength > 0.0 && self.emission.luminance() > 0.0
     }
 
     fn scattering_pdf(&self, _r_in: &Ray, rec: &HitRecord<'_>, scattered: &Ray) -> f32 {

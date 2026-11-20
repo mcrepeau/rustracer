@@ -36,6 +36,9 @@ pub trait Material: Send + Sync {
     /// Specular, transmissive, and emissive materials return false (default).
     fn can_receive_caustics(&self) -> bool { false }
 
+    /// True if this material emits light -- makes the host shape NEE-sampleable.
+    fn is_emissive(&self) -> bool { false }
+
     /// Evaluate the full specular BRDF × cos(θ_i) for outgoing direction `wi`.
     /// Returns a non-zero Color only for materials that implement specular NEE.
     fn specular_brdf_cos(&self, _r_in: &Ray, _rec: &HitRecord<'_>, _wi: Vec3) -> Color {
@@ -108,6 +111,10 @@ pub trait Hittable: Send + Sync {
         if self.any_hit(r, t_min, t_max) { 0.0 } else { 1.0 }
     }
 
+    /// Surface area used as the selection weight in a BVH light-sampling CDF.
+    /// 0 = not NEE-sampleable (non-emissive, or infinite/complex area like planes).
+    fn light_area(&self) -> f32 { 0.0 }
+
     /// Solid-angle PDF for sampling this hittable from `origin` in direction `dir` at `time`.
     fn pdf_value(&self, _origin: Point3, _dir: Vec3, _time: f32) -> f32 { 0.0 }
 
@@ -126,6 +133,11 @@ impl HittableList {
 
     pub fn add(&mut self, obj: impl Hittable + 'static) {
         self.objects.push(Arc::new(obj));
+    }
+
+    /// Add an already-shared object (same Arc goes into the world and the light list).
+    pub fn add_shared(&mut self, obj: Arc<dyn Hittable>) {
+        self.objects.push(obj);
     }
 
 }
@@ -154,6 +166,10 @@ impl Hittable for HittableList {
             if tr <= 0.0 { return 0.0; }
         }
         tr
+    }
+
+    fn light_area(&self) -> f32 {
+        self.objects.iter().map(|o| o.light_area()).sum()
     }
 
     fn bounding_box(&self) -> Option<Aabb> {

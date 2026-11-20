@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rand::{Rng, RngCore};
+
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable, Material};
 use crate::ray::Ray;
@@ -21,6 +23,7 @@ pub struct Triangle {
     uv1: (f32, f32),
     uv2: (f32, f32),
     pub mat: Arc<dyn Material>,
+    area: f32,
 }
 
 impl Triangle {
@@ -32,7 +35,8 @@ impl Triangle {
         uv0: (f32, f32), uv1: (f32, f32), uv2: (f32, f32),
         mat: Arc<dyn Material>,
     ) -> Self {
-        Self { v0, v1, v2, n0, n1, n2, t0, t1, t2, uv0, uv1, uv2, mat }
+        let area = 0.5 * (v1 - v0).cross(v2 - v0).length();
+        Self { v0, v1, v2, n0, n1, n2, t0, t1, t2, uv0, uv1, uv2, mat, area }
     }
 
     /// Triangle with a flat (face) normal and no meaningful UV coordinates.
@@ -45,6 +49,29 @@ impl Triangle {
 }
 
 impl Hittable for Triangle {
+    fn light_area(&self) -> f32 {
+        if self.mat.is_emissive() { self.area } else { 0.0 }
+    }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3, _time: f32) -> f32 {
+        // p_w = p_A * dist^2 / cos(theta)  (same area-to-solid-angle conversion as Quad).
+        let r = Ray::new(origin, dir);
+        let Some(rec) = self.hit(&r, 0.001, f32::INFINITY) else { return 0.0; };
+        let dist2 = (rec.p - origin).length_squared();
+        let cos_theta = dir.unit().dot(rec.normal).abs();
+        if cos_theta < 1e-8 || self.area <= 0.0 { return 0.0; }
+        dist2 / (cos_theta * self.area)
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, _time: f32) -> Vec3 {
+        // Uniform point on the triangle via the square-to-triangle fold.
+        let mut r1: f32 = rng.gen();
+        let mut r2: f32 = rng.gen();
+        if r1 + r2 > 1.0 { r1 = 1.0 - r1; r2 = 1.0 - r2; }
+        let p = self.v0 + r1 * (self.v1 - self.v0) + r2 * (self.v2 - self.v0);
+        (p - origin).unit()
+    }
+
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         let e1 = self.v1 - self.v0;
         let e2 = self.v2 - self.v0;
@@ -118,6 +145,57 @@ mod tests {
     struct DummyMat;
     impl Material for DummyMat {
         fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+    }
+
+    struct LightMat;
+    impl Material for LightMat {
+        fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+        fn emitted(&self, _u: f32, _v: f32, _p: Point3) -> crate::vec3::Color { crate::vec3::Color::new(1.0, 1.0, 1.0) }
+        fn is_emissive(&self) -> bool { true }
+    }
+
+    #[test]
+    fn triangle_pdf_value_is_area_solid_angle() {
+        // Right triangle in z=0: v0=(0,0,0), v1=(1,0,0), v2=(0,1,0) -> area 0.5.
+        let tri = Triangle::flat(
+            Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0),
+            Arc::new(LightMat),
+        );
+        assert!((tri.light_area() - 0.5).abs() < 1e-7);
+        let origin = Point3::new(0.25, 0.25, -5.0);
+        let dir    = Vec3::new(0.0, 0.0, 1.0);
+        // dist^2 = 25, cos = 1, area = 0.5 -> pdf = 50.
+        let pdf = tri.pdf_value(origin, dir, 0.0);
+        assert!((pdf - 50.0).abs() < 1e-3, "pdf = {pdf}");
+        // Direction missing the triangle -> 0.
+        assert_eq!(tri.pdf_value(origin, Vec3::new(0.0, 0.0, -1.0), 0.0), 0.0);
+        assert_eq!(tri.pdf_value(Point3::new(5.0, 5.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0), 0.0);
+    }
+
+    #[test]
+    fn triangle_pdf_generate_always_hits_and_pdf_positive() {
+        use rand::SeedableRng;
+        let tri = Triangle::flat(
+            Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0), Point3::new(0.0, 2.0, 0.0),
+            Arc::new(LightMat),
+        );
+        let origin = Point3::new(0.5, 0.5, -3.0);
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(7);
+        for _ in 0..2000 {
+            let d = tri.pdf_generate(origin, &mut rng, 0.0);
+            assert!(d.length() > 0.99 && d.length() < 1.01, "generated dir not unit: {d:?}");
+            let pdf = tri.pdf_value(origin, d, 0.0);
+            assert!(pdf > 0.0, "generated direction must have positive pdf");
+        }
+    }
+
+    #[test]
+    fn non_emissive_triangle_has_zero_light_area() {
+        let tri = Triangle::flat(
+            Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0),
+            Arc::new(DummyMat),
+        );
+        assert_eq!(tri.light_area(), 0.0);
     }
 
     // Triangle: v0=(0,0,0), v1=(2,0,0), v2=(0,2,0).
