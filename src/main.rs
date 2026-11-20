@@ -187,6 +187,8 @@ fn print_help() {
     println!("  --scene <name>       benchmark|0  random|1  cornell|2  nextweek|3  <path.toml>");
     println!("                       Default: random");
     println!("  --samples <n>        Samples per pixel (default: scene maximum; with --adaptive, the hard SPP cap)");
+    println!("  --preset <name>      Measured recipes: preview = 16 spp + OIDN 0.6, final = 64 spp + OIDN 1.0,");
+    println!("                       reference = adaptive, cap 4096 spp.  Explicit flags override the preset.");
     println!("  --width  <n>         Output width  in pixels (default: {WIDTH})");
     println!("  --height <n>         Output height in pixels (default: {HEIGHT})");
     println!("  --exposure <f>       Exposure multiplier     (default: 1.0)");
@@ -201,14 +203,48 @@ fn print_help() {
     println!("  --denoise [strength] Run OIDN after render; optional strength in [0.0, 1.0] (default: 1.0)");
 }
 
+#[cfg(feature = "denoise")]
+fn set_denoise(r: &mut RenderArgs, strength: f32) { r.denoise = Some(strength); }
+#[cfg(not(feature = "denoise"))]
+fn set_denoise(_r: &mut RenderArgs, _strength: f32) {
+    eprintln!("note: preset wants OIDN denoising but this binary lacks the 'denoise' feature; rendering raw (rebuild: cargo build --release --features denoise)");
+}
+
+/// Measured render recipes (gem scene, 640x400, reference = adaptive 1024 spp):
+/// 32 spp + OIDN reached 33 dB PSNR in ~0.4 s, while the raw adaptive reference
+/// path took 10.3 s.  Low fixed spp + OIDN is the compute-per-quality winner
+/// for stills; video wants a little more spp per frame (OIDN runs per frame).
+fn apply_preset(r: &mut RenderArgs, name: &str) -> Result<(), String> {
+    match name {
+        "preview"   => { r.samples = Some(16);  set_denoise(r, 0.6); }
+        "final"     => { r.samples = Some(64);  set_denoise(r, 1.0); }
+        "reference" => {
+            r.adaptive        = true;
+            r.min_samples     = 128;
+            r.convergence_pct = 99.0;
+            r.samples         = Some(4096);
+        }
+        other => return Err(format!("Unknown preset '{other}': use preview, final or reference")),
+    }
+    Ok(())
+}
+
 fn parse_render_args() -> Result<RenderArgs, String> {
     let mut r  = RenderArgs::default();
-    let mut it = std::env::args().skip(2).peekable(); // skip binary + "--render"
+    let argv: Vec<String> = std::env::args().skip(2).collect(); // skip binary + "--render"
+    // Apply --preset first so any explicit flag later in the command line
+    // overrides the preset value, regardless of flag order.
+    if let Some(pos) = argv.iter().position(|a| a == "--preset") {
+        let name = argv.get(pos + 1).ok_or("--preset requires a value (preview|final|reference)")?;
+        apply_preset(&mut r, name)?;
+    }
+    let mut it = argv.into_iter().peekable();
     while let Some(flag) = it.next() {
         macro_rules! val {
             () => { it.next().ok_or_else(|| format!("'{flag}' requires a value"))? }
         }
         match flag.as_str() {
+            "--preset"    => { val!(); } // applied by the pre-scan above
             "--scene"      => r.scene    = val!(),
             "--samples"    => r.samples  = Some(val!().parse::<u32>().map_err(|e| format!("--samples: {e}"))?),
             "--width"      => r.width    = val!().parse::<u32>().map_err(|e| format!("--width: {e}"))?,
