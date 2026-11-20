@@ -16,7 +16,6 @@ Camera orbit around the chair and basketball (`scene.toml` has an `[animation.or
 
 [Watch the orbit animation](examples/obj_loading.mp4)
 
-(The older `render_random_spheres` / `render_cornell_box` / `render_next_week` images in `examples/` are renders of the built-in scenes that were removed when the project switched to TOML-only scenes.)
 
 ## Build & Run
 
