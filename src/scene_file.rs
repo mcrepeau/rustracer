@@ -249,6 +249,8 @@ pub enum MaterialConfig {
         #[serde(default = "default_checker_scale")]
         scale: f32,
     },
+    /// Lambertian with an sRGB image texture (e.g. a world map), path relative to the cwd.
+    Image { path: String },
     Metal {
         color: [f32; 3],
         #[serde(default)]
@@ -742,6 +744,9 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
 
         MaterialConfig::Checker { even, odd, scale } =>
             Arc::new(Lambertian { texture: Texture::Checker { scale, even: col(even), odd: col(odd) } }),
+
+        MaterialConfig::Image { path } =>
+            Arc::new(Lambertian { texture: Texture::load(&path).map_err(|e| format!("texture '{path}': {e}"))? }),
 
         MaterialConfig::Metal { color, fuzz } =>
             Arc::new(PbrMaterial { albedo: col(color), metallic: 1.0, roughness: fuzz, ..Default::default() }),

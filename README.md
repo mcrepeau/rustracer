@@ -21,15 +21,16 @@ Camera orbit around a gold chair and basketball, 144 frames at 24 fps rendered w
 ## Build & Run
 
 ```sh
-cargo run --release                        # interactive viewer
-cargo run --release -- --render [options]  # headless PNG render
+cargo run --release                        # interactive viewer (scene.toml)
+cargo run --release -- --scene gem_LG625469749.toml   # interactive viewer, that scene file
+cargo run --release -- --render [options]  # headless PNG render (--scene <path.toml>, default scene.toml)
 cargo run --release -- --bench             # performance benchmark
 ```
 
 ### Headless render options
 
 ```
---scene <name>       random | cornell | nextweek | <path.toml>
+--scene <path.toml>  scene file (default: scene.toml)
 --samples <n>        samples per pixel (default: scene maximum; with --adaptive, the hard SPP cap)
 --width  <n>         output width  in pixels (default: 1200)
 --height <n>         output height in pixels (default: 800)
@@ -303,13 +304,18 @@ The BVH and photon map are built **once** and reused across all frames — only 
 
 ## Scenes
 
-1. **Random Spheres** — Physical sky, large checkerboard ground. A glowing emissive PBR ember sits at the centre, casting warm orange light on the ring of seven hero spheres surrounding it: SpectralDielectric crown glass, rough terracotta PBR, Gold SpectralMetal, a NoiseMedium Perlin-cloud trapped inside a glass sphere, SSSMaterial jade, pearl, and an iridescent clearcoat PBR. About 350 small randomly placed diffuse, glass, and SSS balls fill the background. Spectral-material caustics are projected onto the ground by the sun.
+Scenes are TOML files — `scene.toml` is the annotated reference for every option. No scene is
+passed: the viewer and `--render` default to `scene.toml`. Examples shipped in the repo:
 
-2. **Cornell Box** — The classic renderer benchmark scene: coloured walls, two boxes, and a 6500 K blackbody area light. Contains a SpectralDielectric dense-flint glass sphere (which produces rainbow caustics on the floor) and a SpectralMetal gold sphere. Photon-map caustics enabled.
+1. **`scene.toml`** — the default demo scene: old wooden chair and basketball OBJ meshes with PBR
+   textures (normal map on the basketball), polished concrete disk floor, sunset HDR environment map.
+2. **`diamond.toml`** — round brilliant diamond under a Preetham sun sky, with an
+   `[animation.orbit]` section for a 360-degree camera turntable (headless: one PNG per frame).
+3. **`gem_LG625469749.toml`** — a specific IGI-graded stone built as an oval brilliant via the
+   `[[gems]]` section, floating in a procedural studio light-tent HDR with caustics.
 
-3. **Next Week** — A sampler of many features: area light, motion-blurred sphere, Dielectric glass sphere, metallic PBR sphere, blue volumetric fog sphere, earth-texture sphere, Perlin-noise sphere, SpectralDielectric diamond below the light, pearl sphere, a cluster of 1000 small white spheres, and a global mist medium. Photon-map caustics enabled.
+In the interactive viewer, edit the file and press [R] to hot-reload it.
 
-4. **Custom scene** (`scene.toml`) — Loaded from the working directory. Currently: old wooden chair and basketball OBJ meshes with PBR textures (including a normal map on the basketball), polished concrete disk floor, sunset HDR environment map.
 
 ## Implementation notes
 

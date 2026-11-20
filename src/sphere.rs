@@ -27,10 +27,6 @@ impl Sphere {
         Self { center, center1: None, radius, mat }
     }
 
-    pub fn new_moving(c0: Point3, c1: Point3, radius: f32, mat: Arc<dyn Material>) -> Self {
-        Self { center: c0, center1: Some(c1), radius, mat }
-    }
-
     fn center_at(&self, time: f32) -> Point3 {
         match self.center1 {
             None     => self.center,

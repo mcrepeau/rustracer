@@ -40,7 +40,7 @@ use renderer::{Background, render_tiles};
 #[cfg(feature = "denoise")]
 use renderer::{Background, render_tiles, render_aux_pass};
 use scene::SceneData;
-use scenes::{build_random_scene, build_cornell_box, build_nextweek_scene, build_benchmark_scene};
+use scenes::build_benchmark_scene;   // only used by --bench now; scenes are TOML files
 use output::{to_rgb_u32, save_png, ToneMapper};
 
 use winit::{
@@ -131,7 +131,7 @@ struct RenderArgs {
 impl Default for RenderArgs {
     fn default() -> Self {
         Self {
-            scene:           "random".to_string(),
+            scene:           "scene.toml".to_string(),
             samples:         None,
             width:           WIDTH,
             height:          HEIGHT,
@@ -151,8 +151,7 @@ impl Default for RenderArgs {
 
 fn print_controls() {
     println!("Controls:");
-    println!("  [0]          Benchmark scene        [1-4]    Switch scene");
-    println!("  [R]          Restart / reload scene");
+    println!("  [R]          Reload scene file");
     println!("  [F]          Toggle free camera    [C]      Reset camera");
     println!("  WASD         Move (free cam)       [Space]  Move up");
     println!("  Mouse        Look (free cam)       [Shift]  Move down");
@@ -178,14 +177,13 @@ fn print_controls() {
 fn print_help() {
     println!("rustracer — path tracer\n");
     println!("USAGE:");
-    println!("  rustracer                      Interactive viewer");
-    println!("  rustracer --scene <path.toml>  Interactive viewer, file scene = that file (scene 4, [R] reloads)");
+    println!("  rustracer                      Interactive viewer (default scene: scene.toml)");
+    println!("  rustracer --scene <path.toml>  Interactive viewer for that scene file ([R] reloads)");
     println!("  rustracer --render [options]   Headless render to PNG");
     println!("  rustracer --bench              Performance benchmark");
     println!("  rustracer --help               Show this message\n");
     println!("RENDER OPTIONS:");
-    println!("  --scene <name>       benchmark|0  random|1  cornell|2  nextweek|3  <path.toml>");
-    println!("                       Default: random");
+    println!("  --scene <path.toml>  Scene file to render (default: scene.toml)");
     println!("  --samples <n>        Samples per pixel (default: scene maximum; with --adaptive, the hard SPP cap)");
     println!("  --preset <name>      Measured recipes: preview = 16 spp + OIDN 0.6, final = 64 spp + OIDN 1.0,");
     println!("                       reference = adaptive, cap 4096 spp.  Explicit flags override the preset.");
@@ -284,17 +282,12 @@ fn parse_render_args() -> Result<RenderArgs, String> {
 }
 
 fn run_render(args: RenderArgs) {
-    let mut scene = {
-        let sl = args.scene.to_lowercase();
-        match sl.as_str() {
-            "benchmark"| "0" => build_benchmark_scene(),
-            "random"   | "1" => build_random_scene(),
-            "cornell"  | "2" => build_cornell_box(),
-            "nextweek" | "3" => build_nextweek_scene(),
-            _ => match scene_file::load(&args.scene) {
-                Ok(s)  => s,
-                Err(e) => { eprintln!("Failed to load '{}': {e}", args.scene); std::process::exit(1); }
-            },
+    let mut scene = match scene_file::load(&args.scene) {
+        Ok(s)  => s,
+        Err(e) => {
+            eprintln!("Failed to load '{}': {e}", args.scene);
+            eprintln!("Scenes are .toml files now - e.g. --scene scene.toml");
+            std::process::exit(1);
         }
     };
     if !args.no_photon_map { scene.rebuild_caustics(); }
@@ -697,29 +690,12 @@ fn main() {
         }
     }
 
-    println!("Building scenes…");
-    println!("Scene 0: Benchmark (32 768-triangle mesh + spectral glass + caustics)");
-    let s_bench = build_benchmark_scene();
-    println!("Scene 1: Random Spheres");
-    let s1 = build_random_scene();
-    println!("Scene 2: Cornell Box");
-    let s2 = build_cornell_box();
-    println!("Scene 3: Next Week");
-    let s3 = build_nextweek_scene();
-    let mut scenes: Vec<SceneData> = vec![s1, s2, s3];
-
-    // Scene 4: hot-reloadable file scene (scene.toml, or --scene <path.toml>)
-    match scene_file::load(&file_scene) {
-        Ok(s)  => { println!("Scene 4: {} ({})", s.name, file_scene); scenes.push(s); }
-        Err(e) => println!("{file_scene} not loaded — {e}"),
-    }
-
-    scenes.push(s_bench);
-    let bench_idx = scenes.len() - 1;
-
-    // Build the photon map only for the initially active scene (scene 0).
-    // All other scenes build their maps lazily when first switched to.
-    scenes[0].rebuild_caustics();
+    println!("Loading scene: {file_scene}");
+    let mut scene: SceneData = match scene_file::load(&file_scene) {
+        Ok(s)  => s,
+        Err(e) => { eprintln!("Failed to load '{file_scene}': {e}"); std::process::exit(1); }
+    };
+    scene.rebuild_caustics();
 
     print_controls();
 
@@ -737,9 +713,8 @@ fn main() {
 
     let mut win_w       = WIDTH;
     let mut win_h       = HEIGHT;
-    let mut scene_idx   = 0usize;
-    let mut cam_state   = CameraState::from_params(&scenes[scene_idx].cam_init);
-    cam_state.autofocus(scenes[scene_idx].world.as_ref());
+    let mut cam_state   = CameraState::from_params(&scene.cam_init);
+    cam_state.autofocus(scene.world.as_ref());
     let mut camera        = cam_state.to_camera(win_w as f32 / win_h as f32);
     let mut free_cam      = false;
     #[cfg(feature = "denoise")]
@@ -759,7 +734,7 @@ fn main() {
     let mut accumulator   = vec![Color::default(); (win_w * win_h) as usize];
     let mut scratch       = vec![Color::default(); (win_w * win_h) as usize];
     let mut samples       = 0u32;
-    let mut strata = compute_strata(scenes[scene_idx].max_samples);
+    let mut strata = compute_strata(scene.max_samples);
     // Adaptive sampling state
     let mut tonemapper          = ToneMapper::AgX;
     let mut adaptive_on         = false;
@@ -795,23 +770,6 @@ fn main() {
                 }
             }
         }
-        macro_rules! switch_scene {
-            ($idx:expr) => {{
-                let i = $idx;
-                scene_idx        = i;
-                cam_state        = CameraState::from_params(&scenes[i].cam_init);
-                strata           = compute_strata(scenes[i].max_samples);
-                reset_accum!();
-                cam_dirty        = true;
-                pending_autofocus = true;
-                // Build photon map on first visit; subsequent visits reuse the cached map.
-                // Sun-direction changes rebuild it separately via rebuild_caustics() below.
-                if scenes[i].photon_map.is_none() {
-                    scenes[i].rebuild_caustics();
-                }
-            }};
-        }
-
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
@@ -864,18 +822,6 @@ fn main() {
                                         window.set_cursor_visible(true);
                                     }
                                 }
-                                VirtualKeyCode::Key0 => { switch_scene!(bench_idx); }
-                                VirtualKeyCode::Key1 | VirtualKeyCode::Key2 | VirtualKeyCode::Key3 => {
-                                    let idx = match key { VirtualKeyCode::Key2 => 1, VirtualKeyCode::Key3 => 2, _ => 0 };
-                                    switch_scene!(idx);
-                                }
-                                VirtualKeyCode::Key4 => {
-                                    if scenes.len() >= 5 {
-                                        switch_scene!(3);
-                                    } else {
-                                        println!("{} not loaded — edit the file and press [R] to reload it", file_scene_evt);
-                                    }
-                                }
                                 VirtualKeyCode::P => {
                                     #[cfg(feature = "denoise")]
                                     {
@@ -885,16 +831,16 @@ fn main() {
                                             let blended: Vec<Color> = accumulator.iter().zip(denoised_guard.iter())
                                                 .map(|(acc, den)| *den * denoise_blend + *acc * sc * (1.0 - denoise_blend))
                                                 .collect();
-                                            save_png(&blended, 1, None, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, Some(samples), None);
+                                            save_png(&blended, 1, None, scene.name, win_w, win_h, exposure, tonemapper, Some(samples), None);
                                         } else {
                                             let ps = Some(pixel_samples.as_slice());
-                                            save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
+                                            save_png(&accumulator, samples, ps, scene.name, win_w, win_h, exposure, tonemapper, None, None);
                                         }
                                     }
                                     #[cfg(not(feature = "denoise"))]
                                     {
                                         let ps = Some(pixel_samples.as_slice());
-                                        save_png(&accumulator, samples, ps, scenes[scene_idx].name, win_w, win_h, exposure, tonemapper, None, None);
+                                        save_png(&accumulator, samples, ps, scene.name, win_w, win_h, exposure, tonemapper, None, None);
                                     }
                                 }
                                 VirtualKeyCode::L => {
@@ -931,7 +877,7 @@ fn main() {
                                     window.request_redraw();
                                 }
                                 VirtualKeyCode::Left | VirtualKeyCode::Right => {
-                                    if let Background::Physical { sun_dir, .. } = &mut scenes[scene_idx].background {
+                                    if let Background::Physical { sun_dir, .. } = &mut scene.background {
                                         let step = if key == VirtualKeyCode::Right { 0.1f32 } else { -0.1f32 };
                                         let (s, c) = step.sin_cos();
                                         *sun_dir = vec3::Vec3::new(
@@ -940,11 +886,11 @@ fn main() {
                                             sun_dir.x * s + sun_dir.z * c,
                                         ).unit();
                                         reset_accum!();
-                                        scenes[scene_idx].rebuild_caustics();
+                                        scene.rebuild_caustics();
                                     }
                                 }
                                 VirtualKeyCode::Up | VirtualKeyCode::Down => {
-                                    if let Background::Physical { sun_dir, .. } = &mut scenes[scene_idx].background {
+                                    if let Background::Physical { sun_dir, .. } = &mut scene.background {
                                         let step = if key == VirtualKeyCode::Up { 0.1f32 } else { -0.1f32 };
                                         let el = sun_dir.y.asin();
                                         let new_el = (el + step).clamp(-10f32.to_radians(), 85f32.to_radians());
@@ -952,11 +898,11 @@ fn main() {
                                         let scale = new_el.cos() / horiz;
                                         *sun_dir = vec3::Vec3::new(sun_dir.x * scale, new_el.sin(), sun_dir.z * scale);
                                         reset_accum!();
-                                        scenes[scene_idx].rebuild_caustics();
+                                        scene.rebuild_caustics();
                                     }
                                 }
                                 VirtualKeyCode::C => {
-                                    cam_state = CameraState::from_params(&scenes[scene_idx].cam_init);
+                                    cam_state = CameraState::from_params(&scene.cam_init);
                                     cam_dirty = true;
                                     pending_autofocus = true;
                                 }
@@ -988,14 +934,6 @@ fn main() {
                                     denoise_blend = (denoise_blend + 0.1).min(1.0);
                                     window.request_redraw();
                                 }
-                                VirtualKeyCode::R if scene_idx == 0 => {
-                                    scenes[0] = build_random_scene();
-                                    scenes[0].rebuild_caustics();
-                                    strata = compute_strata(scenes[0].max_samples);
-                                    reset_accum!();
-                                    cam_dirty = true;
-                                    pending_autofocus = true;
-                                }
                                 VirtualKeyCode::T => {
                                     tonemapper = if tonemapper == ToneMapper::AgX { ToneMapper::Aces } else { ToneMapper::AgX };
                                     window.request_redraw();
@@ -1012,14 +950,14 @@ fn main() {
                                     reset_accum!();
                                     window.request_redraw();
                                 }
-                                VirtualKeyCode::R if scene_idx == 3 => {
+                                VirtualKeyCode::R => {
                                     match scene_file::load(&file_scene_evt) {
                                         Ok(s) => {
                                             println!("Reloaded: {}", s.name);
-                                            scenes[3] = s;
-                                            scenes[3].rebuild_caustics();
-                                            cam_state = CameraState::from_params(&scenes[3].cam_init);
-                                            strata = compute_strata(scenes[3].max_samples);
+                                            scene = s;
+                                            scene.rebuild_caustics();
+                                            cam_state = CameraState::from_params(&scene.cam_init);
+                                            strata = compute_strata(scene.max_samples);
                                             reset_accum!();
                                             cam_dirty = true;
                                             pending_autofocus = true;
@@ -1066,7 +1004,7 @@ fn main() {
 
                 if cam_dirty {
                     if pending_autofocus {
-                        cam_state.autofocus(scenes[scene_idx].world.as_ref());
+                        cam_state.autofocus(scene.world.as_ref());
                         pending_autofocus = false;
                     }
                     camera = cam_state.to_camera(win_w as f32 / win_h as f32);
@@ -1075,7 +1013,7 @@ fn main() {
                 }
 
                 if last_title_update.elapsed() >= TITLE_INTERVAL {
-                    let scene    = &scenes[scene_idx];
+                    let scene    = &scene;
                     let cam_state_str = if free_cam { "FREE CAM" } else { "" };
                     #[cfg(feature = "denoise")]
                     let oidn_str = if oidn_on {
@@ -1108,8 +1046,7 @@ fn main() {
                 }
 
                 let all_conv = adaptive_on && n_converged == adap_conv.len();
-                if samples < scenes[scene_idx].max_samples && !all_conv {
-                    let scene = &scenes[scene_idx];
+                if samples < scene.max_samples && !all_conv {
                     let bg_scale = 1.0;
                     let conv_mask = if adaptive_on { Some(adap_conv.as_slice()) } else { None };
                     let pm = if photon_map_on { scene.photon_map.as_deref() } else { None };
