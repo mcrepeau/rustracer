@@ -17,24 +17,9 @@ aperture   = 0.0
 focus_dist = 0.085
 move_speed = 0.002   # scene is mm-scale (~0.1 units wide); 0.2 would cross it in one keypress
 
-# Procedural "light tent" env map: near-uniform bright background (even light
-# from all sides) plus very soft glows at the softbox positions - regenerate
-# with `py make_studio_softbox.py`. All lighting - and the caustic photon
-# source - comes from this map; no [[lights]] needed.
 [background]
 type = "env_map"
 path = "assets/studio_softbox.hdr"
-# alternatives:
-# type  = "solid"
-# color = [0.002, 0.002, 0.005]              # original near-black
-# type  = "env_map"
-# path  = "assets/sunset_puresky_4k.hdr"     # same sky as scene.toml
-# Preetham sky + physical sun disc (like the random-spheres scene) - dimmer on
-# the stone (sun energy sits in a 0.23 deg disc), kept for backlit shots:
-# type = "physical"
-# sun_azimuth = 0.0        # deg clockwise from +Z; 0 = behind the stone vs default camera
-# sun_elevation = 12.0     # deg above the horizon
-# turbidity = 3.0
 
 [[objects]]
 shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
@@ -56,3 +41,21 @@ scale_mm        = 0.001                # mm -> metres
 enabled       = true
 gather_radius = 0.008
 num_photons   = 300000
+
+# --- Animation: 360-degree orbit around the stone (same mechanics as diamond.toml) ---
+# Headless render writes one PNG per frame into the output dir:
+#   cargo run --release -- --render --scene gem_LG625469749.toml --samples 96 --width 480 --height 300 --output frames
+# then assemble with the ffmpeg command printed after the last frame.
+[animation]
+fps      = 24
+duration = 4.0   # 96 frames
+
+[animation.orbit]
+center      = [0.0, 0.0, 0.0]    # orbit axis (XZ only; Y comes from `height`)
+radius      = 0.084              # ~ default camera distance to the stone
+height      = 0.032              # camera Y during the orbit
+look_at     = [0.0, 0.017, 0.0]  # the stone
+start_angle = 180.0              # start on the default camera side (-Z)
+end_angle   = 360.0              # full orbit
+vfov        = 30.0
+focus_dist  = 0.085

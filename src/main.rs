@@ -303,6 +303,13 @@ fn run_render(args: RenderArgs) {
     let convergence_pct = args.convergence_pct;
     let min_samples     = args.min_samples;
 
+    // Animation frames are written into the output dir - make sure it exists
+    // (save_png does not create directories).
+    if is_anim {
+        let out_dir = args.output.as_deref().unwrap_or(".");
+        let _ = std::fs::create_dir_all(out_dir);
+    }
+
     for frame_idx in 0..total_frames {
         // ── Camera for this frame ─────────────────────────────────────────────
         let camera: Camera = if let Some(anim) = &animation {
