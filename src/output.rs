@@ -85,11 +85,17 @@ fn srgb_encode(x: f32) -> f32 {
     if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
 }
 
+/// 256-entry sRGB→linear LUT (exact IEC 61966-2-1 curve), built once — the powf
+/// version cost a transcendental per texel per fetch in the render hot path.
+static SRGB_DECODE_LUT: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|c| {
+        let s = c as f32 / 255.0;
+        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    })
+});
+
 #[inline]
-pub fn srgb_decode(c: u8) -> f32 {
-    let s = c as f32 / 255.0;
-    if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
-}
+pub fn srgb_decode(c: u8) -> f32 { SRGB_DECODE_LUT[c as usize] }
 
 #[inline]
 pub fn tone_map(c: Color, scale: f32, tm: ToneMapper) -> [u8; 3] {

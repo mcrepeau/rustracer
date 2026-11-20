@@ -601,6 +601,13 @@ pub fn render_tiles(
     // enough for good load-balancing across cores.  par_chunks_mut(w) gives
     // each task exclusive ownership of its row — no unsafe pointer arithmetic.
     scratch.par_chunks_mut(w).enumerate().for_each(|(row, row_buf)| {
+        // One RNG per row (seeded by row + sample), not per pixel: re-seeding a
+        // SmallRng for every pixel of every sample was measurable overhead.
+        // Still fully deterministic — each row's stream depends only on (row, sample).
+        let mut rng = SmallRng::seed_from_u64(
+            (row as u64).wrapping_mul(0x9E3779B97F4A7C15)
+                ^ (sample_idx as u64).wrapping_mul(6364136223846793005),
+        );
         for (col, out) in row_buf.iter_mut().enumerate() {
             let i = row * w + col;
 
@@ -609,10 +616,6 @@ pub fn render_tiles(
                 continue;
             }
 
-            let mut rng = SmallRng::seed_from_u64(
-                (i as u64).wrapping_mul(6364136223846793005)
-                    ^ (sample_idx as u64).wrapping_mul(0x9E3779B97F4A7C15),
-            );
             let ray_y = height - 1 - row as u32;
 
             // Stratified pixel sampling: map sample_idx into a strata×strata grid.
