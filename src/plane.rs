@@ -74,6 +74,14 @@ impl Hittable for InfinitePlane {
         Some(rec)
     }
 
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        // Occlusion test: skip the wave-bump normal and UV computation entirely.
+        let denom = self.normal.dot(r.direction);
+        if denom.abs() < 1e-8 { return false; }
+        let t = self.normal.dot(self.point - r.origin) / denom;
+        t >= t_min && t <= t_max
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         // A truly infinite plane can only be bounded along the axis its normal aligns with.
         // For tilted planes all axes are unbounded; use ±1e5 as a finite proxy.

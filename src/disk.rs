@@ -66,6 +66,26 @@ mod tests {
     }
 
     #[test]
+    fn any_hit_agrees_with_hit() {
+        let d = unit_disk();
+        let rays = [
+            (0.0, 0.0, 2.0, 0.0, 0.0, -1.0),   // center hit
+            (0.99, 0.0, 1.0, 0.0, 0.0, -1.0),  // just inside edge
+            (1.01, 0.0, 1.0, 0.0, 0.0, -1.0),  // just outside radius
+            (0.0, 0.0, 0.0, 1.0, 0.0, 0.0),    // parallel to disk
+            (0.0, 0.0, -2.0, 0.0, 0.0, 1.0),   // back side hit
+        ];
+        for (ox, oy, oz, dx, dy, dz) in rays {
+            let r = Ray::new(Point3::new(ox, oy, oz), Vec3::new(dx, dy, dz));
+            assert_eq!(
+                d.hit(&r, 0.001, f32::INFINITY).is_some(),
+                d.any_hit(&r, 0.001, f32::INFINITY),
+                "mismatch for ray ({ox},{oy},{oz}) -> ({dx},{dy},{dz})"
+            );
+        }
+    }
+
+    #[test]
     fn disk_front_face_orientation() {
         // Ray from +z hits the front of the disk.
         let d = unit_disk();
@@ -111,6 +131,16 @@ impl Hittable for Disk {
         rec.u = (off.dot(self.u_axis) / self.radius + 1.0) * 0.5;
         rec.v = (off.dot(self.v_axis) / self.radius + 1.0) * 0.5;
         Some(rec)
+    }
+
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        // Occlusion test: stop after the t and radius checks, skip the HitRecord.
+        let denom = self.normal.dot(r.direction);
+        if denom.abs() < 1e-8 { return false; }
+        let t = self.normal.dot(self.center - r.origin) / denom;
+        if t < t_min || t > t_max { return false; }
+        let off = r.at(t) - self.center;
+        off.length_squared() <= self.radius * self.radius
     }
 
     fn bounding_box(&self) -> Option<Aabb> {

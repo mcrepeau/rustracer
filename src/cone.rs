@@ -78,6 +78,48 @@ impl Hittable for Cone {
         best
     }
 
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        // Occlusion test: same acceptance conditions as hit(), early return without
+        // normals or atan2 UVs.
+        let oc = r.origin - self.center;
+        let h  = self.height;
+        let k  = (self.radius / h) * (self.radius / h);
+        let dx = r.direction.x;
+        let dy = r.direction.y;
+        let dz = r.direction.z;
+        let hy = h - oc.y;
+
+        // ── Lateral surface: x² + z² = k·(h−y)² ─────────────────────────────
+        let a      = dx * dx + dz * dz - k * dy * dy;
+        let half_b = oc.x * dx + oc.z * dz + k * hy * dy;
+        let c      = oc.x * oc.x + oc.z * oc.z - k * hy * hy;
+        if a.abs() > 1e-8 {
+            let disc = half_b * half_b - a * c;
+            if disc >= 0.0 {
+                let sqrtd = disc.sqrt();
+                for root in [(-half_b - sqrtd) / a, (-half_b + sqrtd) / a] {
+                    if root < t_min || root >= t_max { continue; }
+                    let local_y = r.at(root).y - self.center.y;
+                    if local_y < 0.0 || local_y > h { continue; }
+                    return true;
+                }
+            }
+        }
+
+        // ── Base disk at y = 0 ────────────────────────────────────────────────
+        if dy.abs() > 1e-8 {
+            let t = -oc.y / dy;
+            if t >= t_min && t < t_max {
+                let p  = r.at(t);
+                let lx = p.x - self.center.x;
+                let lz = p.z - self.center.z;
+                if lx * lx + lz * lz <= self.radius * self.radius { return true; }
+            }
+        }
+
+        false
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         let r = Vec3::new(self.radius, 0.0, self.radius);
         Some(Aabb::new(
@@ -157,5 +199,25 @@ mod tests {
         // Lateral intersections exist geometrically but local_y=3 > height=2 → both skipped.
         let c = unit_cone();
         assert!(shoot(&c, 0.0, 3.0, -5.0, 0.0, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn any_hit_agrees_with_hit() {
+        let c = unit_cone();
+        let rays = [
+            (0.0, 1.0, -5.0, 0.0, 0.0, 1.0),   // lateral hit
+            (0.5, -5.0, 0.0, 0.0, 1.0, 0.0),   // base cap hit
+            (2.0, 1.0, -5.0, 0.0, 0.0, 1.0),   // outside radius
+            (0.0, 3.0, -5.0, 0.0, 0.0, 1.0),   // above height
+            (0.0, 1.0, -5.0, 0.0, 1.0, 0.0),   // angled miss
+        ];
+        for (ox, oy, oz, dx, dy, dz) in rays {
+            let r = Ray::new(Point3::new(ox, oy, oz), Vec3::new(dx, dy, dz));
+            assert_eq!(
+                c.hit(&r, 0.001, f32::INFINITY).is_some(),
+                c.any_hit(&r, 0.001, f32::INFINITY),
+                "mismatch for ray ({ox},{oy},{oz}) -> ({dx},{dy},{dz})"
+            );
+        }
     }
 }

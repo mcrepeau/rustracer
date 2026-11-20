@@ -70,6 +70,11 @@ impl Hittable for Translate {
         Some(rec)
     }
 
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        let moved = Ray::scatter_from(r.origin - self.offset, r.direction, r);
+        self.object.any_hit(&moved, t_min, t_max)
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         self.object.bounding_box().map(|bb| {
             Aabb::new(bb.min + self.offset, bb.max + self.offset)
@@ -153,6 +158,15 @@ impl Hittable for Rotate {
         rec.normal  = mat_apply(&self.fwd, rec.normal);
         rec.tangent = mat_apply(&self.fwd, rec.tangent);
         Some(rec)
+    }
+
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        let rotated = Ray::scatter_from(
+            mat_apply_t(&self.fwd, r.origin),
+            mat_apply_t(&self.fwd, r.direction),
+            r,
+        );
+        self.object.any_hit(&rotated, t_min, t_max)
     }
 
     fn bounding_box(&self) -> Option<Aabb> { self.bbox }

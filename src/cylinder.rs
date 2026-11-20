@@ -168,6 +168,46 @@ impl Hittable for Cylinder {
         best
     }
 
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        // Occlusion test: same acceptance conditions as hit(), but returns at the
+        // first valid root without building HitRecords, normals, or atan2 UVs.
+        let oc = r.origin - self.center;
+        let dx = r.direction.x;
+        let dz = r.direction.z;
+        let dy = r.direction.y;
+
+        // ── Lateral surface: x² + z² = r² ────────────────────────────────────
+        let a = dx * dx + dz * dz;
+        if a > 1e-8 {
+            let half_b = oc.x * dx + oc.z * dz;
+            let c      = oc.x * oc.x + oc.z * oc.z - self.radius * self.radius;
+            let disc   = half_b * half_b - a * c;
+            if disc >= 0.0 {
+                let sqrtd = disc.sqrt();
+                for root in [(-half_b - sqrtd) / a, (-half_b + sqrtd) / a] {
+                    if root < t_min || root >= t_max { continue; }
+                    let local_y = r.at(root).y - self.center.y;
+                    if local_y < 0.0 || local_y > self.height { continue; }
+                    return true;
+                }
+            }
+        }
+
+        // ── Caps ──────────────────────────────────────────────────────────────
+        if dy.abs() > 1e-8 {
+            for cap_local_y in [0.0_f32, self.height] {
+                let t = (cap_local_y - oc.y) / dy;
+                if t < t_min || t >= t_max { continue; }
+                let p  = r.at(t);
+                let lx = p.x - self.center.x;
+                let lz = p.z - self.center.z;
+                if lx * lx + lz * lz <= self.radius * self.radius { return true; }
+            }
+        }
+
+        false
+    }
+
     fn bounding_box(&self) -> Option<Aabb> {
         let r = Vec3::new(self.radius, 0.0, self.radius);
         Some(Aabb::new(
