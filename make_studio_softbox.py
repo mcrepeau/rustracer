@@ -4,7 +4,8 @@ Equirectangular Radiance RGBE (RLE), 2048x1024, v=0 = zenith (+Y), u wraps azimu
 Near-uniform bright base (zenith ~2.4 -> nadir ~0.8) so the visible background is
 an even light from all sides; the four softbox positions only add very soft,
 low-contrast glows (no hard rectangle edges, nothing pixellated). Directional
-lighting and caustics come from the [[lights]] quads in the scene file, not here.
+lighting and caustics come from this map. A warm global tint (TINT) sets the
+color temperature.
 Run from the repo root:  py make_studio_softbox.py
 """
 import math
@@ -48,6 +49,10 @@ PANELS = [
 ]
 SOFT = 0.9
 
+# Global color-temperature tint applied to everything: warm (~3500 K look),
+# R up / B down relative to neutral daylight.
+TINT = (1.12, 1.00, 0.84)
+
 
 def build_rows():
     rows = []
@@ -65,7 +70,7 @@ def build_rows():
                     r += rad * tint[0] * w
                     g += rad * tint[1] * w
                     b += rad * tint[2] * w
-            row += rgbe(r, g, b)
+            row += rgbe(r * TINT[0], g * TINT[1], b * TINT[2])
         rows.append(bytes(row))
     return rows
 
