@@ -6,9 +6,9 @@ A physically-based path tracer built in Rust. It simulates how light actually be
 
 ## Gallery
 
-| OBJ loading (`scene.toml` — default demo scene) | Gem from an IGI report (`gem_LG625469749.toml`) |
-|:---:|:---:|
-| ![OBJ Loading](examples/render_obj_loading_5000spp.png) chair + basketball OBJ meshes, PBR textures, HDR sky | ![Oval diamond](render_lg625469749_oval_diamond_0500spp.png) oval brilliant built from grading-report measurements, studio light-tent HDR |
+| OBJ loading (`scene.toml` — default demo scene) |
+|:---:|
+| ![OBJ Loading](examples/render_obj_loading_5000spp.png) chair + basketball OBJ meshes, PBR textures, HDR sky — render your own gem with `gem_LG625469749.toml` |
 
 ### Animation — 360° orbit
 
