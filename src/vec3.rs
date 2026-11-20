@@ -92,7 +92,9 @@ impl Mul    for Vec3 { type Output = Self; fn mul(self, r: Self) -> Self { Self:
 
 impl Mul<f32> for Vec3 { type Output = Self; fn mul(self, t: f32) -> Self { Self::new(self.x*t, self.y*t, self.z*t) } }
 impl Mul<Vec3> for f32 { type Output = Vec3; fn mul(self, v: Vec3) -> Vec3 { v * self } }
-impl Div<f32>  for Vec3 { type Output = Self; fn div(self, t: f32) -> Self { self * (1.0/t) } }
+// Direct component-wise division, NOT `self * (1.0/t)`: the reciprocal form turns
+// `0 / tiny` into `0 * inf = NaN`, while `0 / tiny` directly is a clean 0.
+impl Div<f32>  for Vec3 { type Output = Self; fn div(self, t: f32) -> Self { Self::new(self.x/t, self.y/t, self.z/t) } }
 
 impl AddAssign for Vec3 {
     fn add_assign(&mut self, rhs: Self) { self.x += rhs.x; self.y += rhs.y; self.z += rhs.z; }
@@ -109,7 +111,8 @@ impl MulAssign<f32> for Vec3 {
     fn mul_assign(&mut self, t: f32) { self.x *= t; self.y *= t; self.z *= t; }
 }
 impl DivAssign<f32> for Vec3 {
-    fn div_assign(&mut self, t: f32) { let inv = 1.0 / t; self.x *= inv; self.y *= inv; self.z *= inv; }
+    // Direct division — see the note on Div<f32> above (0/tiny must not become NaN).
+    fn div_assign(&mut self, t: f32) { self.x /= t; self.y /= t; self.z /= t; }
 }
 
 impl std::ops::Index<usize> for Vec3 {
@@ -122,5 +125,21 @@ impl std::ops::Index<usize> for Vec3 {
             2 => &self.z,
             _ => panic!("Vec3 index out of bounds: {i}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn div_by_denormal_does_not_produce_nan() {
+        // With the old reciprocal form (self * (1.0/t)), 0 * inf = NaN.
+        // Use an actual denormal so 1/t overflows to inf.
+        let tiny = f32::from_bits(1); // smallest positive denormal ≈ 1.4e-45
+        let v = Vec3::new(0.0, 1.0, -2.0) / tiny;
+        assert_eq!(v.x, 0.0, "0 / tiny must be 0, not NaN");
+        assert!(v.y.is_infinite() && v.y > 0.0);
+        assert!(v.z.is_infinite() && v.z < 0.0);
     }
 }

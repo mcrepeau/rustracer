@@ -396,18 +396,18 @@ impl Hittable for BvhTree {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
         if self.nodes.is_empty() { return None; }
 
-        let mut stack = [0i32; 128];
-        let mut top   = 1usize;
+        // Vec-backed stack: a degenerate SAH split can in principle produce a tree
+        // deeper than any fixed array, so grow on demand instead of overflowing
+        // (the old fixed [i32; 128] + debug_assert! panicked in release builds).
+        let mut stack: Vec<i32> = Vec::with_capacity(128);
+        stack.push(0);
         let mut best: Option<HitRecord<'_>> = None;
         let mut closest = t_max;
 
         let ro = [r.origin.x,  r.origin.y,  r.origin.z];
         let id = [r.inv_dir.x, r.inv_dir.y, r.inv_dir.z];
 
-        while top > 0 {
-            top -= 1;
-            let entry = stack[top];
-
+        while let Some(entry) = stack.pop() {
             if entry < 0 {
                 let prim_idx = (-entry - 1) as usize;
                 if let Some(rec) = self.objects[prim_idx].hit(r, t_min, closest) {
@@ -443,9 +443,7 @@ impl Hittable for BvhTree {
             hits[..n_hits].sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
 
             for &(_, child) in &hits[..n_hits] {
-                debug_assert!(top < stack.len(), "BVH traversal stack overflow at depth {top}");
-                stack[top] = child;
-                top += 1;
+                stack.push(child);
             }
         }
 
@@ -455,16 +453,14 @@ impl Hittable for BvhTree {
     fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
         if self.nodes.is_empty() { return false; }
 
-        let mut stack = [0i32; 128];
-        let mut top   = 1usize;
+        // Vec-backed stack — see hit() for why this is not a fixed array.
+        let mut stack: Vec<i32> = Vec::with_capacity(128);
+        stack.push(0);
 
         let ro = [r.origin.x,  r.origin.y,  r.origin.z];
         let id = [r.inv_dir.x, r.inv_dir.y, r.inv_dir.z];
 
-        while top > 0 {
-            top -= 1;
-            let entry = stack[top];
-
+        while let Some(entry) = stack.pop() {
             if entry < 0 {
                 if self.objects[(-entry - 1) as usize].any_hit(r, t_min, t_max) {
                     return true;
@@ -489,9 +485,7 @@ impl Hittable for BvhTree {
             // No sort needed — any order is fine when one hit is enough.
             for c in 0..QBVH_WIDTH {
                 if mask & (1 << c) != 0 {
-                    debug_assert!(top < stack.len(), "BVH traversal stack overflow at depth {top}");
-                    stack[top] = node.children[c];
-                    top += 1;
+                    stack.push(node.children[c]);
                 }
             }
         }

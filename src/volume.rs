@@ -44,7 +44,9 @@ pub(crate) fn hg_sample(v_in: Vec3, g: f32, rng: &mut dyn rand::RngCore) -> Vec3
     let cos_theta = if g.abs() < 1e-3 {
         1.0 - 2.0 * xi1          // isotropic fallback: uniform in [-1, 1]
     } else {
-        let s = (1.0 - g * g) / (1.0 - g + 2.0 * g * xi1);
+        // At |g| = 1 with xi1 at the extreme, the denominator hits 0 → 0/0 NaN.
+        // Clamp it: the limit is s = 0, i.e. cos_theta = ±1 (pure forward/backward).
+        let s = (1.0 - g * g) / (1.0 - g + 2.0 * g * xi1).max(1e-12);
         (1.0 + g * g - s * s) / (2.0 * g)
     };
     let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
@@ -209,5 +211,26 @@ impl Hittable for NoiseMedium {
 
     fn bounding_box(&self) -> Option<Aabb> {
         self.boundary.bounding_box()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    #[test]
+    fn hg_sample_at_extreme_g_is_always_finite() {
+        // At |g| = 1 the CDF denominator can hit 0 → 0/0 NaN without the clamp.
+        let mut rng = SmallRng::seed_from_u64(1);
+        let w = Vec3::new(0.0, 0.0, 1.0);
+        for &g in &[1.0f32, -1.0, 0.999999, -0.999999] {
+            for _ in 0..20_000 {
+                let d = hg_sample(w, g, &mut rng);
+                assert!(d.x.is_finite() && d.y.is_finite() && d.z.is_finite(),
+                    "hg_sample(g={g}) produced non-finite direction {d:?}");
+            }
+        }
     }
 }

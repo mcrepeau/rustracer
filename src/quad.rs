@@ -21,6 +21,9 @@ impl Quad {
     pub fn new(q: Point3, u: Vec3, v: Vec3, mat: Arc<dyn Material>) -> Self {
         let n      = u.cross(v);
         let area   = n.length();
+        // Fail fast at scene construction: a degenerate quad would give a NaN
+        // normal (n / 0) that silently poisons every hit on it.
+        assert!(area > 1e-12, "Quad::new: degenerate quad — u and v are parallel or zero (cross length {area})");
         let normal = n / area;      // unit normal
         let d      = normal.dot(q);
         let w      = n / n.dot(n);
@@ -123,6 +126,18 @@ mod tests {
         let q = unit_quad();
         let rec = shoot(&q, 0.5, 0.5, 3.0, 0.0, 0.0, -1.0).expect("should hit");
         assert!((rec.t - 3.0).abs() < 1e-5, "t = {}", rec.t);
+    }
+
+    #[test]
+    #[should_panic(expected = "degenerate quad")]
+    fn degenerate_quad_panics_instead_of_nan_normal() {
+        // u and v parallel → cross product is zero → used to produce a NaN normal.
+        let _ = Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Arc::new(DummyMat),
+        );
     }
 
     #[test]

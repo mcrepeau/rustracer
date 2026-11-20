@@ -47,8 +47,11 @@ impl Hittable for Cone {
                     if local_y < 0.0 || local_y > h { continue; }
                     let lx = p.x - self.center.x;
                     let lz = p.z - self.center.z;
-                    // Gradient of F = x²+z² − k·(h−y)², gives outward normal
-                    let outward = Vec3::new(lx, k * (h - local_y), lz).unit();
+                    // Gradient of F = x²+z² − k·(h−y)², gives outward normal.
+                    // At the apex (local_y == h) the gradient is zero — fall back to +Y
+                    // instead of producing a NaN normal via 0/0.
+                    let grad    = Vec3::new(lx, k * (h - local_y), lz);
+                    let outward = if grad.length_squared() > 1e-12 { grad.unit() } else { Vec3::new(0.0, 1.0, 0.0) };
                     let mut rec = HitRecord::new(p, root, &*self.mat, r, outward);
                     let phi = lz.atan2(lx);
                     rec.u = (phi / TAU + 0.5).fract();
@@ -219,5 +222,15 @@ mod tests {
                 "mismatch for ray ({ox},{oy},{oz}) -> ({dx},{dy},{dz})"
             );
         }
+    }
+
+    #[test]
+    fn cone_apex_hit_normal_is_not_nan() {
+        // Ray straight down onto the apex (0, 2, 0): gradient is zero there.
+        let c = unit_cone();
+        let rec = shoot(&c, 0.0, 5.0, 0.0, 0.0, -1.0, 0.0).expect("apex should be hittable");
+        assert!(rec.normal.x.is_finite() && rec.normal.y.is_finite() && rec.normal.z.is_finite(),
+            "apex normal must be finite, got {:?}", rec.normal);
+        assert!((rec.normal.y - 1.0).abs() < 1e-5, "apex fallback normal should be +Y, got {:?}", rec.normal);
     }
 }

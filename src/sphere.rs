@@ -44,6 +44,7 @@ impl Hittable for Sphere {
         let center = self.center_at(r.time);
         let oc = r.origin - center;
         let a = r.direction.length_squared();
+        if a == 0.0 { return None; } // zero-length direction: roots would be NaN, and NaN passes the range check
         let half_b = oc.dot(r.direction);
         let c = oc.length_squared() - self.radius * self.radius;
         let disc = half_b * half_b - a * c;
@@ -67,6 +68,7 @@ impl Hittable for Sphere {
         let center = self.center_at(r.time);
         let oc     = r.origin - center;
         let a      = r.direction.length_squared();
+        if a == 0.0 { return false; } // zero-length direction — see hit()
         let half_b = oc.dot(r.direction);
         let c      = oc.length_squared() - self.radius * self.radius;
         let disc   = half_b * half_b - a * c;
@@ -109,5 +111,25 @@ impl Hittable for Sphere {
             None     => Some(b0),
             Some(c1) => Some(Aabb::surrounding(&b0, &Aabb::new(c1 - r, c1 + r))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hittable::{Material, ScatterRecord};
+    use std::sync::Arc;
+
+    struct DummyMat;
+    impl Material for DummyMat {
+        fn scatter(&self, _: &Ray, _: &HitRecord<'_>, _: &mut dyn rand::RngCore) -> Option<ScatterRecord> { None }
+    }
+
+    #[test]
+    fn zero_length_direction_returns_none_not_nan() {
+        let s = Sphere::new(Point3::new(0.0, 0.0, 0.0), 1.0, Arc::new(DummyMat));
+        let r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 0.0));
+        assert!(s.hit(&r, 0.001, f32::INFINITY).is_none(), "zero direction must miss, not NaN-hit");
+        assert!(!s.any_hit(&r, 0.001, f32::INFINITY));
     }
 }
