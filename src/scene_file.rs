@@ -467,8 +467,9 @@ pub struct GemConfig {
     /// color_grade tint and explicit cauchy_b/cauchy_c/absorption add on top.
     #[serde(default)]
     pub material:        Option<String>,
-    /// Cut style: "brilliant" (default; round/oval) or "step" (rectangular
-    /// emerald cut with chamfered corners and stepped crown/pavilion).
+    /// Cut style: "brilliant" (default; round/oval), "step" (rectangular
+    /// emerald cut with chamfered corners) or "princess" (square brilliant:
+    /// sharp corners, pointed culet, 4 facet rows per side).
     #[serde(default)]
     pub cut:             Option<String>,
     #[serde(default)]
@@ -539,8 +540,9 @@ fn gem_preset(name: &str) -> Result<(f32, f32, Color), String> {
 }
 
 /// Build an analytic gem from a grading report's key fields: a round/oval
-/// brilliant `Diamond` (cut = "brilliant", default) or a rectangular step cut
-/// `StepCut` (cut = "step"), with a preset or overridden `SpectralDielectric`.
+/// brilliant `Diamond` (cut = "brilliant", default), a rectangular step cut
+/// `StepCut` (cut = "step", the emerald cut) or a square princess cut
+/// (cut = "princess"), with a preset or overridden `SpectralDielectric`.
 fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     // Size: explicit measurements win, else carat weight.  With measurements,
     // the minor axis W sets the radius and L/W the oval ratio (round if ~equal).
@@ -620,7 +622,15 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
             Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius,
                 StepCutParams { table_pct: g.table_pct, crown_angle, pavilion_angle, ..Default::default() },
                 mat)),
-        other => return Err(format!("unknown gem cut '{other}' (expected brilliant or step)")),
+        // Princess cut: square outline (sharp corners), pointed culet, and
+        // 4 shallow facet rows per side instead of 3 stepped ones.
+        "princess" =>
+            Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius,
+                StepCutParams { table_pct: g.table_pct, crown_angle, pavilion_angle,
+                                corner_pct: 0.0, culet_pct: 0.0,
+                                crown_steps: 4, pavilion_steps: 4, step_spread: 0.15 },
+                mat)),
+        other => return Err(format!("unknown gem cut '{other}' (expected brilliant, step or princess)")),
     };
     if let Some(s) = g.scale     { hittable = Arc::new(UniformScale::new(hittable, s)); }
     if let Some(a) = g.rotate_y  { hittable = Arc::new(Rotate::around_y(hittable, a)); }
@@ -1074,10 +1084,24 @@ center = [0,0,0]
     }
 
     #[test]
+    fn gem_princess_cut_is_square() {
+        let g = parse_gem("[[gems]]
+measurements_mm = [7.0, 7.0, 4.2]
+cut = \"princess\"
+material = \"sapphire\"
+center = [0,0,0]
+");
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        assert!((bb.max.x - bb.min.x - 0.007).abs() < 1e-6, "square side 7 mm");
+        assert!((bb.max.z - bb.min.z - 0.007).abs() < 1e-6, "square side 7 mm");
+    }
+
+    #[test]
     fn gem_unknown_cut_or_material_errors() {
         let g = parse_gem("[[gems]]
 carat = 1.0
-cut = \"princess\"
+cut = \"heart\"
 center = [0,0,0]
 ");
         assert!(build_gem(&g).err().map(|e| e.contains("cut")).unwrap_or(false));

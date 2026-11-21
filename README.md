@@ -240,8 +240,9 @@ material = { type = "lambertian", color = [r,g,b] }
 > oval; at 16 the stretched 16-gon shows straight edges). `step_cut` is the rectangular "emerald
 > cut": chamfered-corner octagon girdle, stepped crown/pavilion rows (`crown_steps`/`pavilion_steps`
 > planes per edge, angles spread by `step_spread`), flat table/culet. Both are analytic convex
-> polyhedra (half-space intersection), so ray cost is O(planes). Other topologies (princess, hearts,
-> pears) would be separate shapes. `[[gems]]` presets are the report-driven path: proportions come
+> polyhedra (half-space intersection), so ray cost is O(planes). A princess cut is the same
+> `step_cut` geometry with `corner_pct = 0` and `culet_pct = 0` (exposed as `cut = "princess"` in
+> `[[gems]]`); hearts, pears and true chevron faceting are not modeled. `[[gems]]` presets are the report-driven path: proportions come
 > from the IGI/GIA fields, with `girdle_facets` auto-set to 64 for ovals.
 
 Per-object transforms, applied in SRT order (scale → rotate_y → translate):
@@ -272,7 +273,8 @@ crown_pct       = 16.0                 # IGI proportions-diagram style (% of min
 pavilion_pct    = 41.0
 depth_pct       = 61.8                 # cross-checked against the angles
 color_grade     = "E"                  # Beer-Lambert tint from the grade
-cut             = "brilliant"          # "brilliant" (round/oval) or "step" (emerald cut)
+cut             = "brilliant"          # "brilliant" (round/oval), "step" (emerald cut) or
+                                       # "princess" (square brilliant: sharp corners, point culet)
 material        = "diamond"            # preset: "diamond" | "sapphire" | "ruby" | "emerald"
                                        # (IOR/dispersion/body colour; grade tint adds on top;
                                        #  cauchy_b/cauchy_c/absorption override explicitly)

@@ -86,18 +86,24 @@ impl StepCut {
         // Girdle outline octagon, described per edge by (outward unit normal m
         // in the XZ plane, distance h of the edge line from the center).
         // Vertices (relative to center, XZ): (±(a−c), ±b) and (±a, ±(b−c)).
-        let s2 = std::f32::consts::FRAC_1_SQRT_2;
-        let hc = (a - c + b) * s2;   // chamfer edge distance
-        let edges: [(Vec3, f32); 8] = [
+        // With corner_pct = 0 (princess cut) the chamfer edges degenerate to
+        // points, so drop them and keep the plain rectangle outline.
+        let mut edges: Vec<(Vec3, f32)> = vec![
             (Vec3::new( 1.0, 0.0,  0.0), a),
             (Vec3::new( 0.0, 0.0,  1.0), b),
             (Vec3::new(-1.0, 0.0,  0.0), a),
             (Vec3::new( 0.0, 0.0, -1.0), b),
-            (Vec3::new( s2, 0.0,  s2), hc),
-            (Vec3::new(-s2, 0.0,  s2), hc),
-            (Vec3::new(-s2, 0.0, -s2), hc),
-            (Vec3::new( s2, 0.0, -s2), hc),
         ];
+        if c > 1e-6 {
+            let s2 = std::f32::consts::FRAC_1_SQRT_2;
+            let hc = (a - c + b) * s2;   // chamfer edge distance
+            edges.extend_from_slice(&[
+                (Vec3::new( s2, 0.0,  s2), hc),
+                (Vec3::new(-s2, 0.0,  s2), hc),
+                (Vec3::new(-s2, 0.0, -s2), hc),
+                (Vec3::new( s2, 0.0, -s2), hc),
+            ]);
+        }
 
         let cs = params.crown_steps.max(1);
         let ps = params.pavilion_steps.max(1);
@@ -108,7 +114,7 @@ impl StepCut {
             if rows <= 1 { 1.0 } else { 1.0 + spread * (1.0 - 2.0 * i as f32 / (rows - 1) as f32) }
         };
 
-        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity(2 + 8 * (cs + ps) as usize);
+        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity(2 + edges.len() * (cs + ps) as usize);
 
         for &(m, h) in &edges {
             // ── Crown steps: equal vertical rises, runs set by the row angle ──
@@ -245,6 +251,18 @@ mod tests {
         assert!(rec.p.x > 1.0, "exit x = {}", rec.p.x);
         // Exiting through the +X crown: back-face, so rec.normal points -X (toward the ray).
         assert!(!rec.front_face && rec.normal.x < 0.0, "got {:?} front={}", rec.normal, rec.front_face);
+    }
+
+    #[test]
+    fn zero_corner_pct_gives_sharp_square_corners() {
+        // corner_pct = 0 -> only 4 outline edges (no chamfer planes)
+        let p = StepCutParams { corner_pct: 0.0, ..params() };
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat());
+        assert_eq!(s.planes.len(), 2 + 4 * (3 + 3));
+        // Diagonal ray reaches the sharp corner (1, 1): x + z = a + b = 2.
+        let r = Ray::new(Point3::new(10.0, 0.0, 10.0), Vec3::new(-1.0, 0.0, -1.0).unit());
+        let rec = s.hit(&r, 0.001, 100.0).expect("hit");
+        assert!((rec.p.x + rec.p.z - 2.0).abs() < 1e-4, "x+z = {}", rec.p.x + rec.p.z);
     }
 
     #[test]
