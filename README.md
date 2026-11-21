@@ -235,15 +235,17 @@ material = { type = "lambertian", color = [r,g,b] }
 > Use `disk` rather than `infinite_plane` when an env map is the background — an infinite plane extends to the horizon and clips into the sky.
 
 > **Cut types:** `diamond` is a brilliant-family cutter (table + alternating crown/pavilion mains
-> over an N-gon girdle). Round and oval are the same topology — oval is just `oval_ratio > 1`
+> over an N-gon girdle). Round and oval are the same topology - oval is just `oval_ratio > 1`
 > (vertices lie exactly on the ellipse, so `girdle_facets = 64` makes the outline a visually perfect
-> oval; at 16 the stretched 16-gon shows straight edges). `step_cut` is the rectangular "emerald
-> cut": chamfered-corner octagon girdle, stepped crown/pavilion rows (`crown_steps`/`pavilion_steps`
-> planes per edge, angles spread by `step_spread`), flat table/culet. Both are analytic convex
-> polyhedra (half-space intersection), so ray cost is O(planes). A princess cut is the same
-> `step_cut` geometry with `corner_pct = 0` and `culet_pct = 0` (exposed as `cut = "princess"` in
-> `[[gems]]`), plus `chevrons` diagonal rows per corner (default 3 for princess, 0 otherwise) for
-> the V-shaped facets. Hearts and pears are not modeled. `[[gems]]` presets are the report-driven path: proportions come
+> oval; at 16 the stretched 16-gon shows straight edges). `step_cut` is the step-cut family with a
+> **polygon girdle outline** (`outline = "rect" | "rounded_rect" | "triangle" | "hexagon" |
+> "marquise" | "pear" | "polygon"`), stepped crown/pavilion rows per edge (`crown_steps` /
+> `pavilion_steps`, angles spread by `step_spread`), optional chevron rows per vertex (`chevrons`),
+> and a flat table/culet. `[[gems]]` exposes named presets: `cut = "step"` (emerald cut),
+> `"princess"` (square + chevrons), `"asscher"`, `"radiant"`, `"baguette"`, `"cushion"`,
+> `"trillion"`, `"marquise"`, `"pear"`. All are analytic convex polyhedra (half-space
+> intersection), so ray cost is O(planes). Non-convex cuts (hearts, clovers) are not modeled -
+> use an OBJ mesh for those. `[[gems]]` presets are the report-driven path: proportions come
 > from the IGI/GIA fields, with `girdle_facets` auto-set to 64 for ovals.
 
 Per-object transforms, applied in SRT order (scale → rotate_y → translate):
@@ -274,7 +276,9 @@ crown_pct       = 16.0                 # IGI proportions-diagram style (% of min
 pavilion_pct    = 41.0
 depth_pct       = 61.8                 # cross-checked against the angles
 color_grade     = "E"                  # Beer-Lambert tint from the grade
-cut             = "brilliant"          # "brilliant" (round/oval), "step" (emerald cut) or
+cut             = "brilliant"          # "brilliant" (round/oval), "step" (emerald cut),
+                                       # "princess", "asscher", "radiant", "baguette",
+                                       # "cushion", "trillion", "marquise", "pear"
                                        # "princess" (square brilliant: sharp corners, point culet)
 material        = "diamond"            # preset: "diamond" | "sapphire" | "ruby" | "emerald"
                                        # (IOR/dispersion/body colour; grade tint adds on top;

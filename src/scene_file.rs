@@ -13,7 +13,7 @@ use crate::material::{
 use crate::cone::Cone;
 use crate::cylinder::Cylinder;
 use crate::diamond::{Diamond, DiamondParams};
-use crate::step_cut::{StepCut, StepCutParams};
+use crate::step_cut::{StepCut, StepCutParams, StepOutline};
 use crate::disk::Disk;
 use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
@@ -189,8 +189,9 @@ pub enum ShapeConfig {
         #[serde(default = "default_girdle_facets")]
         girdle_facets:  u32,
     },
-    /// Rectangular step cut ("emerald cut") as an analytic convex polyhedron:
-    /// chamfered-corner outline, stepped crown and pavilion, flat table/culet.
+    /// Step-family cut (emerald/princess/cushion/trillion/marquise/...) as an
+    /// analytic convex polyhedron: polygon girdle outline, stepped crown and
+    /// pavilion, flat table/culet.
     StepCut {
         center:   [f32; 3],
         /// Full length along X and width along Z (scene units).
@@ -202,9 +203,27 @@ pub enum ShapeConfig {
         crown_angle:    f32,
         #[serde(default = "default_pavilion_angle")]
         pavilion_angle: f32,
-        /// Corner chamfer as % of the smaller semi-axis.
+        /// Girdle outline: "rect" (default), "rounded_rect" (cushion),
+        /// "triangle" (trillion), "hexagon", "marquise", "pear", or
+        /// "polygon" (requires `points`).
+        #[serde(default)]
+        outline:        Option<String>,
+        /// Explicit outline vertices for outline = "polygon" (XZ, relative
+        /// to `center`).
+        #[serde(default)]
+        points:         Option<Vec<[f32; 2]>>,
+        /// Corner chamfer as % of the smaller semi-axis (rect outlines).
         #[serde(default = "default_corner_pct")]
         corner_pct:     f32,
+        /// Arc segments per corner (rounded_rect).
+        #[serde(default = "default_corner_segs")]
+        corner_segs:    u32,
+        /// Outline segments for marquise/pear ovals.
+        #[serde(default = "default_oval_segs")]
+        oval_segs:      u32,
+        /// Round one end and point the other (marquise/pear).
+        #[serde(default)]
+        pear:           bool,
         #[serde(default = "default_steps")]
         crown_steps:    u32,
         #[serde(default = "default_steps")]
@@ -215,7 +234,7 @@ pub enum ShapeConfig {
         /// Angle spread between girdle and table rows (0 = single slope).
         #[serde(default = "default_step_spread")]
         step_spread:    f32,
-        /// Diagonal chevron rows per corner (0 = none; best with corner_pct = 0).
+        /// Diagonal chevron rows per outline vertex (0 = none).
         #[serde(default)]
         chevrons:       u32,
     },
@@ -471,8 +490,8 @@ pub struct GemConfig {
     #[serde(default)]
     pub material:        Option<String>,
     /// Cut style: "brilliant" (default; round/oval), "step" (rectangular
-    /// emerald cut with chamfered corners) or "princess" (square brilliant:
-    /// sharp corners, pointed culet, 4 facet rows per side).
+    /// emerald cut), "princess" (square brilliant + chevrons), "asscher",
+    /// "radiant", "baguette", "cushion", "trillion", "marquise" or "pear".
     #[serde(default)]
     pub cut:             Option<String>,
     #[serde(default)]
@@ -509,6 +528,8 @@ fn default_pavilion_angle()-> f32  { 40.75 }
 fn default_oval_ratio()    -> f32  { 1.0   }
 fn default_girdle_facets()  -> u32  { 16    }
 fn default_corner_pct()     -> f32  { 12.0  }
+fn default_corner_segs()    -> u32  { 4     }
+fn default_oval_segs()      -> u32  { 24    }
 fn default_steps()          -> u32  { 3     }
 fn default_culet_pct()      -> f32  { 8.0   }
 fn default_step_spread()    -> f32  { 0.25  }
@@ -546,10 +567,54 @@ fn gem_preset(name: &str) -> Result<(f32, f32, Color), String> {
     }
 }
 
+/// Map a `step_cut` shape's `outline` string to a [`StepOutline`].
+fn step_outline_name(name: &str, corner_pct: f32, corner_segs: u32, oval_segs: u32, pear: bool,
+                     points: Option<Vec<[f32; 2]>>) -> Result<StepOutline, String>
+{
+    Ok(match name {
+        "rect"         => StepOutline::Rect { corner_pct },
+        "rounded_rect" => StepOutline::RoundedRect { corner_pct, segs: corner_segs },
+        "triangle"     => StepOutline::Triangle,
+        "hexagon"      => StepOutline::Hexagon,
+        "marquise"     => StepOutline::PointedOval { segs: oval_segs, pear: false },
+        "pear"         => StepOutline::PointedOval { segs: oval_segs, pear },
+        "polygon"      => StepOutline::Polygon(points.ok_or("outline = \"polygon\" requires `points`")?),
+        other => return Err(format!(
+            "unknown step_cut outline '{other}' (expected rect, rounded_rect, triangle, hexagon, marquise, pear, polygon)")),
+    })
+}
+
+/// Named cut presets for `[[gems]] cut = "..."` (other than "brilliant"):
+/// (outline, culet_pct, crown_steps, pavilion_steps, step_spread, default chevrons).
+fn step_cut_preset(cut: &str, g: &GemConfig, crown_angle: f32, pavilion_angle: f32)
+    -> Result<StepCutParams, String>
+{
+    use StepOutline::*;
+    let ch = g.chevrons;
+    let (outline, culet_pct, crown_steps, pavilion_steps, step_spread, chev) = match cut {
+        "step"     => (Rect { corner_pct: 12.0 }, 8.0, 3, 3, 0.25, ch.unwrap_or(0)),
+        "princess" => (Rect { corner_pct: 0.0 },  0.0, 4, 4, 0.15, ch.unwrap_or(3)),
+        "asscher"  => (Rect { corner_pct: 22.0 }, 8.0, 3, 3, 0.20, ch.unwrap_or(0)),
+        "radiant"  => (Rect { corner_pct: 12.0 }, 0.0, 4, 4, 0.15, ch.unwrap_or(2)),
+        "baguette" => (Rect { corner_pct: 4.0 },  8.0, 2, 2, 0.10, ch.unwrap_or(0)),
+        "cushion"  => (RoundedRect { corner_pct: 30.0, segs: 4 }, 8.0, 3, 3, 0.15, ch.unwrap_or(0)),
+        "trillion" => (Triangle,                  0.0, 4, 4, 0.15, ch.unwrap_or(2)),
+        "marquise" => (PointedOval { segs: 24, pear: false }, 0.0, 4, 4, 0.15, ch.unwrap_or(2)),
+        "pear"     => (PointedOval { segs: 24, pear: true },  0.0, 4, 4, 0.15, ch.unwrap_or(2)),
+        other => return Err(format!(
+            "unknown gem cut '{other}' (expected brilliant, step, princess, asscher, radiant, baguette, cushion, trillion, marquise or pear)")),
+    };
+    Ok(StepCutParams {
+        table_pct: g.table_pct, crown_angle, pavilion_angle,
+        outline, culet_pct, crown_steps, pavilion_steps, step_spread, chevrons: chev,
+    })
+}
+
 /// Build an analytic gem from a grading report's key fields: a round/oval
-/// brilliant `Diamond` (cut = "brilliant", default), a rectangular step cut
-/// `StepCut` (cut = "step", the emerald cut) or a square princess cut
-/// (cut = "princess"), with a preset or overridden `SpectralDielectric`.
+/// brilliant `Diamond` (cut = "brilliant", default) or a step-family `StepCut`
+/// (cut = "step"/"princess"/"asscher"/"radiant"/"baguette"/"cushion"/
+/// "trillion"/"marquise"/"pear"), with a preset or overridden
+/// `SpectralDielectric`.
 fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     // Size: explicit measurements win, else carat weight.  With measurements,
     // the minor axis W sets the radius and L/W the oval ratio (round if ~equal).
@@ -620,26 +685,15 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     let absorption = preset_abs + grade_tint + g.absorption.map(col).unwrap_or_default();
     let mat: Arc<dyn Material> = Arc::new(SpectralDielectric { cauchy_b, cauchy_c, absorption });
 
-    // Cut style: brilliant (round/oval) or step (rectangular emerald cut).
+    // Cut style: brilliant (round/oval) or a step-family preset.
     let cut = g.cut.as_deref().unwrap_or("brilliant");
     let mut hittable: Arc<dyn Hittable> = match cut {
         "brilliant" =>
             Arc::new(Diamond::new(p3(g.center), radius, params, mat)),
-        "step" =>
-            Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius,
-                StepCutParams { table_pct: g.table_pct, crown_angle, pavilion_angle,
-                                chevrons: g.chevrons.unwrap_or(0), ..Default::default() },
-                mat)),
-        // Princess cut: square outline (sharp corners), pointed culet, and
-        // 4 shallow facet rows per side instead of 3 stepped ones.
-        "princess" =>
-            Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius,
-                StepCutParams { table_pct: g.table_pct, crown_angle, pavilion_angle,
-                                corner_pct: 0.0, culet_pct: 0.0,
-                                crown_steps: 4, pavilion_steps: 4, step_spread: 0.15,
-                                chevrons: g.chevrons.unwrap_or(3) },
-                mat)),
-        other => return Err(format!("unknown gem cut '{other}' (expected brilliant, step or princess)")),
+        other => {
+            let sp = step_cut_preset(other, g, crown_angle, pavilion_angle)?;
+            Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius, sp, mat))
+        }
     };
     if let Some(s) = g.scale     { hittable = Arc::new(UniformScale::new(hittable, s)); }
     if let Some(a) = g.rotate_y  { hittable = Arc::new(Rotate::around_y(hittable, a)); }
@@ -748,12 +802,15 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                             DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets },
                             mat,
                         )),
-                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, corner_pct, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons } =>
+                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, outline, points, corner_pct, corner_segs, oval_segs, pear, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons } => {
+                        let ol = step_outline_name(outline.as_deref().unwrap_or("rect"), corner_pct, corner_segs, oval_segs, pear, points)
+                            .map_err(|e| format!("objects[{i}].shape: {e}"))?;
                         Arc::new(StepCut::new(
                             p3(center), 0.5 * length, 0.5 * width,
-                            StepCutParams { table_pct, crown_angle, pavilion_angle, corner_pct, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons },
+                            StepCutParams { table_pct, crown_angle, pavilion_angle, outline: ol, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons },
                             mat,
-                        )),
+                        ))
+                    }
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
                         Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
                     ShapeConfig::Mesh { path } =>
@@ -1117,6 +1174,31 @@ center = [0,0,0]
         let h = build_gem(&g).unwrap();
         let bb = h.bounding_box().unwrap();
         assert!((bb.max.x - bb.min.x - 0.007).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gem_trillion_and_marquise_build() {
+        let g = parse_gem("[[gems]]
+measurements_mm = [7.0, 7.0, 4.2]
+cut = \"trillion\"
+center = [0,0,0]
+");
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        // triangle vertices (0, b), (+-0.866 a, -0.5 b), a = b = 3.5 mm * 0.001
+        let a = 0.0035f32;
+        assert!((bb.max.x - bb.min.x - 2.0 * 0.866 * a).abs() < 1e-5, "w {}", bb.max.x - bb.min.x);
+        assert!((bb.max.z - bb.min.z - 1.5 * a).abs() < 1e-5, "d {}", bb.max.z - bb.min.z);
+
+        let g = parse_gem("[[gems]]
+measurements_mm = [10.0, 4.0, 3.0]
+cut = \"marquise\"
+center = [0,0,0]
+");
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        assert!((bb.max.x - bb.min.x - 0.010).abs() < 1e-6, "length 10 mm");
+        assert!((bb.max.z - bb.min.z - 0.004).abs() < 1e-6, "width 4 mm");
     }
 
     #[test]
