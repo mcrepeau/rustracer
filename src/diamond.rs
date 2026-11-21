@@ -190,6 +190,10 @@ impl Hittable for Diamond {
     }
 
     fn bounding_box(&self) -> Option<Aabb> { Some(self.bbox) }
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        // Occlusion test: the slab test alone decides; skip HitRecord + UVs.
+        convex_hit(&self.planes, r, t_min, t_max).is_some()
+    }
 }
 
 #[cfg(test)]
@@ -226,6 +230,28 @@ mod tests {
             let r = Ray::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
             let rec = d.hit(&r, 0.001, 100.0).expect("hit");
             assert!((rec.p.x - q).abs() < 1e-4, "n={n} x={}", rec.p.x);
+        }
+    }
+
+    #[test]
+    fn any_hit_agrees_with_hit() {
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+            DiamondParams { oval_ratio: 1.4, girdle_facets: 64, ..Default::default() }, mat());
+        let rays = [
+            (0.0, 10.0, 0.0, 0.0, -1.0, 0.0),    // table from above
+            (10.0, 0.0, 0.0, -1.0, 0.0, 0.0),    // girdle edge +X
+            (10.0, 0.0, 10.0, -1.0, 0.0, -1.0),  // diagonal
+            (0.0, 0.3, 0.0, 1.0, 0.0, 0.0),      // interior exit
+            (0.0, 10.0, 3.0, 0.0, -1.0, 0.0),    // miss (outside girdle)
+            (0.0, -10.0, 0.0, 0.0, 1.0, 0.0),    // culet from below
+        ];
+        for (ox, oy, oz, dx, dy, dz) in rays {
+            let r = Ray::new(Point3::new(ox, oy, oz), Vec3::new(dx, dy, dz));
+            assert_eq!(
+                d.hit(&r, 0.001, 100.0).is_some(),
+                d.any_hit(&r, 0.001, 100.0),
+                "mismatch for ray ({ox},{oy},{oz}) -> ({dx},{dy},{dz})"
+            );
         }
     }
 

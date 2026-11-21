@@ -377,6 +377,10 @@ impl Hittable for StepCut {
     }
 
     fn bounding_box(&self) -> Option<Aabb> { Some(self.bbox) }
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        // Occlusion test: the slab test alone decides; skip HitRecord + UVs.
+        convex_hit(&self.planes, r, t_min, t_max).is_some()
+    }
 }
 
 #[cfg(test)]
@@ -579,6 +583,31 @@ mod tests {
         assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).is_err());
         assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), 0.0, 1.0, params(), mat()).is_err());
         assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), -1.0, 1.0, params(), mat()).is_err());
+    }
+
+    #[test]
+    fn any_hit_agrees_with_hit() {
+        // princess-style params (chevrons on) + an emerald-style one
+        for outline in [StepOutline::Rect { corner_pct: 0.0 }, StepOutline::RoundedRect { corner_pct: 30.0, segs: 4 }] {
+            let p = StepCutParams { outline, chevrons: 2, ..params() };
+            let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, p, mat()).unwrap();
+            let rays = [
+                (0.0, 10.0, 0.0, 0.0, -1.0, 0.0),    // table from above
+                (10.0, 0.0, 0.0, -1.0, 0.0, 0.0),    // girdle edge +X
+                (10.0, 0.0, 10.0, -1.0, 0.0, -1.0),  // diagonal
+                (0.0, 0.25, 0.0, 1.0, 0.0, 0.0),     // interior exit
+                (0.0, 10.0, 5.0, 0.0, -1.0, 0.0),    // miss
+                (0.0, -10.0, 0.0, 0.0, 1.0, 0.0),    // culet from below
+            ];
+            for (ox, oy, oz, dx, dy, dz) in rays {
+                let r = Ray::new(Point3::new(ox, oy, oz), Vec3::new(dx, dy, dz));
+                assert_eq!(
+                    s.hit(&r, 0.001, 100.0).is_some(),
+                    s.any_hit(&r, 0.001, 100.0),
+                    "mismatch for ray ({ox},{oy},{oz}) -> ({dx},{dy},{dz})"
+                );
+            }
+        }
     }
 
     #[test]
