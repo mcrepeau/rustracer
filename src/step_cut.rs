@@ -35,6 +35,14 @@ pub struct StepCutParams {
     /// Relative angle spread between the girdle row and the table row
     /// (0 = single slope, no visible steps).
     pub step_spread:    f32,
+    /// Diagonal chevron rows per outline corner (0 = none).  Each row is a
+    /// plane whose trace on the girdle plane is the diagonal TANGENT to the
+    /// outline at the corner (e.g. x/a + z/b = 2 at corner (+a, +b)), rising
+    /// toward the table corner (crown) / culet corner (pavilion).  Tangent at
+    /// y = 0, so the girdle outline is unchanged; the ridges where these meet
+    /// the side planes give the princess-cut chevron look.  Best with
+    /// corner_pct = 0 (square outline).
+    pub chevrons:       u32,
 }
 
 impl Default for StepCutParams {
@@ -48,6 +56,7 @@ impl Default for StepCutParams {
             pavilion_steps: 3,
             culet_pct:      8.0,
             step_spread:    0.25,
+            chevrons:       0,
         }
     }
 }
@@ -114,7 +123,9 @@ impl StepCut {
             if rows <= 1 { 1.0 } else { 1.0 + spread * (1.0 - 2.0 * i as f32 / (rows - 1) as f32) }
         };
 
-        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity(2 + edges.len() * (cs + ps) as usize);
+        let ch = params.chevrons;
+        let mut planes: Vec<(Vec3, f32)> =
+            Vec::with_capacity(2 + edges.len() * (cs + ps) as usize + 8 * ch as usize);
 
         for &(m, h) in &edges {
             // ── Crown steps: equal vertical rises, runs set by the row angle ──
@@ -140,6 +151,27 @@ impl StepCut {
                 planes.push((n, n.dot(p)));
                 dist -= dh;
                 y    -= dvp;
+            }
+        }
+
+        // ── Chevron facets: diagonal planes tangent at each rectangle corner ──
+        for sx in [1.0f32, -1.0] {
+            for sz in [1.0f32, -1.0] {
+                let c3 = Vec3::new(center.x + sx * a, center.y, center.z + sz * b);
+                // Trace direction of the tangent diagonal (sx*x/a + sz*z/b = 2).
+                let d  = Vec3::new(-sz * a, 0.0, sx * b);
+                let tc = Vec3::new(center.x + sx * k * a,  center.y + crown_h,    center.z + sz * k * b);
+                let cc = Vec3::new(center.x + sx * kc * a, center.y - pavilion_h, center.z + sz * kc * b);
+                for j in 0..ch {
+                    let f = (j + 1) as f32 / ch as f32;
+                    let pc = c3 + (tc - c3) * f;   // crown row target (toward table corner)
+                    let pv = c3 + (cc - c3) * f;   // pavilion row target (toward culet corner)
+                    for p in [pc, pv] {
+                        let mut n = d.cross(p - c3).unit();
+                        if n.dot(center) > n.dot(c3) { n = -n; }   // keep interior on the <= side
+                        planes.push((n, n.dot(c3)));
+                    }
+                }
             }
         }
 
@@ -263,6 +295,35 @@ mod tests {
         let r = Ray::new(Point3::new(10.0, 0.0, 10.0), Vec3::new(-1.0, 0.0, -1.0).unit());
         let rec = s.hit(&r, 0.001, 100.0).expect("hit");
         assert!((rec.p.x + rec.p.z - 2.0).abs() < 1e-4, "x+z = {}", rec.p.x + rec.p.z);
+    }
+
+    #[test]
+    fn chevron_planes_keep_outline_and_bbox() {
+        // Square 1x1 (a=b=1), corner_pct=0, chevrons=2 -> 4 corners x 2 rows x 2 sides.
+        let p = StepCutParams { corner_pct: 0.0, chevrons: 2, ..params() };
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat());
+        assert_eq!(s.planes.len(), 2 + 4 * (3 + 3) + 8 * 2);
+        // Girdle outline unchanged: diagonal ray still reaches the sharp corner.
+        let r = Ray::new(Point3::new(10.0, 0.0, 10.0), Vec3::new(-1.0, 0.0, -1.0).unit());
+        let rec = s.hit(&r, 0.001, 100.0).expect("hit");
+        assert!((rec.p.x + rec.p.z - 2.0).abs() < 1e-4, "x+z = {}", rec.p.x + rec.p.z);
+        // bbox unchanged (chevron planes stay inside the outline box)
+        let bb = s.bounding_box().unwrap();
+        assert!((bb.max.x - 1.0).abs() < 1e-6 && (bb.max.z - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn chevron_plane_cuts_crown_near_corner() {
+        // Ray straight down at (0.9, ., 0.9): without chevrons the ceiling there is
+        // a side plane; with chevrons=2 the corner chevron plane is lower, so the
+        // hit must be below the table and its normal must be diagonal (x ~ z).
+        let p = StepCutParams { corner_pct: 0.0, chevrons: 2, ..params() };
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat());
+        let r = Ray::new(Point3::new(0.9, 10.0, 0.9), Vec3::new(0.0, -1.0, 0.0));
+        let rec = s.hit(&r, 0.001, 100.0).expect("hit");
+        assert!(rec.p.y < 0.5 - 1e-3, "should be cut below the table (y={})", rec.p.y);
+        assert!((rec.normal.x - rec.normal.z).abs() < 1e-4 && rec.normal.x > 0.1,
+                "diagonal normal expected, got {:?}", rec.normal);
     }
 
     #[test]

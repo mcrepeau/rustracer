@@ -215,6 +215,9 @@ pub enum ShapeConfig {
         /// Angle spread between girdle and table rows (0 = single slope).
         #[serde(default = "default_step_spread")]
         step_spread:    f32,
+        /// Diagonal chevron rows per corner (0 = none; best with corner_pct = 0).
+        #[serde(default)]
+        chevrons:       u32,
     },
     InfinitePlane {
         point:  [f32; 3],
@@ -478,6 +481,10 @@ pub struct GemConfig {
     pub cauchy_c:        Option<f32>,
     #[serde(default)]
     pub absorption:      Option<[f32; 3]>,
+    /// Diagonal chevron rows per corner for step/princess cuts
+    /// (default 0 for "step", 3 for "princess").
+    #[serde(default)]
+    pub chevrons:        Option<u32>,
     /// Total girdle segments (even).  None = 16 for round, 64 for oval
     /// (ratio > 1.05) so the girdle outline is a smooth ellipse.
     #[serde(default)]
@@ -620,7 +627,8 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
             Arc::new(Diamond::new(p3(g.center), radius, params, mat)),
         "step" =>
             Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius,
-                StepCutParams { table_pct: g.table_pct, crown_angle, pavilion_angle, ..Default::default() },
+                StepCutParams { table_pct: g.table_pct, crown_angle, pavilion_angle,
+                                chevrons: g.chevrons.unwrap_or(0), ..Default::default() },
                 mat)),
         // Princess cut: square outline (sharp corners), pointed culet, and
         // 4 shallow facet rows per side instead of 3 stepped ones.
@@ -628,7 +636,8 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
             Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius,
                 StepCutParams { table_pct: g.table_pct, crown_angle, pavilion_angle,
                                 corner_pct: 0.0, culet_pct: 0.0,
-                                crown_steps: 4, pavilion_steps: 4, step_spread: 0.15 },
+                                crown_steps: 4, pavilion_steps: 4, step_spread: 0.15,
+                                chevrons: g.chevrons.unwrap_or(3) },
                 mat)),
         other => return Err(format!("unknown gem cut '{other}' (expected brilliant, step or princess)")),
     };
@@ -739,10 +748,10 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                             DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets },
                             mat,
                         )),
-                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, corner_pct, crown_steps, pavilion_steps, culet_pct, step_spread } =>
+                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, corner_pct, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons } =>
                         Arc::new(StepCut::new(
                             p3(center), 0.5 * length, 0.5 * width,
-                            StepCutParams { table_pct, crown_angle, pavilion_angle, corner_pct, crown_steps, pavilion_steps, culet_pct, step_spread },
+                            StepCutParams { table_pct, crown_angle, pavilion_angle, corner_pct, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons },
                             mat,
                         )),
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
@@ -1095,6 +1104,19 @@ center = [0,0,0]
         let bb = h.bounding_box().unwrap();
         assert!((bb.max.x - bb.min.x - 0.007).abs() < 1e-6, "square side 7 mm");
         assert!((bb.max.z - bb.min.z - 0.007).abs() < 1e-6, "square side 7 mm");
+    }
+
+    #[test]
+    fn gem_princess_with_chevrons_builds() {
+        let g = parse_gem("[[gems]]
+measurements_mm = [7.0, 7.0, 4.2]
+cut = \"princess\"
+chevrons = 2
+center = [0,0,0]
+");
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        assert!((bb.max.x - bb.min.x - 0.007).abs() < 1e-6);
     }
 
     #[test]

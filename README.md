@@ -242,7 +242,8 @@ material = { type = "lambertian", color = [r,g,b] }
 > planes per edge, angles spread by `step_spread`), flat table/culet. Both are analytic convex
 > polyhedra (half-space intersection), so ray cost is O(planes). A princess cut is the same
 > `step_cut` geometry with `corner_pct = 0` and `culet_pct = 0` (exposed as `cut = "princess"` in
-> `[[gems]]`); hearts, pears and true chevron faceting are not modeled. `[[gems]]` presets are the report-driven path: proportions come
+> `[[gems]]`), plus `chevrons` diagonal rows per corner (default 3 for princess, 0 otherwise) for
+> the V-shaped facets. Hearts and pears are not modeled. `[[gems]]` presets are the report-driven path: proportions come
 > from the IGI/GIA fields, with `girdle_facets` auto-set to 64 for ovals.
 
 Per-object transforms, applied in SRT order (scale → rotate_y → translate):
