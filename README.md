@@ -220,13 +220,15 @@ material = { type = "lambertian", color = [r,g,b] }
 # { type = "mesh",           path   = "assets/file.obj" }
 # { type = "diamond",        center = [x,y,z], radius = r, table_pct = 53.0,
 #                             crown_angle = 34.5, pavilion_angle = 40.75, oval_ratio = 1.0,
-#                             girdle_facets = 16 }   # girdle segments; ovals want 64+ (smooth outline)
 # { type = "step_cut",       center = [x,y,z], length = 0.009, width = 0.006,
 #                             table_pct = 65.0, crown_angle = 35.0, pavilion_angle = 42.0,
-#                             corner_pct = 12.0, crown_steps = 3, pavilion_steps = 3,
-#                             culet_pct = 8.0, step_spread = 0.25 }   # rectangular "emerald cut"
-# volume shapes (material field ignored; density+color inline):
-# { type = "constant_volume_sphere", center, radius, density, color, g = 0.0 }
+#                             outline = "rect",            # rect | rounded_rect | triangle |
+#                                                          # hexagon | marquise | pear | polygon
+#                             corner_pct = 12.0, corner_segs = 4,  # rect / rounded_rect
+#                             oval_segs = 24, pear = false,        # marquise / pear
+#                             points = [[x,z], ...],               # outline = "polygon" only
+#                             crown_steps = 3, pavilion_steps = 3,
+#                             culet_pct = 8.0, step_spread = 0.25, chevrons = 0 }
 # { type = "constant_volume_box",    p_min, p_max, density, color, g = 0.0 }
 # { type = "noise_volume_sphere",   center, radius, density, color, g = 0.0 }
 # { type = "noise_volume_box",      p_min, p_max, density, color, g = 0.0 }
@@ -324,7 +326,7 @@ Frame files are `{slug}_{frame:04d}.png`. Use `--frames 1` for a single still (`
 1. **`scene.toml`** — default demo: old wooden chair and basketball OBJ meshes with PBR textures (normal map on the basketball), concrete disk floor, sunset HDR env map, orbit animation.
 2. **`gem_LG625469749.toml`** — your IGI-graded stone as an oval brilliant (`[[gems]]`), floating in a procedural studio light-tent HDR (`assets/studio_softbox.hdr`), caustics on.
 3. **`gem_emerald.toml`** — demo step-cut gem (`cut = "step"`, `material = "emerald"` preset) in the same staging.
-3. **`bench.toml`** — the `--bench` reference scene (room + blackbody panel + spectral-glass caustics + SSS + OBJ mesh).
+4. **`bench.toml`** — the `--bench` reference scene (room + blackbody panel + spectral-glass caustics + SSS + OBJ mesh).
 
 ## Implementation notes
 

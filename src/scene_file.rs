@@ -553,7 +553,7 @@ pub fn load(path: &str) -> Result<SceneData, String> {
 /// Beer-Lambert sigma per scene unit, added on top of the color_grade tint.
 fn gem_preset(name: &str) -> Result<(f32, f32, Color), String> {
     match name {
-        // Diamond: nD 2.417, dispersion B-V ~ 0.044.
+        // Diamond: with these (pre-existing) constants nD = 2.412, nF-nC = 0.011.
         "diamond"  => Ok((2.395, 0.00585, Color::new(0.0, 0.0, 0.0))),
         // Corundum (sapphire / ruby): nD 1.768, dispersion ~ 0.018.  Blue
         // sapphire absorbs red+yellow (Cr3+/Fe-Ti charge transfer); ruby
@@ -632,6 +632,10 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     if g.scale_mm <= 0.0 { return Err("scale_mm must be positive".into()); }
     let radius = 0.5 * w_mm * g.scale_mm;
 
+    if !(g.table_pct > 0.0 && g.table_pct < 100.0) {
+        return Err(format!("gem '{}': table_pct must be in (0, 100), got {}", g.report, g.table_pct));
+    }
+
     // IGI-style crown/pavilion percentages are fractions of the MINOR axis;
     // convert to facet angles via the (round-space) facet geometry.
     let table_r = (g.table_pct / 100.0) * radius;
@@ -692,7 +696,9 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
             Arc::new(Diamond::new(p3(g.center), radius, params, mat)),
         other => {
             let sp = step_cut_preset(other, g, crown_angle, pavilion_angle)?;
-            Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius, sp, mat))
+            let cut_obj = StepCut::new(p3(g.center), radius * oval_ratio, radius, sp, mat)
+                .map_err(|e| format!("gem '{}': {e}", g.report))?;
+            Arc::new(cut_obj)
         }
     };
     if let Some(s) = g.scale     { hittable = Arc::new(UniformScale::new(hittable, s)); }
@@ -805,11 +811,12 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                     ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, outline, points, corner_pct, corner_segs, oval_segs, pear, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons } => {
                         let ol = step_outline_name(outline.as_deref().unwrap_or("rect"), corner_pct, corner_segs, oval_segs, pear, points)
                             .map_err(|e| format!("objects[{i}].shape: {e}"))?;
-                        Arc::new(StepCut::new(
+                        let sc = StepCut::new(
                             p3(center), 0.5 * length, 0.5 * width,
                             StepCutParams { table_pct, crown_angle, pavilion_angle, outline: ol, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons },
                             mat,
-                        ))
+                        ).map_err(|e| format!("objects[{i}].shape: {e}"))?;
+                        Arc::new(sc)
                     }
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
                         Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),

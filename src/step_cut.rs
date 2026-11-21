@@ -57,7 +57,7 @@ impl StepOutline {
                     for &sz in &[1.0f32, -1.0] {
                         let ccx = sx * (a - r);
                         let ccz = sz * (b - r);
-                        for j in 0..segs {
+                        for j in 0..=segs {
                             let ang = (j as f32 / segs as f32) * std::f32::consts::FRAC_PI_2;
                             v.push((ccx + sx * r * ang.cos(), ccz + sz * r * ang.sin()));
                         }
@@ -111,13 +111,15 @@ impl StepOutline {
 /// per outline edge; the facet angles spread linearly from
 /// `(1 + step_spread) * angle` at the girdle to `(1 - step_spread) * angle` at
 /// the table/culet, which is what produces the visible steps.  `chevrons`
-/// adds that many diagonal planes per outline VERTEX, tangent to the outline
-/// at the vertex (e.g. x/a + z/b = 2 at corner (+a, +b)), rising toward the
+/// adds that many diagonal planes per outline VERTEX, along the supporting
+/// line at the vertex (the angle-bisector perpendicular; for a square corner
+/// (+a, +a) that is x + z = 2a), rising toward the
 /// table/culet — the princess-cut chevron facets.  The table and culet are the
 /// outline inset by a constant margin along each edge normal (flat caps).
 #[derive(Clone, Debug)]
 pub struct StepCutParams {
     /// Table width as a percentage of the gem width.  Emerald cuts: 60–75 %.
+    /// Exact: row runs are normalized so the table inset equals b*(1 - table_pct/100).
     pub table_pct:      f32,
     /// Nominal crown angle at the girdle, in degrees (emerald cuts ~ 30–40°).
     pub crown_angle:    f32,
@@ -177,10 +179,57 @@ fn norm2(x: f32, z: f32) -> (f32, f32) {
     if l > 1e-12 { (x / l, z / l) } else { (0.0, 0.0) }
 }
 
+/// Dedupe adjacent (incl. wrap-around) vertices, then require >= 3 distinct
+/// vertices, a minimum edge length, non-zero area and convexity (all
+/// consecutive edge cross products share the sign of the signed area).
+fn validate_outline(verts: &mut Vec<(f32, f32)>, scale: f32) -> Result<(), String> {
+    let eps = 1e-6 * scale;
+    let mut out: Vec<(f32, f32)> = Vec::with_capacity(verts.len());
+    for &p in verts.iter() {
+        if let Some(&last) = out.last() {
+            if (p.0 - last.0).hypot(p.1 - last.1) < eps { continue; }
+        }
+        out.push(p);
+    }
+    if out.len() > 1 {
+        let first = out[0];
+        let last = *out.last().unwrap();
+        if (first.0 - last.0).hypot(first.1 - last.1) < eps { out.pop(); }
+    }
+    *verts = out;
+    let n = verts.len();
+    if n < 3 { return Err("outline needs at least 3 distinct vertices".into()); }
+    for i in 0..n {
+        let p = verts[i];
+        let q = verts[(i + 1) % n];
+        if (p.0 - q.0).hypot(p.1 - q.1) < eps {
+            return Err("outline has a zero-length edge".into());
+        }
+    }
+    let area2: f32 = (0..n)
+        .map(|i| { let p = verts[i]; let q = verts[(i + 1) % n]; p.0 * q.1 - q.0 * p.1 })
+        .sum();
+    if area2.abs() < eps * eps { return Err("outline has zero area".into()); }
+    for i in 0..n {
+        let p = verts[i];
+        let q = verts[(i + 1) % n];
+        let r = verts[(i + 2) % n];
+        let cross = (q.0 - p.0) * (r.1 - q.1) - (q.1 - p.1) * (r.0 - q.0);
+        if cross * area2 < 0.0 { return Err("polygon outline must be convex".into()); }
+    }
+    Ok(())
+}
+
 impl StepCut {
     /// `half_a` = semi-length along X, `half_b` = semi-width along Z.
-    pub fn new(center: Point3, half_a: f32, half_b: f32, params: StepCutParams, mat: Arc<dyn Material>) -> Self {
-        assert!(half_a > 0.0 && half_b > 0.0, "StepCut: half extents must be positive");
+    /// Returns Err (instead of panicking) on degenerate input so TOML errors
+    /// surface cleanly.
+    pub fn new(center: Point3, half_a: f32, half_b: f32, params: StepCutParams, mat: Arc<dyn Material>)
+        -> Result<Self, String>
+    {
+        if !(half_a > 0.0 && half_b > 0.0) || !half_a.is_finite() || !half_b.is_finite() {
+            return Err("StepCut: half extents must be positive and finite".into());
+        }
         let a = half_a;
         let b = half_b;
         let k    = (params.table_pct / 100.0).clamp(0.05, 0.95);        // table inset fraction of b
@@ -189,12 +238,15 @@ impl StepCut {
         let sp   = b * (1.0 - kc);                                       // culet inset (perpendicular)
         let crown_h    = s  * params.crown_angle.to_radians().tan();
         let pavilion_h = sp * params.pavilion_angle.to_radians().tan();
-        assert!(crown_h > 0.0 && pavilion_h > 0.0, "StepCut: angles must yield positive crown/pavilion height");
+        if !(crown_h > 0.0 && pavilion_h > 0.0) {
+            return Err(format!("StepCut: crown/pavilion angles must be in (0, 90) degrees, got {} / {}",
+                               params.crown_angle, params.pavilion_angle));
+        }
 
         // ── Girdle outline -> edges (outward unit normal m in XZ, distance h) ─
-        let verts = params.outline.vertices(a, b);
+        let mut verts = params.outline.vertices(a, b);
+        validate_outline(&mut verts, a.max(b))?;
         let nv = verts.len();
-        assert!(nv >= 3, "StepCut: outline needs at least 3 vertices");
         let gcx = verts.iter().map(|p| p.0).sum::<f32>() / nv as f32;
         let gcz = verts.iter().map(|p| p.1).sum::<f32>() / nv as f32;
         let mut edges: Vec<(Vec3, f32)> = Vec::with_capacity(nv);
@@ -221,13 +273,24 @@ impl StepCut {
         let mut planes: Vec<(Vec3, f32)> =
             Vec::with_capacity(2 + edges.len() * (cs + ps) as usize + 2 * nv * ch as usize);
 
+        // Row runs are normalized so the total inset is exactly s (table) / sp
+        // (culet): with step_spread > 0 the raw sum of dh differs from s, which
+        // used to make the table ~4% smaller than table_pct requested.
+        let tan_c = params.crown_angle.to_radians().tan();
+        let tan_p = params.pavilion_angle.to_radians().tan();
+        let dv  = crown_h / cs as f32;
+        let dvp = pavilion_h / ps as f32;
+        let sum_c: f32 = (0..cs).map(|i| dv  / (tan_c * factor(i, cs))).sum();
+        let sum_p: f32 = (0..ps).map(|i| dvp / (tan_p * factor(i, ps))).sum();
+        let norm_c = s / sum_c;
+        let norm_p = sp / sum_p;
+
         for &(m, h) in &edges {
             // ── Crown steps: equal vertical rises, runs set by the row angle ──
-            let dv = crown_h / cs as f32;
             let mut dist = h;                       // distance along m of the current profile point
             let mut y    = 0.0f32;
             for i in 0..cs {
-                let dh = dv / (params.crown_angle.to_radians().tan() * factor(i, cs));
+                let dh = dv / (tan_c * factor(i, cs)) * norm_c;
                 let n = Vec3::new(m.x * dv, dh, m.z * dv).unit();
                 let p = Vec3::new(center.x + m.x * dist, center.y + y, center.z + m.z * dist);
                 planes.push((n, n.dot(p)));
@@ -235,11 +298,10 @@ impl StepCut {
                 y    += dv;
             }
             // ── Pavilion steps ──
-            let dvp = pavilion_h / ps as f32;
             let mut dist = h;
             let mut y    = 0.0f32;
             for i in 0..ps {
-                let dh = dvp / (params.pavilion_angle.to_radians().tan() * factor(i, ps));
+                let dh = dvp / (tan_p * factor(i, ps)) * norm_p;
                 let n = Vec3::new(m.x * dvp, -dh, m.z * dvp).unit();
                 let p = Vec3::new(center.x + m.x * dist, center.y + y, center.z + m.z * dist);
                 planes.push((n, n.dot(p)));
@@ -277,17 +339,23 @@ impl StepCut {
         planes.push((Vec3::new(0.0,  1.0, 0.0),  center.y + crown_h));
         planes.push((Vec3::new(0.0, -1.0, 0.0), -(center.y - pavilion_h)));
 
-        // Exact bbox from the outline vertices.
+        // Exact bbox in X/Z from the outline vertices.  In Y, the caps sit at
+        // ±crown_h/pavilion_h, but when the inset exceeds the outline apothem
+        // (e.g. pointed culet on a pinched outline) the step planes bind first,
+        // so clamp the heights by the apothem to keep the box tight.
         let minx = verts.iter().map(|v| v.0).fold(f32::INFINITY, f32::min);
         let maxx = verts.iter().map(|v| v.0).fold(f32::NEG_INFINITY, f32::max);
         let minz = verts.iter().map(|v| v.1).fold(f32::INFINITY, f32::min);
         let maxz = verts.iter().map(|v| v.1).fold(f32::NEG_INFINITY, f32::max);
+        let apothem = edges.iter().map(|&(_, h)| h).fold(f32::INFINITY, f32::min);
+        let top    = s.min(apothem)  * tan_c;
+        let bottom = sp.min(apothem) * tan_p;
         let bbox = Aabb::new(
-            Point3::new(center.x + minx, center.y - pavilion_h, center.z + minz),
-            Point3::new(center.x + maxx, center.y + crown_h,    center.z + maxz),
+            Point3::new(center.x + minx, center.y - bottom, center.z + minz),
+            Point3::new(center.x + maxx, center.y + top,    center.z + maxz),
         );
 
-        Self { planes, bbox, mat, center, crown_h, pavilion_h }
+        Ok(Self { planes, bbox, mat, center, crown_h, pavilion_h })
     }
 }
 
@@ -326,14 +394,14 @@ mod tests {
 
     #[test]
     fn plane_count_is_caps_plus_edges_times_steps_plus_vertex_chevrons() {
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat()).unwrap();
         assert_eq!(s.planes.len(), 2 + 8 * (3 + 3));               // octagon outline
         let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0,
-            StepCutParams { crown_steps: 1, pavilion_steps: 2, ..params() }, mat());
+            StepCutParams { crown_steps: 1, pavilion_steps: 2, ..params() }, mat()).unwrap();
         assert_eq!(s.planes.len(), 2 + 8 * (1 + 2));
         // triangle outline: 3 edges, 3 vertices
         let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0,
-            StepCutParams { outline: StepOutline::Triangle, chevrons: 2, ..params() }, mat());
+            StepCutParams { outline: StepOutline::Triangle, chevrons: 2, ..params() }, mat()).unwrap();
         assert_eq!(s.planes.len(), 2 + 3 * (3 + 3) + 2 * 3 * 2);
     }
 
@@ -341,7 +409,7 @@ mod tests {
     fn bbox_matches_outline_and_heights() {
         // a=2, b=1, table 50% -> s = 0.5, crown 45° -> crown_h = 0.5
         // culet 8% -> sp = 0.92, pavilion 45° -> pavilion_h = 0.92
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat()).unwrap();
         let bb = s.bounding_box().unwrap();
         assert!((bb.min.x + 2.0).abs() < 1e-6 && (bb.max.x - 2.0).abs() < 1e-6);
         assert!((bb.min.z + 1.0).abs() < 1e-6 && (bb.max.z - 1.0).abs() < 1e-6);
@@ -350,7 +418,7 @@ mod tests {
 
     #[test]
     fn horizontal_ray_hits_girdle_edge_at_semi_axis() {
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat()).unwrap();
         let r = Ray::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
         let rec = s.hit(&r, 0.001, 100.0).expect("hit");
         assert!((rec.p.x - 2.0).abs() < 1e-4, "x = {}", rec.p.x);
@@ -360,7 +428,7 @@ mod tests {
     #[test]
     fn diagonal_ray_hits_chamfer_not_the_sharp_corner() {
         // a=2, b=1, corner 20% of b -> c = 0.2; chamfer plane: x + z = a - c + b = 2.8
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat()).unwrap();
         // Aim at the chamfer face midpoint (1.9, 0, 0.9).
         let target = Vec3::new(1.9, 0.0, 0.9);
         let r = Ray::new(Point3::new(10.0, 0.0, 5.0), (target - Vec3::new(10.0, 0.0, 5.0)).unit());
@@ -378,7 +446,7 @@ mod tests {
     fn zero_corner_pct_gives_sharp_square_corners() {
         // corner_pct = 0 -> 4 outline vertices (no chamfer planes)
         let p = StepCutParams { outline: StepOutline::Rect { corner_pct: 0.0 }, ..params() };
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).unwrap();
         assert_eq!(s.planes.len(), 2 + 4 * (3 + 3));
         // Diagonal ray reaches the sharp corner (1, 1): x + z = a + b = 2.
         let r = Ray::new(Point3::new(10.0, 0.0, 10.0), Vec3::new(-1.0, 0.0, -1.0).unit());
@@ -388,7 +456,7 @@ mod tests {
 
     #[test]
     fn ray_from_above_hits_table_with_up_normal() {
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat()).unwrap();
         let r = Ray::new(Point3::new(0.0, 10.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
         let rec = s.hit(&r, 0.001, 100.0).expect("hit");
         assert!((rec.p.y - 0.5).abs() < 1e-5, "y = {}", rec.p.y);
@@ -397,7 +465,7 @@ mod tests {
 
     #[test]
     fn interior_ray_exits_through_side() {
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat()).unwrap();
         let r = Ray::new(Point3::new(0.0, 0.25, 0.0), Vec3::new(1.0, 0.0, 0.0));
         let rec = s.hit(&r, 0.001, 100.0).expect("exit hit");
         assert!(rec.p.x > 1.0, "exit x = {}", rec.p.x);
@@ -409,7 +477,7 @@ mod tests {
     fn chevron_planes_keep_outline_and_bbox() {
         // Square 1x1 (a=b=1), corner_pct=0, chevrons=2 -> 4 vertices x 2 rows x 2 sides.
         let p = StepCutParams { outline: StepOutline::Rect { corner_pct: 0.0 }, chevrons: 2, ..params() };
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).unwrap();
         assert_eq!(s.planes.len(), 2 + 4 * (3 + 3) + 8 * 2);
         // Girdle outline unchanged: diagonal ray still reaches the sharp corner.
         let r = Ray::new(Point3::new(10.0, 0.0, 10.0), Vec3::new(-1.0, 0.0, -1.0).unit());
@@ -426,7 +494,7 @@ mod tests {
         // than the side planes there, so the hit is below the table with a
         // diagonal normal (x ~ z).
         let p = StepCutParams { outline: StepOutline::Rect { corner_pct: 0.0 }, chevrons: 2, ..params() };
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).unwrap();
         let r = Ray::new(Point3::new(0.9, 10.0, 0.9), Vec3::new(0.0, -1.0, 0.0));
         let rec = s.hit(&r, 0.001, 100.0).expect("hit");
         assert!(rec.p.y < 0.5 - 1e-3, "should be cut below the table (y={})", rec.p.y);
@@ -437,7 +505,7 @@ mod tests {
     #[test]
     fn triangle_outline_is_pointed_and_bounded() {
         let p = StepCutParams { outline: StepOutline::Triangle, ..params() };
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, p, mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, p, mat()).unwrap();
         // +X ray misses (triangle tip is at +Z here); +Z ray hits the tip at z = b.
         let r = Ray::new(Point3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0));
         let rec = s.hit(&r, 0.001, 100.0).expect("hit");
@@ -452,7 +520,7 @@ mod tests {
     #[test]
     fn marquise_outline_has_pointed_tips() {
         let p = StepCutParams { outline: StepOutline::PointedOval { segs: 16, pear: false }, ..params() };
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 0.5, p, mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 0.5, p, mat()).unwrap();
         // +X ray hits the pointed tip at x = a = 2.
         let r = Ray::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
         let rec = s.hit(&r, 0.001, 100.0).expect("hit");
@@ -463,11 +531,63 @@ mod tests {
     }
 
     #[test]
+    fn rounded_rect_arc_reaches_full_extents() {
+        // cushion-style outline: bbox must reach exactly ±a in X and ±b in Z
+        let p = StepCutParams { outline: StepOutline::RoundedRect { corner_pct: 30.0, segs: 4 }, ..params() };
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, p, mat()).unwrap();
+        let bb = s.bounding_box().unwrap();
+        assert!((bb.max.x - 2.0).abs() < 1e-6, "max.x = {}", bb.max.x);
+        assert!((bb.min.x + 2.0).abs() < 1e-6, "min.x = {}", bb.min.x);
+        assert!((bb.max.z - 1.0).abs() < 1e-6, "max.z = {}", bb.max.z);
+        assert!((bb.min.z + 1.0).abs() < 1e-6, "min.z = {}", bb.min.z);
+    }
+
+    #[test]
+    fn table_pct_is_exact_under_step_spread() {
+        // With spread > 0 the rows' raw runs overshoot s; the normalized runs must
+        // land the table edge exactly at k*b from the axis: ray straight down at
+        // x slightly inside k*b must hit the table (y = crown_h), just outside
+        // must hit a crown row (y < crown_h).
+        let p = StepCutParams { table_pct: 50.0, crown_angle: 45.0, pavilion_angle: 45.0,
+                                outline: StepOutline::Rect { corner_pct: 0.0 }, ..Default::default() };
+        // a=b=1 -> s = 0.5, k = 0.5, crown_h = 0.5
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).unwrap();
+        let inside  = s.hit(&Ray::new(Point3::new(0.49, 10.0, 0.0), Vec3::new(0.0, -1.0, 0.0)), 0.001, 100.0).unwrap();
+        let outside = s.hit(&Ray::new(Point3::new(0.51, 10.0, 0.0), Vec3::new(0.0, -1.0, 0.0)), 0.001, 100.0).unwrap();
+        assert!((inside.p.y - 0.5).abs() < 1e-4, "table y = {}", inside.p.y);
+        assert!(outside.p.y < 0.5 - 1e-3, "crown y = {}", outside.p.y);
+    }
+
+    #[test]
+    fn polygon_outline_validation() {
+        // non-convex polygon must error, not silently self-intersect
+        let p = StepCutParams { outline: StepOutline::Polygon(vec![[1.0, 0.0], [0.0, 1.0], [0.2, 0.2], [-1.0, 0.0], [0.0, -1.0]]), ..params() };
+        assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).is_err());
+        // duplicate adjacent points are deduped, valid triangle ok
+        let p = StepCutParams { outline: StepOutline::Polygon(vec![[0.0, 1.0], [0.0, 1.0], [-0.866, -0.5], [0.866, -0.5]]), ..params() };
+        assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).is_ok());
+        // fewer than 3 distinct points -> Err
+        let p = StepCutParams { outline: StepOutline::Polygon(vec![[1.0, 0.0], [1.0, 0.0]]), ..params() };
+        assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).is_err());
+    }
+
+    #[test]
+    fn invalid_params_error_not_panic() {
+        let p = StepCutParams { crown_angle: 0.0, ..params() };
+        assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).is_err());
+        let p = StepCutParams { crown_angle: 95.0, ..params() };
+        assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1.0, p, mat()).is_err());
+        assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), 0.0, 1.0, params(), mat()).is_err());
+        assert!(StepCut::new(Point3::new(0.0, 0.0, 0.0), -1.0, 1.0, params(), mat()).is_err());
+    }
+
+    #[test]
     fn steps_make_visibly_different_planes() {
         // With spread > 0 the crown rows of one edge must have distinct normals.
-        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat());
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat()).unwrap();
+        // +X side rows only (m = (1,0,0) -> n.z == 0)
         let crown_planes: Vec<&(Vec3, f32)> = s.planes.iter()
-            .filter(|(n, _)| n.y > 0.3 && n.x > 0.5).collect();
+            .filter(|(n, _)| n.y > 0.3 && n.x > 0.5 && n.z.abs() < 1e-6).collect();
         assert!(crown_planes.len() >= 3);
         let y0 = crown_planes[0].0.y;
         let y2 = crown_planes[2].0.y;
