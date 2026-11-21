@@ -183,6 +183,10 @@ pub enum ShapeConfig {
         /// Girdle stretch along X (length/width); 1.0 = round.  radius = semi-minor axis.
         #[serde(default = "default_oval_ratio")]
         oval_ratio:     f32,
+        /// Total girdle segments (even). 16 = classic round brilliant; ovals
+        /// want 64+ so the stretched outline reads as a true ellipse.
+        #[serde(default = "default_girdle_facets")]
+        girdle_facets:  u32,
     },
     InfinitePlane {
         point:  [f32; 3],
@@ -428,6 +432,10 @@ pub struct GemConfig {
     pub depth_pct:       Option<f32>,
     #[serde(default = "default_color_grade")]
     pub color_grade:     String,
+    /// Total girdle segments (even).  None = 16 for round, 64 for oval
+    /// (ratio > 1.05) so the girdle outline is a smooth ellipse.
+    #[serde(default)]
+    pub girdle_facets:   Option<u32>,
     /// Girdle centre in scene units.
     pub center:          [f32; 3],
     /// mm -> scene units applied to the size.
@@ -446,6 +454,7 @@ fn default_table_pct()     -> f32  { 53.0  }
 fn default_crown_angle()   -> f32  { 34.5  }
 fn default_pavilion_angle()-> f32  { 40.75 }
 fn default_oval_ratio()    -> f32  { 1.0   }
+fn default_girdle_facets()  -> u32  { 16    }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -496,6 +505,7 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         crown_angle,
         pavilion_angle,
         oval_ratio,
+        girdle_facets:  g.girdle_facets.unwrap_or(if oval_ratio > 1.05 { 64 } else { 16 }),
     };
 
     // Cross-check the reported total depth against the facet heights (warning
@@ -632,10 +642,10 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                         Arc::new(Cone { center: p3(center), radius, height, mat }),
                     ShapeConfig::Disk { center, normal, radius } =>
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
-                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio } =>
+                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets } =>
                         Arc::new(Diamond::new(
                             p3(center), radius,
-                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio },
+                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets },
                             mat,
                         )),
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
@@ -904,7 +914,7 @@ center = [0,0,0]
         let bb = h.bounding_box().unwrap();
         let wx = bb.max.x - bb.min.x;
         let wz = bb.max.z - bb.min.z;
-        let circ = (std::f32::consts::PI / 16.0).cos();
+        let circ = (std::f32::consts::PI / 64.0).cos();   // ovals auto-use 64 girdle facets
         // semi-minor r = 6.42/2 mm -> z width = 6.42*0.001/circ; x stretched by 8.99/6.42
         assert!((wz - 6.42 * 0.001 / circ).abs() < 1e-6, "wz {wz}");
         assert!((wx / wz - 8.99 / 6.42).abs() < 1e-4, "ratio {} vs {}", wx / wz, 8.99 / 6.42);

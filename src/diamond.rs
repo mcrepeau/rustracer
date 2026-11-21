@@ -24,11 +24,17 @@ pub struct DiamondParams {
     /// Girdle stretch along X (length / width).  1.0 = round brilliant;
     /// e.g. 1.40 for an 8.99 x 6.42 mm oval.  `radius` is the semi-MINOR axis.
     pub oval_ratio: f32,
+    /// Total girdle segments N (rounded to even, min 4).  16 = classic round
+    /// brilliant (8 crown + 8 pavilion mains).  Ovals read as polygons at 16:
+    /// the girdle vertices lie exactly ON the ellipse (q*r*cos t, r*sin t),
+    /// so the outline deviation is ~r*(pi/N)^2/2 — 1.9% of the radius at
+    /// N=16, 0.12% at N=64, i.e. a visually perfect oval.
+    pub girdle_facets: u32,
 }
 
 impl Default for DiamondParams {
     fn default() -> Self {
-        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0 }
+        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0, girdle_facets: 16 }
     }
 }
 
@@ -37,10 +43,11 @@ impl Default for DiamondParams {
 /// The girdle (widest circle) lies in the horizontal plane through `center`.
 /// The table (flat top octagon) faces +Y; the culet (bottom point) faces −Y.
 ///
-/// The 17 half-spaces (1 table + 8 crown bezel + 8 pavilion main) are arranged
-/// so that crown and pavilion faces alternate every 22.5° around the girdle.
-/// Their pairwise intersections form a regular 16-gon with inscribed radius
-/// `radius`, giving the girdle without any explicit vertical girdle planes.
+/// The (N+1) half-spaces (1 table + N/2 crown bezel + N/2 pavilion main, N =
+/// `girdle_facets`, 16 by default) are arranged so crown and pavilion faces
+/// alternate every 180°/N around the girdle.  Their pairwise intersections
+/// form a regular N-gon with apothem `radius`, giving the girdle without any
+/// explicit vertical girdle planes.
 ///
 /// Recommended material: `SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585, .. }`.
 pub struct Diamond {
@@ -60,7 +67,9 @@ impl Diamond {
         let crown_h    = (r - table_r) * params.crown_angle.to_radians().tan();
         let pavilion_h = r             * params.pavilion_angle.to_radians().tan();
 
-        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity(17);
+        let n = (params.girdle_facets.max(4) / 2) * 2;  // even, >= 4
+        let m = n / 2;                                   // main facets per side
+        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity((n + 1) as usize);
 
         // Push a facet plane given its ROUND-space unit normal `n` and a point
         // `g` on it: the oval shape is the round shape scaled by S = diag(q,1,1),
@@ -78,8 +87,8 @@ impl Diamond {
         // At azimuth θ = k · 45°.  The face runs from the girdle edge (r, 0) to
         // the table edge (table_r, crown_h) in the radial-Y plane, so:
         //   unnorm outward normal = (cos θ · crown_h,  r − table_r,  sin θ · crown_h)
-        for k in 0..8usize {
-            let theta = k as f32 * PI / 4.0;
+        for k in 0..m {
+            let theta = k as f32 * 2.0 * PI / m as f32;
             let (s, c) = theta.sin_cos();
             let n = Vec3::new(c * crown_h, r - table_r, s * crown_h).unit();
             // Face passes through the girdle edge at this azimuth.
@@ -88,11 +97,11 @@ impl Diamond {
         }
 
         // ── Pavilion main facets (8) ──────────────────────────────────────────
-        // Offset 22.5° from crown so the girdle is a uniform 16-gon.
+        // Offset half a segment from crown so the girdle is a uniform N-gon.
         // Face runs from girdle (r, 0) down to the culet (0, −pavilion_h):
         //   unnorm outward normal = (cos φ · pavilion_h,  −r,  sin φ · pavilion_h)
-        for k in 0..8usize {
-            let phi = k as f32 * PI / 4.0 + PI / 8.0;
+        for k in 0..m {
+            let phi = k as f32 * 2.0 * PI / m as f32 + PI / m as f32;
             let (s, c) = phi.sin_cos();
             let n = Vec3::new(c * pavilion_h, -r, s * pavilion_h).unit();
             let girdle_pt = Vec3::new(center.x + c * r, center.y, center.z + s * r);
@@ -100,8 +109,8 @@ impl Diamond {
         }
 
         // ── Bounding box ───────────────────────────────────────────────────────
-        // Circumradius of the 16-gon girdle = r / cos(π/16) ≈ 1.020 r.
-        let circ_r = r / (PI / 16.0_f32).cos();
+        // Circumradius of the N-gon girdle = r / cos(π/N).
+        let circ_r = r / (PI / n as f32).cos();
         let bbox = Aabb::new(
             center - Vec3::new(circ_r * q, pavilion_h, circ_r),
             center + Vec3::new(circ_r * q, crown_h,    circ_r),
@@ -175,4 +184,51 @@ impl Hittable for Diamond {
     }
 
     fn bounding_box(&self) -> Option<Aabb> { Some(self.bbox) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::material::Dielectric;
+
+    fn mat() -> Arc<dyn Material> { Arc::new(Dielectric { ir: 1.5 }) }
+
+    #[test]
+    fn girdle_facets_scales_plane_count() {
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+            DiamondParams { girdle_facets: 64, ..Default::default() }, mat());
+        assert_eq!(d.planes.len(), 65);   // 1 table + 32 crown + 32 pavilion
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
+        assert_eq!(d.planes.len(), 17);   // classic: 1 + 8 + 8
+    }
+
+    #[test]
+    fn odd_facet_count_rounds_down_to_even() {
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+            DiamondParams { girdle_facets: 17, ..Default::default() }, mat());
+        assert_eq!(d.planes.len(), 17);   // 17 -> 16 -> 1 + 8 + 8
+    }
+
+    #[test]
+    fn oval_girdle_extreme_x_is_q_times_radius() {
+        // Horizontal ray from +X hits the girdle where x = q*r (the girdle
+        // polygon touches the ellipse x^2/(q r)^2 + z^2/r^2 = 1 at theta=0).
+        let q = 1.4;
+        for n in [16u32, 64] {
+            let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+                DiamondParams { oval_ratio: q, girdle_facets: n, ..Default::default() }, mat());
+            let r = Ray::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
+            let rec = d.hit(&r, 0.001, 100.0).expect("hit");
+            assert!((rec.p.x - q).abs() < 1e-4, "n={n} x={}", rec.p.x);
+        }
+    }
+
+    #[test]
+    fn round_default_still_hits_table_from_above() {
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
+        let r = Ray::new(Point3::new(0.0, 10.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
+        let rec = d.hit(&r, 0.001, 100.0).expect("hit");
+        assert!(rec.p.y > 0.0 && rec.p.y < 10.0);
+        assert!((rec.normal.y - 1.0).abs() < 1e-5, "table normal should be +Y");
+    }
 }

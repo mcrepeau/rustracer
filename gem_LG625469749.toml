@@ -33,6 +33,7 @@ table_pct       = 58.0
 crown_pct       = 16.0                 # % of minor axis -> ~37.3 deg
 pavilion_pct    = 41.0                 # % of minor axis -> ~39.3 deg
 depth_pct       = 61.8
+girdle_facets   = 64      # smooth oval outline (16 would show polygon edges; round cuts use 16)
 color_grade     = "E"
 center          = [0.0, 0.0176, 0.0]   # girdle centre: pavilion (2.63 mm) + 15 mm air gap
 scale_mm        = 0.001                # mm -> metres

@@ -219,7 +219,8 @@ material = { type = "lambertian", color = [r,g,b] }
 # { type = "infinite_plane", point  = [x,y,z], normal = [x,y,z] }
 # { type = "mesh",           path   = "assets/file.obj" }
 # { type = "diamond",        center = [x,y,z], radius = r, table_pct = 53.0,
-#                             crown_angle = 34.5, pavilion_angle = 40.75, oval_ratio = 1.0 }
+#                             crown_angle = 34.5, pavilion_angle = 40.75, oval_ratio = 1.0,
+#                             girdle_facets = 16 }   # girdle segments; ovals want 64+ (smooth outline)
 # volume shapes (material field ignored; density+color inline):
 # { type = "constant_volume_sphere", center, radius, density, color, g = 0.0 }
 # { type = "constant_volume_box",    p_min, p_max, density, color, g = 0.0 }
@@ -228,6 +229,15 @@ material = { type = "lambertian", color = [r,g,b] }
 ```
 
 > Use `disk` rather than `infinite_plane` when an env map is the background — an infinite plane extends to the horizon and clips into the sky.
+
+> **Cut types:** the `diamond` shape is a brilliant-family cutter (table + alternating crown/pavilion
+> mains over an N-gon girdle). Round and oval are the same topology — oval is just `oval_ratio > 1`
+> (vertices lie exactly on the ellipse, so `girdle_facets = 64` makes the outline a visually perfect
+> oval; at 16 the stretched 16-gon shows straight edges). Face/plane count is N+1, so more facets =
+> more planes to test per ray (still cheap: analytic half-space intersection). Different *topologies*
+> (emerald/princess step cuts, hearts, pears) are not parameterizable in this model — they would be
+> separate shapes. `[[gems]]` presets are the report-driven path: proportions come from the IGI/GIA
+> fields, with `girdle_facets` auto-set to 64 for ovals.
 
 Per-object transforms, applied in SRT order (scale → rotate_y → translate):
 
