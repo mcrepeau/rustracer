@@ -26,6 +26,7 @@ mod scene_file;
 mod output;
 mod animation;
 mod diamond;
+mod step_cut;
 mod photon;
 #[cfg(feature = "denoise")]
 mod denoise;

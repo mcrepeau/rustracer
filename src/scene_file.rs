@@ -13,6 +13,7 @@ use crate::material::{
 use crate::cone::Cone;
 use crate::cylinder::Cylinder;
 use crate::diamond::{Diamond, DiamondParams};
+use crate::step_cut::{StepCut, StepCutParams};
 use crate::disk::Disk;
 use crate::plane::InfinitePlane;
 use crate::quad::{make_box, Quad};
@@ -187,6 +188,33 @@ pub enum ShapeConfig {
         /// want 64+ so the stretched outline reads as a true ellipse.
         #[serde(default = "default_girdle_facets")]
         girdle_facets:  u32,
+    },
+    /// Rectangular step cut ("emerald cut") as an analytic convex polyhedron:
+    /// chamfered-corner outline, stepped crown and pavilion, flat table/culet.
+    StepCut {
+        center:   [f32; 3],
+        /// Full length along X and width along Z (scene units).
+        length:   f32,
+        width:    f32,
+        #[serde(default = "default_table_pct")]
+        table_pct:      f32,
+        #[serde(default = "default_crown_angle")]
+        crown_angle:    f32,
+        #[serde(default = "default_pavilion_angle")]
+        pavilion_angle: f32,
+        /// Corner chamfer as % of the smaller semi-axis.
+        #[serde(default = "default_corner_pct")]
+        corner_pct:     f32,
+        #[serde(default = "default_steps")]
+        crown_steps:    u32,
+        #[serde(default = "default_steps")]
+        pavilion_steps: u32,
+        /// Culet flat as % of the width (0 = pointed culet).
+        #[serde(default = "default_culet_pct")]
+        culet_pct:      f32,
+        /// Angle spread between girdle and table rows (0 = single slope).
+        #[serde(default = "default_step_spread")]
+        step_spread:    f32,
     },
     InfinitePlane {
         point:  [f32; 3],
@@ -403,6 +431,8 @@ fn default_color_grade()   -> String { "D".to_string() }
 /// via the round-brilliant approximation ct ~= 0.00355 * d_mm^3.  The cut is
 /// table_pct / crown_angle / pavilion_angle, exactly as reported.  The colour
 /// grade maps to a faint yellow-brown body tint (heuristic Beer-Lambert).
+/// `material` selects a gem preset (diamond/sapphire/ruby/emerald) and `cut`
+/// selects "brilliant" (default) or "step" (rectangular emerald cut).
 #[derive(Deserialize)]
 pub struct GemConfig {
     /// Free-text provenance, e.g. the report number.
@@ -432,6 +462,21 @@ pub struct GemConfig {
     pub depth_pct:       Option<f32>,
     #[serde(default = "default_color_grade")]
     pub color_grade:     String,
+    /// Gem material preset: "diamond" (default), "sapphire", "ruby" or "emerald".
+    /// Sets IOR/dispersion and a body-colour absorption (Beer-Lambert); the
+    /// color_grade tint and explicit cauchy_b/cauchy_c/absorption add on top.
+    #[serde(default)]
+    pub material:        Option<String>,
+    /// Cut style: "brilliant" (default; round/oval) or "step" (rectangular
+    /// emerald cut with chamfered corners and stepped crown/pavilion).
+    #[serde(default)]
+    pub cut:             Option<String>,
+    #[serde(default)]
+    pub cauchy_b:        Option<f32>,
+    #[serde(default)]
+    pub cauchy_c:        Option<f32>,
+    #[serde(default)]
+    pub absorption:      Option<[f32; 3]>,
     /// Total girdle segments (even).  None = 16 for round, 64 for oval
     /// (ratio > 1.05) so the girdle outline is a smooth ellipse.
     #[serde(default)]
@@ -455,6 +500,10 @@ fn default_crown_angle()   -> f32  { 34.5  }
 fn default_pavilion_angle()-> f32  { 40.75 }
 fn default_oval_ratio()    -> f32  { 1.0   }
 fn default_girdle_facets()  -> u32  { 16    }
+fn default_corner_pct()     -> f32  { 12.0  }
+fn default_steps()          -> u32  { 3     }
+fn default_culet_pct()      -> f32  { 8.0   }
+fn default_step_spread()    -> f32  { 0.25  }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -470,7 +519,28 @@ pub fn load(path: &str) -> Result<SceneData, String> {
 
 // ── Scene builder ─────────────────────────────────────────────────────────────
 
-/// Build an analytic round-brilliant Diamond from a grading report's key fields.
+/// Material presets for `[[gems]]`: `(cauchy_b, cauchy_c, absorption)`.
+/// Cauchy B/C in µm² (see [`crate::spectrum::cauchy_ior`]); the absorption is a
+/// Beer-Lambert sigma per scene unit, added on top of the color_grade tint.
+fn gem_preset(name: &str) -> Result<(f32, f32, Color), String> {
+    match name {
+        // Diamond: nD 2.417, dispersion B-V ~ 0.044.
+        "diamond"  => Ok((2.395, 0.00585, Color::new(0.0, 0.0, 0.0))),
+        // Corundum (sapphire / ruby): nD 1.768, dispersion ~ 0.018.  Blue
+        // sapphire absorbs red+yellow (Cr3+/Fe-Ti charge transfer); ruby
+        // absorbs green+violet (Cr3+).
+        "sapphire" => Ok((1.741, 0.0094, Color::new(650.0, 320.0, 25.0))),
+        "ruby"     => Ok((1.741, 0.0094, Color::new(25.0, 550.0, 450.0))),
+        // Beryl (emerald): nD 1.577, dispersion ~ 0.014; Cr3+ absorbs red+violet.
+        "emerald"  => Ok((1.556, 0.0073, Color::new(480.0, 25.0, 380.0))),
+        other => Err(format!(
+            "unknown gem material '{other}' (expected diamond, sapphire, ruby or emerald)")),
+    }
+}
+
+/// Build an analytic gem from a grading report's key fields: a round/oval
+/// brilliant `Diamond` (cut = "brilliant", default) or a rectangular step cut
+/// `StepCut` (cut = "step"), with a preset or overridden `SpectralDielectric`.
 fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     // Size: explicit measurements win, else carat weight.  With measurements,
     // the minor axis W sets the radius and L/W the oval ratio (round if ~equal).
@@ -532,15 +602,26 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         Some('L') | Some('M') => 300.0,
         _         => 400.0,
     };
-    let absorption = Color::new(1.0, 0.75, 0.35) * sigma;
-    let mat: Arc<dyn Material> = Arc::new(SpectralDielectric {
-        cauchy_b: 2.395,     // diamond
-        cauchy_c: 0.00585,
-        absorption,
-    });
+    // Material preset (IOR / dispersion / body colour) + D..Z grade tint, which
+    // adds in the Beer-Lambert exponent, + optional explicit overrides.
+    let grade_tint = Color::new(1.0, 0.75, 0.35) * sigma;
+    let (mut cauchy_b, mut cauchy_c, preset_abs) = gem_preset(g.material.as_deref().unwrap_or("diamond"))?;
+    if let Some(v) = g.cauchy_b { cauchy_b = v; }
+    if let Some(v) = g.cauchy_c { cauchy_c = v; }
+    let absorption = preset_abs + grade_tint + g.absorption.map(col).unwrap_or_default();
+    let mat: Arc<dyn Material> = Arc::new(SpectralDielectric { cauchy_b, cauchy_c, absorption });
 
-    let mut hittable: Arc<dyn Hittable> =
-        Arc::new(Diamond::new(p3(g.center), radius, params, mat));
+    // Cut style: brilliant (round/oval) or step (rectangular emerald cut).
+    let cut = g.cut.as_deref().unwrap_or("brilliant");
+    let mut hittable: Arc<dyn Hittable> = match cut {
+        "brilliant" =>
+            Arc::new(Diamond::new(p3(g.center), radius, params, mat)),
+        "step" =>
+            Arc::new(StepCut::new(p3(g.center), radius * oval_ratio, radius,
+                StepCutParams { table_pct: g.table_pct, crown_angle, pavilion_angle, ..Default::default() },
+                mat)),
+        other => return Err(format!("unknown gem cut '{other}' (expected brilliant or step)")),
+    };
     if let Some(s) = g.scale     { hittable = Arc::new(UniformScale::new(hittable, s)); }
     if let Some(a) = g.rotate_y  { hittable = Arc::new(Rotate::around_y(hittable, a)); }
     if let Some(t) = g.translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
@@ -646,6 +727,12 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                         Arc::new(Diamond::new(
                             p3(center), radius,
                             DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets },
+                            mat,
+                        )),
+                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, corner_pct, crown_steps, pavilion_steps, culet_pct, step_spread } =>
+                        Arc::new(StepCut::new(
+                            p3(center), 0.5 * length, 0.5 * width,
+                            StepCutParams { table_pct, crown_angle, pavilion_angle, corner_pct, crown_steps, pavilion_steps, culet_pct, step_spread },
                             mat,
                         )),
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
@@ -956,5 +1043,49 @@ center = [0,0,0]
         assert!((g.table_pct - 53.0).abs() < 1e-6);
         assert!((g.crown_angle - 34.5).abs() < 1e-6);
         assert!((g.pavilion_angle - 40.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gem_material_presets_have_distinct_ior_and_absorption() {
+        let d = gem_preset("diamond").unwrap();
+        let s = gem_preset("sapphire").unwrap();
+        let r = gem_preset("ruby").unwrap();
+        let e = gem_preset("emerald").unwrap();
+        assert!((d.0 - 2.395).abs() < 1e-6 && d.2.length_squared() == 0.0);
+        assert!((s.0 - 1.741).abs() < 1e-6 && (e.0 - 1.556).abs() < 1e-6);
+        assert!(s.2.x > 100.0 && s.2.z < 100.0, "sapphire: absorb red, transmit blue");
+        assert!(r.2.y > 100.0 && r.2.x < 100.0, "ruby: absorb green, transmit red");
+        assert!(e.2.y < 100.0 && e.2.x > 100.0 && e.2.z > 100.0, "emerald: transmit green only");
+        assert!(gem_preset("topaz").is_err());
+    }
+
+    #[test]
+    fn gem_step_cut_uses_measurements_as_rectangle() {
+        let g = parse_gem("[[gems]]
+measurements_mm = [9.0, 6.0, 3.9]
+cut = \"step\"
+material = \"emerald\"
+center = [0,0,0]
+");
+        let h = build_gem(&g).unwrap();
+        let bb = h.bounding_box().unwrap();
+        assert!((bb.max.x - bb.min.x - 0.009).abs() < 1e-6, "length 9 mm -> 0.009 units");
+        assert!((bb.max.z - bb.min.z - 0.006).abs() < 1e-6, "width 6 mm -> 0.006 units");
+    }
+
+    #[test]
+    fn gem_unknown_cut_or_material_errors() {
+        let g = parse_gem("[[gems]]
+carat = 1.0
+cut = \"princess\"
+center = [0,0,0]
+");
+        assert!(build_gem(&g).err().map(|e| e.contains("cut")).unwrap_or(false));
+        let g = parse_gem("[[gems]]
+carat = 1.0
+material = \"topaz\"
+center = [0,0,0]
+");
+        assert!(build_gem(&g).err().map(|e| e.contains("material")).unwrap_or(false));
     }
 }

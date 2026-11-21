@@ -121,8 +121,11 @@ impl Diamond {
 
 }
 
-impl Hittable for Diamond {
-    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
+/// Slab-test a ray against a convex polyhedron given as outward half-spaces
+/// `(n, d)` (interior iff `n.x <= d`).  Returns `(t, outward_normal)` of the
+/// surface crossing: `t_enter` for exterior rays, `t_exit` for interior rays
+/// (e.g. after refraction or TIR inside the solid).
+pub(crate) fn convex_hit(planes: &[(Vec3, f32)], r: &Ray, t_min: f32, t_max: f32) -> Option<(f32, Vec3)> {
         // Convex polyhedron intersection: maintain the interval [t_enter, t_exit]
         // during which the ray is inside ALL half-spaces simultaneously.
         let mut t_enter              = t_min;
@@ -131,7 +134,7 @@ impl Hittable for Diamond {
         let mut exit_outward_normal  = Vec3::new(0.0, 1.0, 0.0);
         let mut entry_found          = false;
 
-        for &(n, d) in &self.planes {
+        for &(n, d) in planes {
             let nd     = n.dot(r.direction);
             let t_face = (d - n.dot(r.origin)) / nd;
 
@@ -161,15 +164,18 @@ impl Hittable for Diamond {
 
         if t_enter >= t_exit { return None; }
 
-        // entry_found  → exterior ray: hit at t_enter (entering the diamond).
-        // !entry_found → interior ray (e.g. after refraction or TIR): hit at
-        //                t_exit, which is the next internal surface crossing.
-        let (t, outward_normal) = if entry_found {
-            (t_enter, enter_normal)
+        if entry_found {
+            Some((t_enter, enter_normal))
         } else {
             if t_exit >= t_max { return None; }
-            (t_exit, exit_outward_normal)
-        };
+            Some((t_exit, exit_outward_normal))
+        }
+}
+
+impl Hittable for Diamond {
+
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
+        let (t, outward_normal) = convex_hit(&self.planes, r, t_min, t_max)?;
 
         let p   = r.at(t);
         let rel = p - self.center;

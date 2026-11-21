@@ -1,0 +1,40 @@
+# Demo: a step-cut ("emerald cut") gem, e.g. a 9.0 x 6.0 x 3.9 mm emerald.
+# Same staging as gem_LG625469749.toml: floating stone, studio light-tent env
+# map, caustics from the map's brightest direction. Render or view with:
+#   cargo run --release -- --scene gem_emerald.toml
+name = "emerald step cut demo"
+max_samples = 1024
+
+[camera]
+look_from  = [0.011, 0.024, -0.023]
+look_at    = [0.0, 0.017, 0.0]
+vfov       = 30.0
+aperture   = 0.0
+focus_dist = 0.027
+move_speed = 0.001
+
+[background]
+type = "env_map"
+path = "assets/studio_softbox.hdr"
+
+[[objects]]
+shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
+material = { type = "pbr", albedo = [0.04, 0.04, 0.05], roughness = 0.25, metallic = 0.0 }
+
+[[gems]]
+report          = "demo emerald cut (no report; proportions are typical)"
+measurements_mm = [9.0, 6.0, 3.9]     # L x W x depth, mm -> 1.50 aspect rectangle
+table_pct       = 65.0                 # emerald cuts run 60-75%
+crown_pct       = 15.0                 # % of minor axis
+pavilion_pct    = 45.0
+cut             = "step"               # rectangular emerald cut (default is "brilliant")
+material        = "emerald"            # preset: beryl IOR/dispersion + Cr3+ green absorption
+                                       # ("diamond" | "sapphire" | "ruby" | "emerald")
+color_grade     = "D"                  # tint adds on top of the preset
+center          = [0.0, 0.0175, 0.0]   # pavilion (~2.5 mm) + 15 mm air gap
+scale_mm        = 0.001
+
+[caustics]
+enabled       = true
+gather_radius = 0.008
+num_photons   = 300000

@@ -221,6 +221,10 @@ material = { type = "lambertian", color = [r,g,b] }
 # { type = "diamond",        center = [x,y,z], radius = r, table_pct = 53.0,
 #                             crown_angle = 34.5, pavilion_angle = 40.75, oval_ratio = 1.0,
 #                             girdle_facets = 16 }   # girdle segments; ovals want 64+ (smooth outline)
+# { type = "step_cut",       center = [x,y,z], length = 0.009, width = 0.006,
+#                             table_pct = 65.0, crown_angle = 35.0, pavilion_angle = 42.0,
+#                             corner_pct = 12.0, crown_steps = 3, pavilion_steps = 3,
+#                             culet_pct = 8.0, step_spread = 0.25 }   # rectangular "emerald cut"
 # volume shapes (material field ignored; density+color inline):
 # { type = "constant_volume_sphere", center, radius, density, color, g = 0.0 }
 # { type = "constant_volume_box",    p_min, p_max, density, color, g = 0.0 }
@@ -230,14 +234,15 @@ material = { type = "lambertian", color = [r,g,b] }
 
 > Use `disk` rather than `infinite_plane` when an env map is the background — an infinite plane extends to the horizon and clips into the sky.
 
-> **Cut types:** the `diamond` shape is a brilliant-family cutter (table + alternating crown/pavilion
-> mains over an N-gon girdle). Round and oval are the same topology — oval is just `oval_ratio > 1`
+> **Cut types:** `diamond` is a brilliant-family cutter (table + alternating crown/pavilion mains
+> over an N-gon girdle). Round and oval are the same topology — oval is just `oval_ratio > 1`
 > (vertices lie exactly on the ellipse, so `girdle_facets = 64` makes the outline a visually perfect
-> oval; at 16 the stretched 16-gon shows straight edges). Face/plane count is N+1, so more facets =
-> more planes to test per ray (still cheap: analytic half-space intersection). Different *topologies*
-> (emerald/princess step cuts, hearts, pears) are not parameterizable in this model — they would be
-> separate shapes. `[[gems]]` presets are the report-driven path: proportions come from the IGI/GIA
-> fields, with `girdle_facets` auto-set to 64 for ovals.
+> oval; at 16 the stretched 16-gon shows straight edges). `step_cut` is the rectangular "emerald
+> cut": chamfered-corner octagon girdle, stepped crown/pavilion rows (`crown_steps`/`pavilion_steps`
+> planes per edge, angles spread by `step_spread`), flat table/culet. Both are analytic convex
+> polyhedra (half-space intersection), so ray cost is O(planes). Other topologies (princess, hearts,
+> pears) would be separate shapes. `[[gems]]` presets are the report-driven path: proportions come
+> from the IGI/GIA fields, with `girdle_facets` auto-set to 64 for ovals.
 
 Per-object transforms, applied in SRT order (scale → rotate_y → translate):
 
@@ -267,6 +272,10 @@ crown_pct       = 16.0                 # IGI proportions-diagram style (% of min
 pavilion_pct    = 41.0
 depth_pct       = 61.8                 # cross-checked against the angles
 color_grade     = "E"                  # Beer-Lambert tint from the grade
+cut             = "brilliant"          # "brilliant" (round/oval) or "step" (emerald cut)
+material        = "diamond"            # preset: "diamond" | "sapphire" | "ruby" | "emerald"
+                                       # (IOR/dispersion/body colour; grade tint adds on top;
+                                       #  cauchy_b/cauchy_c/absorption override explicitly)
 center          = [0.0, 0.02, 0.0]
 scale_mm        = 0.001                # mm -> metres
 
@@ -307,6 +316,7 @@ Frame files are `{slug}_{frame:04d}.png`. Use `--frames 1` for a single still (`
 
 1. **`scene.toml`** — default demo: old wooden chair and basketball OBJ meshes with PBR textures (normal map on the basketball), concrete disk floor, sunset HDR env map, orbit animation.
 2. **`gem_LG625469749.toml`** — your IGI-graded stone as an oval brilliant (`[[gems]]`), floating in a procedural studio light-tent HDR (`assets/studio_softbox.hdr`), caustics on.
+3. **`gem_emerald.toml`** — demo step-cut gem (`cut = "step"`, `material = "emerald"` preset) in the same staging.
 3. **`bench.toml`** — the `--bench` reference scene (room + blackbody panel + spectral-glass caustics + SSS + OBJ mesh).
 
 ## Implementation notes
