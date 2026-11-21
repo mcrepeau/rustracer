@@ -20,3 +20,6 @@
 
 # Miscellaneous
 path/
+
+# Grading-report PDFs stay local (ingest them with report_to_toml.py)
+*.pdf
