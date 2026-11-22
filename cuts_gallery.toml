@@ -1,6 +1,7 @@
 # Cuts gallery: every [[gems]] cut preset x material preset in a 6x2 grid,
-# staged like the single-stone scenes (dark floor, studio light-tent env map,
-# caustics on). The photon disk hugs the grid automatically (infinite floor
+# staged like the single-stone scenes but on a black/white checkerboard floor
+# (caustics read well on the tiles), studio light-tent env map, caustics on.
+# The photon disk hugs the grid automatically (infinite floor
 # is excluded from the emission bounds), so each stone gets its own caustic
 # pool.
 #
@@ -29,7 +30,7 @@ path = "assets/studio_softbox.hdr"
 
 [[objects]]
 shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
-material = { type = "pbr", albedo = [0.04, 0.04, 0.05], roughness = 0.25, metallic = 0.0 }
+material = { type = "checker", even = [0.85, 0.85, 0.85], odd = [0.06, 0.06, 0.06], scale = 70.0 }   # ~14 mm tiles
 
 # ── Row 0 (z = -0.012) ──────────────────────────────────────────────────────
 
