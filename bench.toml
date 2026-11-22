@@ -1,6 +1,8 @@
 # Benchmark scene for `rustracer --bench` (pass another file to bench that instead).
-# Stresses all major code paths at once: BVH traversal (tracked OBJ mesh),
-# spectral glass + photon-map caustics, area-light NEE, sun NEE, SSS volume.
+# Stresses the gem-focused pipeline: BVH traversal (tracked OBJ mesh), two gem
+# cuts (round brilliant diamond + princess sapphire) with photon-map caustics,
+# area-light NEE, sun NEE.  Baseline reset 2026-11: spheres -> gems (old
+# all-paths baseline was 8.1 Mpx/s with glass/SSS spheres).
 # Fixed content on purpose - edit only when you intend to change the baseline.
 
 name = "Benchmark"
@@ -71,15 +73,34 @@ color     = [8.0, 8.0, 8.0]   # ignored when temp_k is set
 temp_k    = 6500.0
 intensity = 8.0
 
-# flint-glass sphere on the window axis: dusk sun photons travel through it
-[[objects]]
-shape    = { type = "sphere", center = [0.0, 1.5, 2.5], radius = 1.5 }
-material = { type = "spectral_dielectric", ior = 1.6395, dispersion = 0.0309 }
+# round brilliant diamond on the window axis: dusk sun photons travel through
+# it and focus into caustics on the checker floor (9 mm stone x scale_mm 0.3
+# = 2.7 scene units wide; girdle centre floats 1.3 above the floor)
+[[gems]]
+report          = "bench round brilliant diamond"
+measurements_mm = [9.00, 9.00, 5.60]
+table_pct       = 57.0
+crown_pct       = 14.5
+pavilion_pct    = 43.0
+color_grade     = "D"
+cut             = "brilliant"
+material        = "diamond"
+center          = [0.0, 1.30, 2.5]
+scale_mm        = 0.3
 
-# SSS "marble" sphere, warm absorption tint
-[[objects]]
-shape    = { type = "sphere", center = [-3.0, 1.2, 1.0], radius = 1.2 }
-material = { type = "sss", albedo = [0.90, 0.87, 0.82], sigma_a = [0.10, 0.08, 0.05], ior = 1.5, density = 0.85, g = 0.30 }
+# princess-cut sapphire on the left (chevron pavilion, blue body colour)
+[[gems]]
+report          = "bench princess sapphire"
+measurements_mm = [6.00, 5.90, 4.20]
+table_pct       = 65.0
+crown_pct       = 12.0
+pavilion_pct    = 50.0
+color_grade     = "D"
+cut             = "princess"
+material        = "sapphire"
+rotate_y        = 25.0
+center          = [-3.0, 0.90, 1.0]
+scale_mm        = 0.3
 
 # brushed-gold PBR mesh (tracked basketball.obj, 1 400 faces) - BVH + GGX stress,
 # centred at (3, 1.2, 1) with radius 1.2
