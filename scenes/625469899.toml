@@ -4,7 +4,7 @@
 # table 62%, crown 15% / pavilion 49.5%, depth 68.7%, culet Long
 #
 # Staging: stone floats above a dark floor in the studio light-tent env map;
-# caustics on. Interactive view:  cargo run --release -- --scene 625469899.toml
+# caustics on. Interactive view:  cargo run --release -- --scene scenes/625469899.toml
 # Render still: --render --preset final --width 480 --height 300 --output out.png
 
 name = "LG625469899 EMERALD CUT"

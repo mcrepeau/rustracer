@@ -92,7 +92,7 @@ fn run_bench() {
     // The benchmark scene is a plain TOML file (bench.toml by default) so the
     // reference stays visible/editable; pass another file to bench that instead.
     let path = std::env::args().nth(2).filter(|p| p.ends_with(".toml"))
-        .unwrap_or_else(|| "bench.toml".to_string());
+        .unwrap_or_else(|| "scenes/bench.toml".to_string());
     println!("Scene: {path}\n");
     let mut scene = match scene_file::load(&path) {
         Ok(s)  => s,
@@ -138,7 +138,7 @@ struct RenderArgs {
 impl Default for RenderArgs {
     fn default() -> Self {
         Self {
-            scene:           "scene.toml".to_string(),
+            scene:           "scenes/scene.toml".to_string(),
             samples:         None,
             width:           WIDTH,
             height:          HEIGHT,
@@ -166,7 +166,7 @@ fn print_controls() {
     println!("  [-] [=]      Decrease / increase exposure");
     println!("  [I]  [O]     Decrease / increase aperture");
     println!("  [Arrows]     Rotate sun");
-    println!("  [L]          Print camera position (look_from / look_at for scene.toml)");
+    println!("  [L]          Print camera position (look_from / look_at for scenes/scene.toml)");
     println!("  [P]          Save PNG");
     println!("  [Enter]      Pause rendering");
     println!("  [T]          Toggle tonemapper (AgX / ACES)");
@@ -184,13 +184,13 @@ fn print_controls() {
 fn print_help() {
     println!("rustracer — path tracer\n");
     println!("USAGE:");
-    println!("  rustracer                      Interactive viewer (default scene: scene.toml)");
+    println!("  rustracer                      Interactive viewer (default scene: scenes/scene.toml)");
     println!("  rustracer --scene <path.toml>  Interactive viewer for that scene file ([R] reloads)");
     println!("  rustracer --render [options]   Headless render to PNG");
-    println!("  rustracer --bench [scene.toml] Performance benchmark (default: bench.toml)");
+    println!("  rustracer --bench [scene.toml] Performance benchmark (default: scenes/bench.toml)");
     println!("  rustracer --help               Show this message\n");
     println!("RENDER OPTIONS:");
-    println!("  --scene <path.toml>  Scene file to render (default: scene.toml)");
+    println!("  --scene <path.toml>  Scene file to render (default: scenes/scene.toml)");
     println!("  --samples <n>        Samples per pixel (default: scene maximum; with --adaptive, the hard SPP cap)");
     println!("  --preset <name>      Measured recipes: preview = 16 spp + OIDN 0.6, final = 64 spp + OIDN 1.0,");
     println!("                       reference = adaptive, cap 4096 spp.  Explicit flags override the preset.");
@@ -293,7 +293,7 @@ fn run_render(args: RenderArgs) {
         Ok(s)  => s,
         Err(e) => {
             eprintln!("Failed to load '{}': {e}", args.scene);
-            eprintln!("Scenes are .toml files now - e.g. --scene scene.toml");
+            eprintln!("Scenes are .toml files now - e.g. --scene scenes/scene.toml");
             std::process::exit(1);
         }
     };
@@ -691,7 +691,7 @@ fn main() {
 
     // Top-level `--scene <path.toml>` (interactive mode only): the hot-reloadable
     // file scene (slot 4, [R] to reload) loads this file instead of scene.toml.
-    let mut file_scene = String::from("scene.toml");
+    let mut file_scene = String::from("scenes/scene.toml");
     {
         let args: Vec<String> = std::env::args().skip(1).collect();
         if let Some(pos) = args.iter().position(|a| a == "--scene") {
@@ -861,7 +861,7 @@ fn main() {
                                 VirtualKeyCode::L => {
                                     let from = cam_state.pos;
                                     let at   = cam_state.look_at();
-                                    println!("# paste into [camera] in scene.toml");
+                                    println!("# paste into [camera] in scenes/scene.toml");
                                     println!("look_from = [{:.4}, {:.4}, {:.4}]", from.x, from.y, from.z);
                                     println!("look_at   = [{:.4}, {:.4}, {:.4}]", at.x,   at.y,   at.z);
                                     println!("vfov      = {:.1}", cam_state.vfov);

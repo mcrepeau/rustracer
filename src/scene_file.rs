@@ -543,7 +543,23 @@ pub fn load(path: &str) -> Result<SceneData, String> {
         .map_err(|e| format!("cannot read {path}: {e}"))?;
     let file: SceneFile = toml::from_str(&text)
         .map_err(|e| format!("parse error in {path}:\n{e}"))?;
-    build(file)
+    // Asset paths in the file resolve relative to the scene file's own
+    // directory first (so scenes/ can carry its own assets/), then cwd.
+    let base = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    build(file, &base)
+}
+
+/// Resolve an asset path from a scene file: a relative path that exists next
+/// to the scene file wins; otherwise the path is used as-is (cwd-relative).
+fn resolve_asset(base: &std::path::Path, p: &str) -> String {
+    if std::path::Path::new(p).is_relative() {
+        let cand = base.join(p);
+        if cand.exists() { return cand.to_string_lossy().into_owned(); }
+    }
+    p.to_string()
 }
 
 // ── Scene builder ─────────────────────────────────────────────────────────────
@@ -707,7 +723,7 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     Ok(hittable)
 }
 
-fn build(file: SceneFile) -> Result<SceneData, String> {
+fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
     // ── Camera ────────────────────────────────────────────────────────────────
     let from = p3(file.camera.look_from);
     let at   = p3(file.camera.look_at);
@@ -739,6 +755,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
         }
         BackgroundConfig::Solid { color } => Background::Solid(col(color)),
         BackgroundConfig::EnvMap { path } => {
+            let path = resolve_asset(base, &path);
             let mut reader = image::ImageReader::open(&path)
                 .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
                 .with_guessed_format()
@@ -787,7 +804,8 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
             // ── Surface shapes (material field required) ───────────────────
             shape => {
                 let mat = build_material(
-                    obj.material.ok_or_else(|| format!("objects[{i}]: material is required for this shape type"))?
+                    obj.material.ok_or_else(|| format!("objects[{i}]: material is required for this shape type"))?,
+                    base,
                 ).map_err(|e| format!("objects[{i}].material: {e}"))?;
                 match shape {
                     ShapeConfig::Sphere { center, radius } =>
@@ -821,7 +839,7 @@ fn build(file: SceneFile) -> Result<SceneData, String> {
                     ShapeConfig::InfinitePlane { point, normal, wave_amplitude, wave_scale } =>
                         Arc::new(InfinitePlane::new(p3(point), v3(normal), wave_amplitude, wave_scale, mat)),
                     ShapeConfig::Mesh { path } =>
-                        crate::mesh::load_obj(&path, mat)
+                        crate::mesh::load_obj(&resolve_asset(base, &path), mat)
                             .map_err(|e| format!("objects[{i}]: {e}"))?,
                     _ => unreachable!(), // volume variants handled above
                 }
@@ -934,7 +952,7 @@ fn load_img(path: &str) -> Result<Arc<image::RgbImage>, String> {
         .map(|img| Arc::new(img.into_rgb8()))
 }
 
-fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
+fn build_material(cfg: MaterialConfig, base: &std::path::Path) -> Result<Arc<dyn Material>, String> {
     Ok(match cfg {
         MaterialConfig::Lambertian { color } =>
             Arc::new(Lambertian { texture: Texture::from(col(color)) }),
@@ -943,7 +961,7 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
             Arc::new(Lambertian { texture: Texture::Checker { scale, even: col(even), odd: col(odd) } }),
 
         MaterialConfig::Image { path } =>
-            Arc::new(Lambertian { texture: Texture::load(&path).map_err(|e| format!("texture '{path}': {e}"))? }),
+            Arc::new(Lambertian { texture: Texture::load(&resolve_asset(base, &path)).map_err(|e| format!("texture '{path}': {e}"))? }),
 
         MaterialConfig::Metal { color, fuzz } =>
             Arc::new(PbrMaterial { albedo: col(color), metallic: 1.0, roughness: fuzz, ..Default::default() }),
@@ -981,11 +999,11 @@ fn build_material(cfg: MaterialConfig) -> Result<Arc<dyn Material>, String> {
 
         MaterialConfig::TexturedPbr { albedo_path, roughness_path, metallic_path, ao_path, normal_path, roughness, metallic } =>
             Arc::new(PbrMaterial {
-                albedo_tex:    Some(load_img(&albedo_path)?),
-                roughness_tex: roughness_path.as_deref().map(load_img).transpose()?,
-                metallic_tex:  metallic_path.as_deref().map(load_img).transpose()?,
-                ao_tex:        ao_path.as_deref().map(load_img).transpose()?,
-                normal_tex:    normal_path.as_deref().map(load_img).transpose()?,
+                albedo_tex:    Some(load_img(&resolve_asset(base, &albedo_path))?),
+                roughness_tex: roughness_path.as_deref().map(|p| load_img(&resolve_asset(base, p))).transpose()?,
+                metallic_tex:  metallic_path.as_deref().map(|p| load_img(&resolve_asset(base, p))).transpose()?,
+                ao_tex:        ao_path.as_deref().map(|p| load_img(&resolve_asset(base, p))).transpose()?,
+                normal_tex:    normal_path.as_deref().map(|p| load_img(&resolve_asset(base, p))).transpose()?,
                 roughness,
                 metallic,
                 ..PbrMaterial::default()

@@ -1,7 +1,7 @@
 # Demo: a step-cut ("emerald cut") gem, e.g. a 9.0 x 6.0 x 3.9 mm emerald.
 # Same staging as gem_LG625469749.toml: floating stone, studio light-tent env
 # map, caustics from the map's brightest direction. Render or view with:
-#   cargo run --release -- --scene gem_emerald.toml
+#   cargo run --release -- --scene scenes/gem_emerald.toml
 name = "emerald step cut demo"
 max_samples = 1024
 

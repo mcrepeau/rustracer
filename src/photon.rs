@@ -326,7 +326,7 @@ mod tests {
         // Scene-level regression test: the staged gem scene (infinite floor +
         // oval diamond) must produce a populated, finite caustic map — with the
         // old plane-inclusive disk bounds it was essentially empty.
-        let mut scene = crate::scene_file::load("gem_LG625469749.toml").unwrap();
+        let mut scene = crate::scene_file::load("scenes/gem_LG625469749.toml").unwrap();
         scene.rebuild_caustics();
         let pm = scene.photon_map.as_ref().expect("caustics enabled in gem_LG625469749.toml");
         assert!(pm.nodes.len() > 10_000, "caustic map suspiciously empty: {}", pm.nodes.len());

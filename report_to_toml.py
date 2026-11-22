@@ -6,7 +6,7 @@ Usage:
     py report_to_toml.py REPORT.pdf [-o out.toml] [--material PRESET] [--cut CUT]
                                 [--gap-mm 15.0] [--no-caustics]
 
-    py report_to_toml.py LG625469749.pdf            # writes LG625469749.toml
+    py report_to_toml.py LG625469749.pdf            # writes scenes/LG625469749.toml
 
 Standard library only: PDF text is pulled from FlateDecode content streams
 with zlib + regex (works for IGI electronic-copy reports; GIA layouts are
@@ -185,7 +185,7 @@ def render_toml(f, args):
                      % (f["table_pct"], f["crown_pct"], f["pavilion_pct"], f["depth_pct"], f["culet"]))
     lines.append("#")
     lines.append("# Staging: stone floats above a dark floor in the studio light-tent env map;")
-    lines.append("# caustics on. Interactive view:  cargo run --release -- --scene " + os.path.basename(args.output))
+    lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
     lines.append("# Render still: --render --preset final --width 480 --height 300 --output out.png")
     lines.append("")
     lines.append('name = "%s %s"' % (f["report"], f["style"]))
@@ -239,7 +239,7 @@ def render_toml(f, args):
 def main():
     ap = argparse.ArgumentParser(description="IGI/GIA report PDF -> rustracer [[gems]] scene TOML")
     ap.add_argument("pdf")
-    ap.add_argument("-o", "--output", default=None, help="output .toml (default: <report>.toml next to the PDF)")
+    ap.add_argument("-o", "--output", default=None, help="output .toml (default: scenes/<report>.toml next to this script)")
     ap.add_argument("--material", default=None, help="override material preset (diamond|sapphire|ruby|emerald)")
     ap.add_argument("--cut", default=None, help="override cut preset (brilliant|step|princess|...)")
     ap.add_argument("--gap-mm", type=float, default=15.0, help="air gap under the stone, mm (default 15)")
@@ -253,7 +253,9 @@ def main():
         raise SystemExit("error: could not extract text from %s "
                          "(got %d chars; scanned/image-only PDF?)" % (args.pdf, len(text)))
     f, warnings = parse_report(text)
-    args.output = args.output or os.path.splitext(args.pdf)[0] + ".toml"
+    if args.output is None:
+        scenes_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenes")
+        args.output = os.path.join(scenes_dir, os.path.splitext(os.path.basename(args.pdf))[0] + ".toml")
     toml, warnings2, info = render_toml(f, args)
     warnings += warnings2
 

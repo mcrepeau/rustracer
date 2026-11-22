@@ -2,17 +2,17 @@
 
 A physically-based path tracer built in Rust. It simulates how light actually behaves — bouncing, refracting, and scattering through a scene — to produce photorealistic images. It runs interactively in a window and can also render to PNG in headless mode.
 
-**Scenes are TOML files.** There are no built-in scenes: the viewer, `--render`, and `--bench` all load a scene file (`scene.toml` / `bench.toml` by default, or anything you pass with `--scene`).
+**Scenes are TOML files.** There are no built-in scenes: the viewer, `--render`, and `--bench` all load a scene file (`scenes/scene.toml` / `scenes/bench.toml` by default, or anything you pass with `--scene`).
 
 ## Gallery
 
-| OBJ loading (`scene.toml` — default demo scene) |
+| OBJ loading (`scenes/scene.toml` — default demo scene) |
 |:---:|
-| ![OBJ Loading](examples/render_obj_loading_5000spp.png) chair + basketball OBJ meshes, PBR textures, HDR sky — render your own gem with `gem_LG625469749.toml` |
+| ![OBJ Loading](examples/render_obj_loading_5000spp.png) chair + basketball OBJ meshes, PBR textures, HDR sky — render your own gem with `scenes/gem_LG625469749.toml` |
 
 ### Animation — 360° orbit
 
-Camera orbit around the chair and basketball (`scene.toml` has an `[animation.orbit]` section), 144 frames at 24 fps.
+Camera orbit around the chair and basketball (`scenes/scene.toml` has an `[animation.orbit]` section), 144 frames at 24 fps.
 
 [Watch the orbit animation](examples/obj_loading.mp4)
 
@@ -20,10 +20,10 @@ Camera orbit around the chair and basketball (`scene.toml` has an `[animation.or
 ## Build & Run
 
 ```sh
-cargo run --release                        # interactive viewer (scene.toml)
-cargo run --release -- --scene gem_LG625469749.toml   # interactive viewer, that scene file
-cargo run --release -- --render [options]  # headless PNG render (--scene <path.toml>, default scene.toml)
-cargo run --release -- --bench             # performance benchmark (bench.toml; pass another file to bench it)
+cargo run --release                        # interactive viewer (scenes/scene.toml)
+cargo run --release -- --scene scenes/gem_LG625469749.toml   # interactive viewer, that scene file
+cargo run --release -- --render [options]  # headless PNG render (--scene <path.toml>, default scenes/scene.toml)
+cargo run --release -- --bench             # performance benchmark (scenes/bench.toml; pass another file to bench it)
 ```
 
 Optional `denoise` cargo feature (OIDN, bundles its own binaries — no system install needed):
@@ -35,7 +35,7 @@ cargo build --release --features denoise
 ### Headless render options
 
 ```
---scene <path.toml>  scene file (default: scene.toml)
+--scene <path.toml>  scene file (default: scenes/scene.toml)
 --samples <n>        samples per pixel (default: scene maximum; with --adaptive, the hard SPP cap)
 --preset <name>      measured recipes: preview = 16 spp + OIDN 0.6, final = 64 spp + OIDN 1.0,
                      reference = adaptive, cap 4096 spp, raw.  Explicit flags override the preset.
@@ -90,7 +90,7 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
   py render_qa.py render.png --annotate               # save render_qa.png with circles
   ```
 
-- **`make_studio_softbox.py`** — regenerates `assets/studio_softbox.hdr`, the procedural "light tent"
+- **`make_studio_softbox.py`** — regenerates `scenes/assets/studio_softbox.hdr`, the procedural "light tent"
   env map used by the gem scene (gradient base + soft glows + warm `TINT`); run `py make_studio_softbox.py`.
 
 ## Features
@@ -158,7 +158,7 @@ Environment maps are importance-sampled with a 2D CDF built from luminance × si
 
 ### Materials
 
-TOML material types (see `scene.toml` for a full annotated example):
+TOML material types (see `scenes/scene.toml` for a full annotated example):
 
 | TOML type | Description |
 |-----------|-------------|
@@ -188,8 +188,11 @@ Emitters in `[[lights]]` are quads (`corner`, `u`, `v`, `color`) that also join 
 
 ## Custom scenes (TOML)
 
-The viewer loads `scene.toml` from the working directory by default, or `--scene path/to/file.toml`;
+The viewer loads `scenes/scene.toml` by default, or `--scene path/to/file.toml`;
 press **R** to hot-reload after editing. `--render --scene <path.toml>` renders headless.
+Asset paths inside a scene file (env maps, textures, OBJ meshes) resolve relative to the
+scene file's own folder first, then the working directory — that is why `scenes/` carries
+its own `assets/` subfolder.
 
 ```toml
 name = "My Scene"
@@ -317,21 +320,24 @@ or `[[animation.keyframes]]` entries (`time`, `look_from`, `look_at`, optional `
 Render a video — one PNG per frame plus a printed ffmpeg command:
 
 ```sh
-cargo run --release --features denoise -- --render --scene myfile.toml --preset final --width 1280 --height 720 --output frames
+cargo run --release --features denoise -- --render --scene scenes/myfile.toml --preset final --width 1280 --height 720 --output frames
 ```
 
 Frame files are `{slug}_{frame:04d}.png`. Use `--frames 1` for a single still (`--output` is then a file path, not a directory). The BVH and photon map are built once and reused across frames; each frame motion-blurs over its own 1/fps time slice.
 
-## Scenes shipped in the repo
+## Scenes shipped in `scenes/`
 
-1. **`scene.toml`** — default demo: old wooden chair and basketball OBJ meshes with PBR textures (normal map on the basketball), concrete disk floor, sunset HDR env map, orbit animation.
-2. **`gem_LG625469749.toml`** — your IGI-graded stone as an oval brilliant (`[[gems]]`), floating in a procedural studio light-tent HDR (`assets/studio_softbox.hdr`), caustics on.
-3. **`gem_emerald.toml`** — demo step-cut gem (`cut = "step"`, `material = "emerald"` preset) in the same staging.
-4. **`bench.toml`** — the `--bench` reference scene (dusk room + blackbody panel + round-brilliant diamond and princess-cut sapphire with photon caustics + gold OBJ mesh). Baseline 9.1 Mpx/s since the 2026-11 sphere->gem swap (was 8.1 Mpx/s with glass/SSS spheres).
-5. **`625469629.toml`** — generated by `report_to_toml.py` from `625469629.pdf` (IGI): round brilliant, 0.55 ct, F/VS1, 5.29 x 3.24 mm.
-6. **`625469717.toml`** — from `625469717.pdf`: princess cut, 0.53 ct, F/VVS2, 4.50 x 4.46 x 3.14 mm, table 72%.
-7. **`625469899.toml`** — from `625469899.pdf`: emerald (step) cut, 2.20 ct, F/VS1, 8.63 x 6.01 x 4.13 mm.
-8. **`cuts_gallery.toml`** — all cut presets (round/oval brilliant, princess, emerald/step, cushion, asscher, radiant, baguette, trillion, marquise, pear) x material presets on a checkerboard floor, 6x2 grid, caustics on. Doubles as the gem benchmark: `rustracer --bench cuts_gallery.toml` (13.2 Mpx/s vs 8.1 for `bench.toml`).
+All scene TOMLs live in `scenes/`, together with their `scenes/assets/` (env maps, OBJ meshes,
+textures). Asset paths in the TOMLs stay `assets/...` and resolve next to the scene file.
+
+1. **`scenes/scene.toml`** — default demo: old wooden chair and basketball OBJ meshes with PBR textures (normal map on the basketball), concrete disk floor, sunset HDR env map, orbit animation.
+2. **`scenes/gem_LG625469749.toml`** — your IGI-graded stone as an oval brilliant (`[[gems]]`), floating in a procedural studio light-tent HDR (`scenes/assets/studio_softbox.hdr`), caustics on.
+3. **`scenes/gem_emerald.toml`** — demo step-cut gem (`cut = "step"`, `material = "emerald"` preset) in the same staging.
+4. **`scenes/bench.toml`** — the `--bench` reference scene (dusk room + blackbody panel + round-brilliant diamond and princess-cut sapphire with photon caustics + gold OBJ mesh). Baseline 9.1 Mpx/s since the 2026-11 sphere->gem swap (was 8.1 Mpx/s with glass/SSS spheres).
+5. **`scenes/625469629.toml`** — generated by `report_to_toml.py` from `625469629.pdf` (IGI): round brilliant, 0.55 ct, F/VS1, 5.29 x 3.24 mm.
+6. **`scenes/625469717.toml`** — from `625469717.pdf`: princess cut, 0.53 ct, F/VVS2, 4.50 x 4.46 x 3.14 mm, table 72%.
+7. **`scenes/625469899.toml`** — from `625469899.pdf`: emerald (step) cut, 2.20 ct, F/VS1, 8.63 x 6.01 x 4.13 mm.
+8. **`scenes/cuts_gallery.toml`** — all cut presets (round/oval brilliant, princess, emerald/step, cushion, asscher, radiant, baguette, trillion, marquise, pear) x material presets on a checkerboard floor, 6x2 grid, caustics on. Doubles as the gem benchmark: `rustracer --bench scenes/cuts_gallery.toml` (13.2 Mpx/s vs 9.1 for `scenes/bench.toml`).
 
 ### From a grading-report PDF
 
@@ -342,14 +348,14 @@ diagram (crown% / table% / pavilion% / depth%) — and writes a ready-to-render 
 the PDF:
 
 ```
-py report_to_toml.py 625469899.pdf        # writes 625469899.toml
-cargo run --release -- --scene 625469899.toml
+py report_to_toml.py 625469899.pdf        # writes scenes/625469899.toml
+cargo run --release -- --scene scenes/625469899.toml
 ```
 
 The stone is staged floating above a dark floor in the studio light-tent HDR with caustics on;
 camera distance and photon gather radius scale with the measured size. Overrides: `--material`,
 `--cut`, `--gap-mm`, `--no-caustics`. Unparseable fields produce warnings, never a broken file.
-The report PDFs themselves stay local (git-ignored); `gem_LG625469749.toml` is the hand-tuned
+The report PDFs themselves stay local (git-ignored); `scenes/gem_LG625469749.toml` is the hand-tuned
 scene for `LG625469749.pdf`.
 
 ## Implementation notes

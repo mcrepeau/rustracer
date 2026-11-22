@@ -1,4 +1,4 @@
-"""Generate assets/studio_softbox.hdr: a procedural "light tent" environment map.
+"""Generate scenes/assets/studio_softbox.hdr: a procedural "light tent" environment map.
 
 Equirectangular Radiance RGBE (RLE), 2048x1024, v=0 = zenith (+Y), u wraps azimuth.
 Near-uniform bright base (zenith ~2.4 -> nadir ~0.8) so the visible background is
@@ -13,8 +13,8 @@ import os
 
 W, H = 2048, 1024
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "assets", "studio_softbox.hdr")
-COMPARE = os.path.join(HERE, "assets", "sunset_puresky_4k.hdr")
+OUT = os.path.join(HERE, "scenes", "assets", "studio_softbox.hdr")
+COMPARE = os.path.join(HERE, "scenes", "assets", "sunset_puresky_4k.hdr")
 
 
 def rgbe(r, g, b):
