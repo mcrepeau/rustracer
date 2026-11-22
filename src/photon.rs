@@ -49,26 +49,25 @@ impl PhotonMap {
         let up          = if sun_down.x.abs() < 0.999 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
         let t           = sun_down.cross(up).unit();
         let b           = sun_down.cross(t);
-        // Size the emission disk to the scene: centre it on the scene AABB (pushed out
-        // along the sun direction) with the AABB bounding-sphere radius, which provably
-        // covers the scene's projection onto the disk plane. Two guards keep the disk
-        // from becoming huge in scenes with proxy geometry: the AABB is clipped to
-        // ±SCENE_CLIP per axis (InfinitePlane reports ±1e5), and the radius is capped
-        // at DISK_R_MAX (an infinite-plane scene's AABB is all proxy, so its raw radius
-        // would waste ~every photon and leave the caustic map empty). The cap covers
-        // the central ~2·DISK_R_MAX region; wider scenes get partial coverage.
+        // Size the emission disk to the *real* geometry: photon_bounds() excludes
+        // proxy shapes (InfinitePlane reports ±1e5), so in a plane-floor scene the
+        // disk hugs the actual objects instead of wasting ~every photon on empty
+        // floor (hit fraction ~(object_r / disk_r)^2).  The disk is centred on the
+        // bounds, pushed out along the sun direction, with the bounding-sphere radius,
+        // which provably covers the geometry's projection onto the disk plane.
+        // ±SCENE_CLIP remains as a sanity bound for huge real scenes; the radius is
+        // floored so disk_area stays > 0 for degenerate (point-like) bounds.
         const SCENE_CLIP: f32 = 1.0e3;
-        const DISK_R_MAX: f32 = 50.0;
-        let (disk_center, disk_r) = match world.bounding_box() {
+        let (disk_center, disk_r) = match world.photon_bounds() {
             Some(bb) => {
                 let clip = |v: f32| v.clamp(-SCENE_CLIP, SCENE_CLIP);
                 let min = Vec3::new(clip(bb.min.x), clip(bb.min.y), clip(bb.min.z));
                 let max = Vec3::new(clip(bb.max.x), clip(bb.max.y), clip(bb.max.z));
                 let c = (min + max) * 0.5;
-                let r = ((max - min).length() * 0.5).min(DISK_R_MAX);
-                (c + sun_dir.unit() * r, r.max(1.0))
+                let r = ((max - min).length() * 0.5).max(1.0e-3);
+                (c + sun_dir.unit() * r, r)
             }
-            None => (sun_dir.unit() * 30.0, DISK_R), // no bounds: old fallback
+            None => (sun_dir.unit() * 30.0, DISK_R), // only proxy geometry: old fallback
         };
         let disk_area   = PI * disk_r * disk_r;
         let power       = sun_color * (disk_area / (num_photons as f32 * PI));
@@ -275,4 +274,89 @@ fn trace_photon(
         }
     }
     None
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bvh::BvhTree;
+    use crate::hittable::{HittableList, Material};
+    use crate::material::{Dielectric, Lambertian};
+    use crate::plane::InfinitePlane;
+    use crate::sphere::Sphere;
+    use crate::texture::Texture;
+    use crate::transform::{Translate, UniformScale};
+    use std::sync::Arc;
+
+    fn diffuse() -> Arc<dyn Material> {
+        Arc::new(Lambertian { texture: Texture::from(Color::new(0.7, 0.7, 0.7)) })
+    }
+
+    #[test]
+    fn photon_bounds_skip_proxy_and_forward_through_wrappers() {
+        let plane = InfinitePlane::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 0.0, 0.0, diffuse());
+        assert!(plane.photon_bounds().is_none());
+        assert!(plane.bounding_box().is_some()); // full bbox keeps the ±1e5 proxy
+
+        // List: union of finite children only.
+        let mut list = HittableList::new();
+        list.add(plane);
+        list.add(Sphere::new(Point3::new(3.0, 1.0, 0.0), 0.5, diffuse()));
+        let bb = list.photon_bounds().unwrap();
+        assert!((bb.min.x - 2.5).abs() < 1e-4 && (bb.max.x - 3.5).abs() < 1e-4);
+
+        // Lone plane -> None (caller falls back to the DISK_R disk).
+        let mut lone = HittableList::new();
+        lone.add(InfinitePlane::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 0.0, 0.0, diffuse()));
+        assert!(lone.photon_bounds().is_none());
+
+        // Wrappers forward the finite bounds.
+        let t = Translate::new(Arc::new(Sphere::new(Point3::new(0.0, 1.0, 0.0), 0.5, diffuse())), Vec3::new(10.0, 0.0, 0.0));
+        let bb = t.photon_bounds().unwrap();
+        assert!((bb.min.x - 9.5).abs() < 1e-4 && (bb.max.x - 10.5).abs() < 1e-4);
+
+        let s = UniformScale::new(Arc::new(Sphere::new(Point3::new(0.0, 1.0, 0.0), 0.5, diffuse())), 2.0);
+        let bb = s.photon_bounds().unwrap();
+        assert!((bb.max.x - 1.0).abs() < 1e-4 && (bb.min.y - 1.0).abs() < 1e-4); // centre y=1, r=0.5, x2
+    }
+
+    #[test]
+    fn gem_scene_photon_map_is_populated_and_finite() {
+        // Scene-level regression test: the staged gem scene (infinite floor +
+        // oval diamond) must produce a populated, finite caustic map — with the
+        // old plane-inclusive disk bounds it was essentially empty.
+        let mut scene = crate::scene_file::load("gem_LG625469749.toml").unwrap();
+        scene.rebuild_caustics();
+        let pm = scene.photon_map.as_ref().expect("caustics enabled in gem_LG625469749.toml");
+        assert!(pm.nodes.len() > 10_000, "caustic map suspiciously empty: {}", pm.nodes.len());
+        for nd in &pm.nodes {
+            assert!(nd.power[0].is_finite() && nd.power[1].is_finite() && nd.power[2].is_finite());
+            assert!(nd.pos[0].is_finite() && nd.pos[1].is_finite() && nd.pos[2].is_finite());
+        }
+        // Floor point right under the gem: positive, finite irradiance.
+        let irr = pm.irradiance(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+        assert!(irr.x.is_finite() && irr.x > 0.0, "expected caustic light under the gem, got {irr:?}");
+    }
+
+    #[test]
+    fn photon_disk_hugs_real_geometry_in_plane_scenes() {
+        // Infinite floor + small glass sphere above it: the emission disk must be
+        // sized from the sphere only, so ~all photons hit the sphere and, after one
+        // specular bounce, land on the floor as stored caustic photons.  With the
+        // old plane-inclusive bounds the disk radius was ~50 and the hit fraction
+        // ~(0.87/50)^2 ~ 3e-4, i.e. an essentially empty caustic map.
+        let mut list = HittableList::new();
+        list.add(InfinitePlane::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 0.0, 0.0, diffuse()));
+        list.add(Sphere::new(Point3::new(0.0, 1.0, 0.0), 0.5, Arc::new(Dielectric { ir: 1.5 })));
+        let world = BvhTree::from_list(list);
+
+        let bb = world.photon_bounds().expect("finite geometry present");
+        assert!(bb.max.x - bb.min.x < 2.0, "photon disk bounds must hug the sphere");
+        assert!(world.bounding_box().unwrap().max.x > 1.0e4, "full bbox still has the plane proxy");
+
+        let map = PhotonMap::build(&world, Vec3::new(0.0, 1.0, 0.0), Color::new(10.0, 10.0, 10.0), 20_000, 0.5);
+        assert!(map.nodes.len() > 2_000,
+                "expected most photons to reach the floor via the glass sphere, got {}", map.nodes.len());
+    }
 }

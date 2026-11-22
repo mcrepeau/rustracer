@@ -149,6 +149,10 @@ impl Hittable for ConstantMedium {
     fn bounding_box(&self) -> Option<Aabb> {
         self.boundary.bounding_box()
     }
+
+    fn photon_bounds(&self) -> Option<Aabb> {
+        self.boundary.photon_bounds()
+    }
 }
 
 // ── Noise-driven heterogeneous participating medium ────────────────────────────
@@ -251,6 +255,10 @@ impl Hittable for NoiseMedium {
 
     fn bounding_box(&self) -> Option<Aabb> {
         self.boundary.bounding_box()
+    }
+
+    fn photon_bounds(&self) -> Option<Aabb> {
+        self.boundary.photon_bounds()
     }
 }
 

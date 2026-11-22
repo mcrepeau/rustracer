@@ -103,6 +103,12 @@ pub trait Hittable: Send + Sync {
     fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>>;
     fn bounding_box(&self) -> Option<Aabb>;
 
+    /// Bounds used to size the caustic photon-emission disk.  Proxy geometry that
+    /// is effectively infinite (InfinitePlane) returns None so the disk covers only
+    /// real geometry; HittableList unions the finite children instead of letting one
+    /// proxy poison the whole scene.  Defaults to `bounding_box()`.
+    fn photon_bounds(&self) -> Option<Aabb> { self.bounding_box() }
+
     /// Returns true if any object is hit in [t_min, t_max].
     /// Faster than hit() for shadow/occlusion tests — exits at the first intersection.
     fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
@@ -187,6 +193,21 @@ impl Hittable for HittableList {
                 None => bbox,
                 Some(prev) => Aabb::surrounding(&prev, &bbox),
             });
+        }
+        result
+    }
+
+    fn photon_bounds(&self) -> Option<Aabb> {
+        // Union only the finite (non-proxy) children; None children (infinite
+        // planes) are skipped rather than failing the whole list.
+        let mut result: Option<Aabb> = None;
+        for obj in &self.objects {
+            if let Some(b) = obj.photon_bounds() {
+                result = Some(match result {
+                    None => b,
+                    Some(prev) => Aabb::surrounding(&prev, &b),
+                });
+            }
         }
         result
     }

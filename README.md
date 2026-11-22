@@ -128,6 +128,7 @@ Caustics are the bright, curved light patterns formed when light focuses through
 - Hemisphere normal filtering rejects photons whose stored normal opposes the shading normal — no caustic leakage through opaque geometry
 - Photons are stored after any specular bounce (plain glass included, not just spectral materials)
 - Emitter: the sun for `physical` backgrounds, a luminance-sampled bright direction for `env_map` backgrounds, or the first `[[lights]]` quad for `solid` backgrounds
+- The sun/env emission disk is sized from the *real* geometry only (`Hittable::photon_bounds()` — infinite planes are excluded), so plane-floor scenes get a tight disk and a populated caustic map instead of wasting ~all photons; the photon storage luminance clamp scales with the disk area to stay sun-proportional at any scene scale
 
 ### Backgrounds
 

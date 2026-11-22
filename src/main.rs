@@ -540,10 +540,15 @@ fn accumulate_sample(
             let old_n    = *n;
             let old_mean = if old_n > 0 { *a / old_n as f32 } else { Color::default() };
             // Firefly clamp keys on luminance (a chromatic spike is still a spike).
+            // The threshold is max(FIREFLY_CLAMP * old_lum, FIREFLY_ABS_FLOOR): without
+            // the absolute floor, a pixel whose running mean is still ~0 (e.g. a dark
+            // pixel whose first samples are all zero) would clamp its first legitimate
+            // bright sample to ~0 and render black despite a healthy true mean.
             let old_lum  = luminance(old_mean);
-            let sc = if old_n >= FIREFLY_MIN_SAMPLES && old_lum > 1e-6 {
-                let ratio = luminance(sc) / old_lum;
-                if ratio > FIREFLY_CLAMP { sc * (FIREFLY_CLAMP / ratio) } else { sc }
+            let sc = if old_n >= FIREFLY_MIN_SAMPLES {
+                let l      = luminance(sc);
+                let thresh = (FIREFLY_CLAMP * old_lum).max(FIREFLY_ABS_FLOOR);
+                if l > thresh { sc * (thresh / l) } else { sc }
             } else { sc };
             *a  += sc;
             *n  += 1;
@@ -624,6 +629,9 @@ const ADAPTIVE_THRESHOLD:   f32 = 0.05;
 /// never appears as a spike relative to the running mean.
 const FIREFLY_CLAMP:        f32 = 8.0;
 const FIREFLY_MIN_SAMPLES:  u32 = 4;
+/// Absolute floor (linear luminance) for the firefly-clamp threshold — see
+/// accumulate_sample. Samples below this are never clamped.
+const FIREFLY_ABS_FLOOR:    f32 = 5.0;
 
 #[cfg(feature = "denoise")]
 fn spawn_denoiser(

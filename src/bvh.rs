@@ -35,6 +35,9 @@ pub struct BvhTree {
     nodes:   Vec<QbvhNode>,
     objects: Vec<Arc<dyn Hittable>>,
     bbox:    Aabb,
+    /// Union of the finite (non-proxy) children's photon_bounds(); None when all
+    /// children are proxy geometry (e.g. a lone infinite plane).
+    photon_bbox: Option<Aabb>,
     /// Prefix sums of `light_area()` over `objects` (in leaf order): the CDF used
     /// to pick an emissive leaf with probability proportional to its area.
     light_prefix: Vec<f32>,
@@ -199,6 +202,9 @@ impl BvhTree {
         let boxes: Vec<Aabb> = objs.iter()
             .map(|o| o.bounding_box().unwrap_or_default())
             .collect();
+        let photon_bbox = objs.iter()
+            .filter_map(|o| o.photon_bounds())
+            .reduce(|a, b| Aabb::surrounding(&a, &b));
         let mut nodes   = Vec::with_capacity(objs.len());
         let mut objects = Vec::with_capacity(objs.len());
         let (root, bbox) = Self::build(&objs, &boxes, &mut nodes, &mut objects);
@@ -215,7 +221,7 @@ impl BvhTree {
             acc += o.light_area();
             light_prefix.push(acc);
         }
-        Self { nodes, objects, bbox, light_prefix, light_total: acc }
+        Self { nodes, objects, bbox, photon_bbox, light_prefix, light_total: acc }
     }
 
     /// Like hit(), but also returns the leaf index of the closest hit
@@ -594,6 +600,8 @@ impl Hittable for BvhTree {
     fn bounding_box(&self) -> Option<Aabb> {
         if self.nodes.is_empty() { None } else { Some(self.bbox) }
     }
+
+    fn photon_bounds(&self) -> Option<Aabb> { self.photon_bbox }
 }
 
 #[cfg(test)]

@@ -72,6 +72,12 @@ impl Hittable for UniformScale {
             Aabb::new(self.factor * bb.min, self.factor * bb.max)
         })
     }
+
+    fn photon_bounds(&self) -> Option<Aabb> {
+        self.object.photon_bounds().map(|bb| {
+            Aabb::new(self.factor * bb.min, self.factor * bb.max)
+        })
+    }
 }
 
 
@@ -121,6 +127,12 @@ impl Hittable for Translate {
             Aabb::new(bb.min + self.offset, bb.max + self.offset)
         })
     }
+
+    fn photon_bounds(&self) -> Option<Aabb> {
+        self.object.photon_bounds().map(|bb| {
+            Aabb::new(bb.min + self.offset, bb.max + self.offset)
+        })
+    }
 }
 
 // ── Rotate ────────────────────────────────────────────────────────────────────
@@ -131,6 +143,8 @@ pub struct Rotate {
     /// Inverse is the transpose (rotation matrices are orthogonal).
     fwd:  [[f32; 3]; 3],
     bbox: Option<Aabb>,
+    /// Same as `bbox` but from the child's photon_bounds() (proxy children -> None).
+    photon_bbox: Option<Aabb>,
 }
 
 fn mat_apply(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {
@@ -149,29 +163,32 @@ fn mat_apply_t(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {
     )
 }
 
+fn rotated_aabb(m: &[[f32; 3]; 3], bb: &Aabb) -> Aabb {
+    let mut min = Point3::new( f32::INFINITY,  f32::INFINITY,  f32::INFINITY);
+    let mut max = Point3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for i in 0..2usize {
+        for j in 0..2usize {
+            for k in 0..2usize {
+                let corner = Vec3::new(
+                    if i == 0 { bb.min.x } else { bb.max.x },
+                    if j == 0 { bb.min.y } else { bb.max.y },
+                    if k == 0 { bb.min.z } else { bb.max.z },
+                );
+                let r = mat_apply(m, corner);
+                min.x = min.x.min(r.x); max.x = max.x.max(r.x);
+                min.y = min.y.min(r.y); max.y = max.y.max(r.y);
+                min.z = min.z.min(r.z); max.z = max.z.max(r.z);
+            }
+        }
+    }
+    Aabb::new(min, max)
+}
+
 impl Rotate {
     fn with_matrix(object: Arc<dyn Hittable>, fwd: [[f32; 3]; 3]) -> Self {
-        let bbox = object.bounding_box().map(|bb| {
-            let mut min = Point3::new( f32::INFINITY,  f32::INFINITY,  f32::INFINITY);
-            let mut max = Point3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-            for i in 0..2usize {
-                for j in 0..2usize {
-                    for k in 0..2usize {
-                        let corner = Vec3::new(
-                            if i == 0 { bb.min.x } else { bb.max.x },
-                            if j == 0 { bb.min.y } else { bb.max.y },
-                            if k == 0 { bb.min.z } else { bb.max.z },
-                        );
-                        let r = mat_apply(&fwd, corner);
-                        min.x = min.x.min(r.x); max.x = max.x.max(r.x);
-                        min.y = min.y.min(r.y); max.y = max.y.max(r.y);
-                        min.z = min.z.min(r.z); max.z = max.z.max(r.z);
-                    }
-                }
-            }
-            Aabb::new(min, max)
-        });
-        Self { object, fwd, bbox }
+        let bbox        = object.bounding_box().map(|bb| rotated_aabb(&fwd, &bb));
+        let photon_bbox = object.photon_bounds().map(|bb| rotated_aabb(&fwd, &bb));
+        Self { object, fwd, bbox, photon_bbox }
     }
 
     pub fn around_y(object: Arc<dyn Hittable>, angle_deg: f32) -> Self {
@@ -232,6 +249,8 @@ impl Hittable for Rotate {
     }
 
     fn bounding_box(&self) -> Option<Aabb> { self.bbox }
+
+    fn photon_bounds(&self) -> Option<Aabb> { self.photon_bbox }
 }
 
 #[cfg(test)]

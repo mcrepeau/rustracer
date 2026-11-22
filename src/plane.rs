@@ -98,4 +98,10 @@ impl Hittable for InfinitePlane {
         let (z0, z1) = range(n.z, p.z);
         Some(Aabb::new(Point3::new(x0, y0, z0), Point3::new(x1, y1, z1)))
     }
+
+    fn photon_bounds(&self) -> Option<Aabb> {
+        // Effectively infinite: excluded from the photon-disk bounds so the disk
+        // hugs the real geometry instead of this ±1e5 proxy box.
+        None
+    }
 }
