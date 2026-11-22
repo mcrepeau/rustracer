@@ -1,5 +1,5 @@
 # Demo: a step-cut ("emerald cut") gem, e.g. a 9.0 x 6.0 x 3.9 mm emerald.
-# Same staging as gem_LG625469749.toml: floating stone, studio light-tent env
+# Same staging as gem_LG625469749.toml: floating stone, dark-room studio env
 # map, caustics from the map's brightest direction. Render or view with:
 #   cargo run --release -- --scene scenes/gem_emerald.toml
 name = "emerald step cut demo"
@@ -15,11 +15,11 @@ move_speed = 0.001
 
 [background]
 type = "env_map"
-path = "assets/studio_softbox.hdr"
+path = "assets/studio_dark.hdr"
 
 [[objects]]
 shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
-material = { type = "pbr", albedo = [0.04, 0.04, 0.05], roughness = 0.25, metallic = 0.0 }
+material = { type = "pbr", albedo = [0.03, 0.03, 0.035], roughness = 0.9, metallic = 0.0 }   # dark, near-diffuse floor
 
 [[gems]]
 report          = "demo emerald cut (no report; proportions are typical)"
