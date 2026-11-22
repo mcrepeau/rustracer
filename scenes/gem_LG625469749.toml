@@ -19,11 +19,11 @@ move_speed = 0.001   # close-up framing: finer steps per keypress
 
 [background]
 type = "env_map"
-path = "assets/studio_softbox.hdr"
+path = "assets/studio_dark.hdr"
 
 [[objects]]
 shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
-material = { type = "pbr", albedo = [0.04, 0.04, 0.05], roughness = 0.25, metallic = 0.0 }
+material = { type = "pbr", albedo = [0.03, 0.03, 0.035], roughness = 0.9, metallic = 0.0 }   # dark, near-diffuse: no panel mirror
 
 [[gems]]
 report          = "LG625469749 (IGI 2024-03-09, lab-grown CVD Type IIa)"

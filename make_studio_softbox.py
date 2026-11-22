@@ -6,14 +6,18 @@ an even light from all sides; the four softbox positions only add very soft,
 low-contrast glows (no hard rectangle edges, nothing pixellated). Directional
 lighting and caustics come from this map. A warm global tint (TINT) sets the
 color temperature.
-Run from the repo root:  py make_studio_softbox.py
+Run from the repo root:  py make_studio_softbox.py           # bright white-tent map
+                         py make_studio_softbox.py --dark    # same softboxes, near-black room
+                                                            # (studio_dark.hdr) for gem scenes
 """
 import math
 import os
+import sys
 
 W, H = 2048, 1024
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "scenes", "assets", "studio_softbox.hdr")
+DARK = "--dark" in sys.argv
+OUT = os.path.join(HERE, "scenes", "assets", "studio_dark.hdr" if DARK else "studio_softbox.hdr")
 COMPARE = os.path.join(HERE, "scenes", "assets", "sunset_puresky_4k.hdr")
 
 
@@ -54,12 +58,14 @@ SOFT = 0.9
 TINT = (1.12, 1.00, 0.84)
 
 
-def build_rows():
+def build_rows(dark=False):
     rows = []
     for j in range(H):
         v = (j + 0.5) / H
-        # base: smooth bright "tent" gradient, zenith ~2.4 -> nadir ~0.8
-        base = 0.8 + 1.6 * (1.0 - v) ** 1.5
+        # base gradient: bright "white tent" by default (zenith ~2.4 -> nadir ~0.8);
+        # --dark keeps only a faint room (zenith ~0.065 -> nadir ~0.015) so the visible
+        # background goes dark and the stone pops — the softbox panels still light it.
+        base = (0.015 + 0.05 * (1.0 - v) ** 1.5) if dark else (0.8 + 1.6 * (1.0 - v) ** 1.5)
         row = bytearray()
         for i in range(W):
             u = (i + 0.5) / W
@@ -166,9 +172,9 @@ def stats(path):
 
 
 if __name__ == "__main__":
-    write_hdr(OUT, build_rows())
+    write_hdr(OUT, build_rows(DARK))
     w, h, mean, mx = stats(OUT)
-    print("studio_softbox.hdr: %dx%d  mean lum %.3f  max lum %.1f" % (w, h, mean, mx))
+    print("%s: %dx%d  mean lum %.3f  max lum %.1f" % (os.path.basename(OUT), w, h, mean, mx))
     if os.path.exists(COMPARE):
         w, h, mean, mx = stats(COMPARE)
         print("sunset_puresky_4k.hdr: %dx%d  mean lum %.3f  max lum %.1f" % (w, h, mean, mx))

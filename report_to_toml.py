@@ -203,11 +203,11 @@ def render_toml(f, args):
     lines.append("")
     lines.append("[background]")
     lines.append('type = "env_map"')
-    lines.append('path = "assets/studio_softbox.hdr"')
+    lines.append('path = "assets/studio_dark.hdr"')   # dark-room studio: stone pops against the surround
     lines.append("")
     lines.append("[[objects]]")
     lines.append('shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }')
-    lines.append('material = { type = "pbr", albedo = [0.04, 0.04, 0.05], roughness = 0.25, metallic = 0.0 }')
+    lines.append('material = { type = "pbr", albedo = [0.03, 0.03, 0.035], roughness = 0.9, metallic = 0.0 }')   # dark, near-diffuse floor
     lines.append("")
     lines.append("[[gems]]")
     lines.append('report          = "%s"' % esc('%s (IGI %s, %s)' % (f["report"], f["date"], f["description"])))
