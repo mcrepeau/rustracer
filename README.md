@@ -91,7 +91,11 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
   ```
 
 - **`make_studio_softbox.py`** — regenerates `scenes/assets/studio_softbox.hdr`, the procedural "light tent"
-  env map used by the gem scene (gradient base + soft glows + warm `TINT`); run `py make_studio_softbox.py`.
+  env map used by the gem scenes (gradient base + soft glows + warm `TINT`); run `py make_studio_softbox.py`.
+
+- **`report_to_toml.py`** — turns an IGI/GIA grading-report PDF into a renderable `scenes/<report>.toml`
+  (stdlib only; see "From a grading-report PDF" below):
+  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 15] [--no-caustics]`
 
 ## Features
 
@@ -283,9 +287,8 @@ pavilion_pct    = 41.0
 depth_pct       = 61.8                 # cross-checked against the angles
 color_grade     = "E"                  # Beer-Lambert tint from the grade
 cut             = "brilliant"          # "brilliant" (round/oval), "step" (emerald cut),
-                                       # "princess", "asscher", "radiant", "baguette",
-                                       # "cushion", "trillion", "marquise", "pear"
-                                       # "princess" (square brilliant: sharp corners, point culet)
+                                       # "princess" (square brilliant + chevrons), "asscher",
+                                       # "radiant", "baguette", "cushion", "trillion", "marquise", "pear"
 material        = "diamond"            # preset: "diamond" | "sapphire" | "ruby" | "emerald"
                                        # (IOR/dispersion/body colour; grade tint adds on top;
                                        #  cauchy_b/cauchy_c/absorption override explicitly)
@@ -344,8 +347,8 @@ textures). Asset paths in the TOMLs stay `assets/...` and resolve next to the sc
 `py report_to_toml.py REPORT.pdf` (Python stdlib only) pulls the IGI/GIA fields straight out of the
 PDF's FlateDecode text streams — report number/date, description (-> material preset), cutting
 style (-> cut preset), measurements, carat weight, color/clarity grades and the proportions
-diagram (crown% / table% / pavilion% / depth%) — and writes a ready-to-render scene TOML next to
-the PDF:
+diagram (crown% / table% / pavilion% / depth%) — and writes a ready-to-render scene TOML into
+`scenes/` (next to this script):
 
 ```
 py report_to_toml.py 625469899.pdf        # writes scenes/625469899.toml
@@ -377,5 +380,6 @@ scene for `LG625469749.pdf`.
 |---|---|---|---|
 | `MAX_DEPTH` | `src/renderer.rs` | `50` | Maximum ray bounce depth. Lower cuts render time but loses energy in glass/mirror-heavy scenes. |
 | `ADAPTIVE_THRESHOLD` | `src/main.rs` | `0.05` | Relative standard error (σ/μ, per channel) below which a pixel is converged and skipped. |
-| `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | Samples above this multiple of the running pixel mean are scaled down to it. Downward bias on high-variance pixels — use `--denoise` for bias-free firefly suppression in finals. |
+| `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | Samples above `max(FIREFLY_CLAMP × running pixel mean, FIREFLY_ABS_FLOOR)` luminance are scaled down to that threshold. Downward bias on high-variance pixels — use `--denoise` for bias-free firefly suppression in finals. |
 | `FIREFLY_MIN_SAMPLES` | `src/main.rs` | `4` | Minimum samples before per-pixel firefly clamping activates. |
+| `FIREFLY_ABS_FLOOR` | `src/main.rs` | `5.0` | Absolute floor (linear luminance) for the clamp threshold — without it, a pixel whose running mean is still ~0 clamps its first legitimate bright sample to ~0 and renders black. |
