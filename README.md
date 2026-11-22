@@ -6,16 +6,10 @@ A physically-based path tracer built in Rust. It simulates how light actually be
 
 ## Gallery
 
-| OBJ loading (`scenes/scene.toml` — default demo scene) |
-|:---:|
-| ![OBJ Loading](examples/render_obj_loading_5000spp.png) chair + basketball OBJ meshes, PBR textures, HDR sky — render your own gem with `scenes/gem_LG625469749.toml` |
-
-### Animation — 360° orbit
-
-Camera orbit around the chair and basketball (`scenes/scene.toml` has an `[animation.orbit]` section), 144 frames at 24 fps.
-
-[Watch the orbit animation](examples/obj_loading.mp4)
-
+No committed renders — generate your own: `scenes/scene.toml` (chair + basketball demo),
+`scenes/cuts_gallery.toml` (every gem cut on a checkerboard), or a stone straight from an
+IGI/GIA report via `report_to_toml.py`. Render headless with `--render --preset final` and
+check the result with `render_qa.py` (see Tools).
 
 ## Build & Run
 

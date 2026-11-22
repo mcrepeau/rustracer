@@ -1,13 +1,10 @@
 # Rust build artifacts
 /target/
 
-# Render output (keep curated examples/)
+# Render output
 *.png
 *.exr
 *.mp4
-!examples/*.png
-!examples/*.exr
-!examples/*.mp4
 
 # macOS
 .DS_Store
