@@ -1,0 +1,196 @@
+# Cuts gallery: every [[gems]] cut preset x material preset in a 6x2 grid,
+# staged like the single-stone scenes (dark floor, studio light-tent env map,
+# caustics on). The photon disk hugs the grid automatically (infinite floor
+# is excluded from the emission bounds), so each stone gets its own caustic
+# pool.
+#
+# View:    cargo run --release -- --scene cuts_gallery.toml
+# Render:  cargo run --release -- --render --scene cuts_gallery.toml --preset final --width 1280 --height 720 --output gallery.png
+#
+# Row 0 (back,  z = -0.012): round brilliant, oval brilliant, princess,
+#                            emerald (step), cushion, asscher
+# Row 1 (front, z = +0.012): radiant, baguette, trillion, marquise, pear,
+#                            round brilliant emerald
+# Grid pitch 0.024 (24 mm); all girdle centres at y = 0.020.
+name = "cuts gallery — all gem presets"
+max_samples = 1024
+
+[camera]
+look_from  = [0.055, 0.100, -0.132]
+look_at    = [0.0, 0.018, 0.0]
+vfov       = 30.0
+aperture   = 0.0
+focus_dist = 0.164
+move_speed = 0.0059
+
+[background]
+type = "env_map"
+path = "assets/studio_softbox.hdr"
+
+[[objects]]
+shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }
+material = { type = "pbr", albedo = [0.04, 0.04, 0.05], roughness = 0.25, metallic = 0.0 }
+
+# ── Row 0 (z = -0.012) ──────────────────────────────────────────────────────
+
+[[gems]]
+report          = "round brilliant (IGI 625469629 proportions)"
+measurements_mm = [5.285, 5.285, 3.24]
+table_pct       = 59.0
+crown_pct       = 13.5
+pavilion_pct    = 44.0
+depth_pct       = 61.3
+color_grade     = "F"
+cut             = "brilliant"
+material        = "diamond"
+center          = [-0.060, 0.020, -0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "oval brilliant (IGI LG625469749)"
+measurements_mm = [8.99, 6.42, 3.97]
+table_pct       = 58.0
+crown_pct       = 16.0
+pavilion_pct    = 41.0
+depth_pct       = 61.8
+girdle_facets   = 64
+color_grade     = "E"
+cut             = "brilliant"
+material        = "diamond"
+rotate_y        = 20.0
+center          = [-0.036, 0.020, -0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "princess (IGI 625469717 proportions)"
+measurements_mm = [4.50, 4.46, 3.14]
+table_pct       = 72.0
+crown_pct       = 10.0
+pavilion_pct    = 58.0
+depth_pct       = 70.4
+color_grade     = "F"
+cut             = "princess"
+material        = "diamond"
+center          = [-0.012, 0.020, -0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "emerald cut (IGI 625469899 proportions)"
+measurements_mm = [8.63, 6.01, 4.13]
+table_pct       = 62.0
+crown_pct       = 15.0
+pavilion_pct    = 49.5
+depth_pct       = 68.7
+color_grade     = "F"
+cut             = "step"
+material        = "emerald"
+center          = [0.012, 0.020, -0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "cushion (typical proportions)"
+measurements_mm = [6.00, 6.00, 4.20]
+table_pct       = 60.0
+crown_pct       = 12.0
+pavilion_pct    = 45.0
+color_grade     = "D"
+cut             = "cushion"
+material        = "sapphire"
+center          = [0.036, 0.020, -0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "asscher (typical proportions)"
+measurements_mm = [5.00, 5.00, 3.40]
+table_pct       = 60.0
+crown_pct       = 14.0
+pavilion_pct    = 43.0
+color_grade     = "D"
+cut             = "asscher"
+material        = "diamond"
+center          = [0.060, 0.020, -0.012]
+scale_mm        = 0.001
+
+# ── Row 1 (z = +0.012) ──────────────────────────────────────────────────────
+
+[[gems]]
+report          = "radiant (typical proportions)"
+measurements_mm = [7.00, 5.00, 4.00]
+table_pct       = 62.0
+crown_pct       = 15.0
+pavilion_pct    = 44.0
+color_grade     = "D"
+cut             = "radiant"
+material        = "ruby"
+rotate_y        = 15.0
+center          = [-0.060, 0.020, 0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "baguette (typical proportions)"
+measurements_mm = [8.00, 3.00, 2.50]
+table_pct       = 55.0
+crown_pct       = 12.0
+pavilion_pct    = 42.0
+color_grade     = "E"
+cut             = "baguette"
+material        = "diamond"
+rotate_y        = 30.0
+center          = [-0.036, 0.020, 0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "trillion (typical proportions)"
+measurements_mm = [5.50, 5.50, 3.50]
+table_pct       = 55.0
+crown_pct       = 13.0
+pavilion_pct    = 45.0
+color_grade     = "D"
+cut             = "trillion"
+material        = "sapphire"
+rotate_y        = 10.0
+center          = [-0.012, 0.020, 0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "marquise (typical proportions)"
+measurements_mm = [9.00, 4.50, 3.00]
+table_pct       = 58.0
+crown_pct       = 14.0
+pavilion_pct    = 44.0
+color_grade     = "F"
+cut             = "marquise"
+material        = "emerald"
+rotate_y        = 60.0
+center          = [0.012, 0.020, 0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "pear (typical proportions)"
+measurements_mm = [6.50, 5.00, 3.60]
+table_pct       = 60.0
+crown_pct       = 13.0
+pavilion_pct    = 44.0
+color_grade     = "D"
+cut             = "pear"
+material        = "ruby"
+rotate_y        = -25.0
+center          = [0.036, 0.020, 0.012]
+scale_mm        = 0.001
+
+[[gems]]
+report          = "round brilliant emerald (IGI 625469629 proportions)"
+measurements_mm = [5.20, 5.20, 3.20]
+table_pct       = 59.0
+crown_pct       = 13.5
+pavilion_pct    = 44.0
+color_grade     = "D"
+cut             = "brilliant"
+material        = "emerald"
+center          = [0.060, 0.020, 0.012]
+scale_mm        = 0.001
+
+[caustics]
+enabled       = true
+gather_radius = 0.008
+num_photons   = 600000
