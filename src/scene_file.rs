@@ -20,6 +20,7 @@ use crate::quad::{make_box, Quad};
 use crate::renderer::{Background, EnvMapData};
 use crate::scene::SceneData;
 use crate::sphere::Sphere;
+use crate::perlin::Perlin;
 use crate::texture::Texture;
 use crate::transform::{Rotate, UniformScale, Translate};
 use crate::vec3::{Color, Point3, Vec3};
@@ -309,6 +310,15 @@ pub enum MaterialConfig {
         #[serde(default = "default_checker_scale")]
         scale: f32,
     },
+    /// Lambertian with soft Perlin mottling between two colours (seamless
+    /// studio-floor look).  `scale` = noise frequency per world unit.
+    Noise {
+        lo:    [f32; 3],
+        hi:    [f32; 3],
+        #[serde(default = "default_noise_tex_scale")]
+        scale: f32,
+    },
+
     /// Lambertian with an sRGB image texture (e.g. a world map), path relative to the cwd.
     Image { path: String },
     Metal {
@@ -446,6 +456,7 @@ pub struct CausticsConfig {
 }
 
 fn default_checker_scale() -> f32  { 1.0   }
+fn default_noise_tex_scale() -> f32  { 3.0   }
 fn default_num_photons()   -> u32  { 500_000 }
 fn default_true()          -> bool { true  }
 fn default_gather_radius() -> f32  { 0.15  }
@@ -974,6 +985,8 @@ fn build_material(cfg: MaterialConfig, base: &std::path::Path) -> Result<Arc<dyn
 
         MaterialConfig::Checker { even, odd, scale } =>
             Arc::new(Lambertian { texture: Texture::Checker { scale, even: col(even), odd: col(odd) } }),
+        MaterialConfig::Noise { lo, hi, scale } =>
+            Arc::new(Lambertian { texture: Texture::Mottle { perlin: Arc::new(Perlin::new(&mut { use rand::SeedableRng; rand::rngs::StdRng::seed_from_u64(0x5EED) })), scale, lo: col(lo), hi: col(hi) } }),
 
         MaterialConfig::Image { path } =>
             Arc::new(Lambertian { texture: Texture::load(&resolve_asset(base, &path)).map_err(|e| format!("texture '{path}': {e}"))? }),
@@ -1061,7 +1074,17 @@ mod tests {
         assert!(scene.animation.is_none(), "sample scene ships with animation commented out");
     }
 
+    #[test]
+    fn noise_material_builds_from_toml() {
+        let cfg: MaterialConfig = toml::from_str(
+            "type = \"noise\"
+lo = [0.4,0.4,0.42]
+hi = [0.45,0.45,0.47]").unwrap();
+        build_material(cfg, std::path::Path::new(".")).unwrap();   // default scale = 3.0
+    }
+
     fn parse_gem(gem_block: &str) -> GemConfig {
+
         let text = format!(
             "name = \"t\"
 [camera]

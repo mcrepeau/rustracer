@@ -218,7 +218,7 @@ cargo run --release -- --scene scenes/625469899.toml
 
 The stone is staged in bright product lighting — a light-gray cyclorama env map
 (`product_studio.hdr`) for ambient/backdrop plus angled overhead softbox `[[lights]]` quads (geometric, so
-facets catch crisp streaks) over a subtle large-tile checker floor, Blue Nile style (`--dark` switches to the dark-room studio HDR) —
+facets catch crisp streaks) over a subtle Perlin-mottled floor, Blue Nile style (`--dark` switches to the dark-room studio HDR) —
 with caustics on. Generated scenes are normalized so the stone's length is exactly 1 scene unit
 (all distances, camera, photon radius derive from it); the scene also ships a
 ready-to-render `[animation]` / `[animation.orbit]` block whose `radius` / `height` /

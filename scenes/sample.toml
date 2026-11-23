@@ -91,6 +91,8 @@ material = { type = "lambertian", color = [0.7, 0.3, 0.3] }
 # All material types (inline-table form; `material` is optional — defaults to lambertian grey):
 #   { type = "lambertian",          color = [r,g,b] }
 #   { type = "checker",             even = [r,g,b], odd = [r,g,b], scale = 2.0 }
+#   { type = "noise",               lo = [r,g,b], hi = [r,g,b], scale = 3.0 }   # soft perlin mottle
+
 #   { type = "image",               path = "assets/textures/wood.png" }      # texture, tiled by UV/world
 #   { type = "metal",               color = [r,g,b], fuzz = 0.0 }
 #   { type = "dielectric",          ior = 1.5 }                               # plain glass (white)

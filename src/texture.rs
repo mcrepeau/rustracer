@@ -12,7 +12,11 @@ pub enum Texture {
     /// Marble-like Perlin noise: 0.5*(1 + sin(scale·p.z + 10·turb(p)))
     #[allow(dead_code)]
     Noise { perlin: Arc<Perlin>, scale: f32 },
+    /// Soft Perlin mottle between two colours (seamless studio-floor look):
+    /// lerp(lo, hi, clamp(0.5 * turb(p * scale, 7), 0, 1))
+    Mottle { perlin: Arc<Perlin>, scale: f32, lo: Color, hi: Color },
 }
+
 
 impl Texture {
     pub fn load(path: &str) -> Result<Self, image::ImageError> {
@@ -42,10 +46,35 @@ impl Texture {
                 Color::new(0.5, 0.5, 0.5)
                     * (1.0 + (scale * p.z + 10.0 * perlin.turb(p, 7)).sin())
             }
+            Texture::Mottle { perlin, scale, lo, hi } => {
+                let m = (0.5 * perlin.turb(Point3::new(p.x * scale, p.y * scale, p.z * scale), 7)).clamp(0.0, 1.0);
+                *lo * (1.0 - m) + *hi * m
+            }
+
         }
     }
 }
 
 impl From<Color> for Texture {
     fn from(c: Color) -> Self { Texture::Solid(c) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mottle_stays_within_lo_hi() {
+        let lo = Color::new(0.40, 0.40, 0.42);
+        let hi = Color::new(0.45, 0.45, 0.47);
+        let tex = Texture::Mottle { perlin: Arc::new(Perlin::new(&mut { use rand::SeedableRng; rand::rngs::StdRng::seed_from_u64(0x5EED) })), scale: 3.0, lo, hi };
+        for i in 0..2000 {
+            let p = Point3::new(i as f32 * 0.371, 0.0, i as f32 * 0.113);
+            let c = tex.value(0.0, 0.0, p);
+            for k in 0..3 {
+                let (a, b, v) = (lo[k], hi[k], c[k]);
+                assert!(v >= a.min(b) - 1e-6 && v <= a.max(b) + 1e-6, "i={i} k={k} v={v}");
+            }
+        }
+    }
 }

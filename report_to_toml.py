@@ -199,10 +199,11 @@ def render_toml(f, args):
         # the stone (size = 1 scene unit), and sits outside the camera frame, so only its
         # reflection is visible — like real product photography.
         bg_lines = ['type = "env_map"', 'path = "assets/product_studio.hdr"']
-        # subtle checker floor (tiles = 4 world units = 4x the stone, ~6% contrast):
-        # separates the floor from the smooth gradient backdrop at the horizon line
-        floor_material = '{ type = "checker", even = [0.44, 0.44, 0.46], odd = [0.415, 0.415, 0.435], scale = 0.25 }'
-        staging = "bright product staging: gradient cyclorama env + subtle checker floor + angled overhead softboxes (Blue Nile style)"
+        # subtle Perlin-mottled floor (seamless-paper look, like Blue Nile product
+        # shots): separates the floor from the smooth gradient backdrop at the horizon
+        floor_material = '{ type = "noise", lo = [0.40, 0.40, 0.42], hi = [0.45, 0.45, 0.47], scale = 3.0 }'
+
+        staging = "bright product staging: gradient cyclorama env + perlin-mottled floor + angled overhead softboxes (Blue Nile style)"
         s, d = size, dist
 
         def norm3(v):
