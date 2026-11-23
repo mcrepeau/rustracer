@@ -8,7 +8,7 @@ A physically-based path tracer built in Rust. It simulates how light actually be
 
 ```sh
 cargo run --release                        # interactive viewer (scenes/scene.toml)
-cargo run --release -- --scene scenes/gem_LG625469749.toml   # interactive viewer, that scene file
+cargo run --release -- --scene scenes/sample.toml         # interactive viewer, that scene file
 cargo run --release -- --render [options]  # headless PNG render (--scene <path.toml>, default scenes/scene.toml)
 cargo run --release -- --bench             # performance benchmark (scenes/bench.toml; pass another file to bench it)
 ```
@@ -216,8 +216,8 @@ cargo run --release -- --scene scenes/625469899.toml
 The stone is staged floating above a dark floor in the studio light-tent HDR with caustics on;
 camera distance and photon gather radius scale with the measured size. Overrides: `--material`,
 `--cut`, `--gap-mm`, `--no-caustics`. Unparseable fields produce warnings, never a broken file.
-The report PDFs themselves stay local (git-ignored); `scenes/gem_LG625469749.toml` is the hand-tuned
-scene for `LG625469749.pdf`.
+The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only
+`scenes/scene.toml`, `scenes/sample.toml` and `scenes/bench.toml` are tracked.
 
 ## Implementation notes
 

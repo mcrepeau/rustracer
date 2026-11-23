@@ -323,19 +323,22 @@ mod tests {
 
     #[test]
     fn gem_scene_photon_map_is_populated_and_finite() {
-        // Scene-level regression test: the staged gem scene (infinite floor +
-        // oval diamond) must produce a populated, finite caustic map — with the
-        // old plane-inclusive disk bounds it was essentially empty.
-        let mut scene = crate::scene_file::load("scenes/gem_LG625469749.toml").unwrap();
+        // Scene-level regression test: the tracked bench scene (checker floor +
+        // two gem cuts, caustics on) must produce a populated, finite caustic map —
+        // with the old plane-inclusive disk bounds it was essentially empty.
+        let mut scene = crate::scene_file::load("scenes/bench.toml").unwrap();
         scene.rebuild_caustics();
-        let pm = scene.photon_map.as_ref().expect("caustics enabled in gem_LG625469749.toml");
-        assert!(pm.nodes.len() > 10_000, "caustic map suspiciously empty: {}", pm.nodes.len());
+        let pm = scene.photon_map.as_ref().expect("caustics enabled in bench.toml");
+        // bench.toml: dusk sun through a window, small stones -> thousands of stored photons
+        // (the regression this guards against was an essentially EMPTY map, ~0 nodes).
+        assert!(pm.nodes.len() > 1_000, "caustic map suspiciously empty: {}", pm.nodes.len());
         for nd in &pm.nodes {
             assert!(nd.power[0].is_finite() && nd.power[1].is_finite() && nd.power[2].is_finite());
             assert!(nd.pos[0].is_finite() && nd.pos[1].is_finite() && nd.pos[2].is_finite());
         }
-        // Floor point right under the gem: positive, finite irradiance.
-        let irr = pm.irradiance(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+        // Floor point right under the bench diamond (girdle centre [0, 1.30, 2.5]):
+        // positive, finite irradiance.
+        let irr = pm.irradiance(Point3::new(0.0, 0.0, 2.5), Vec3::new(0.0, 1.0, 0.0));
         assert!(irr.x.is_finite() && irr.x > 0.0, "expected caustic light under the gem, got {irr:?}");
     }
 
