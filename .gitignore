@@ -29,3 +29,8 @@ scenes/assets/*_4k.hdr
 # (only scene.toml, sample.toml and bench.toml are tracked)
 scenes/gem_*.toml
 scenes/[0-9]*.toml
+
+# Purchased Poly Haven assets stay local (only the generated studio HDRs are tracked)
+scenes/assets/greyChart_*
+scenes/assets/hdri_lightbox_*
+scenes/assets/camera_*

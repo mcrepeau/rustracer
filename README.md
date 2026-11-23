@@ -88,7 +88,7 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
 
 - **`report_to_toml.py`** — turns an IGI/GIA grading-report PDF into a renderable `scenes/<report>.toml`
   (stdlib only; see "From a grading-report PDF" below):
-  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 15] [--no-caustics] [--no-animation] [--dark]`
+  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation] [--dark]`
 
 ## Features
 
@@ -217,18 +217,22 @@ py report_to_toml.py 625469899.pdf        # writes scenes/625469899.toml
 cargo run --release -- --scene scenes/625469899.toml
 ```
 
+By default the generated scene rests the stone centered on a grey chart card (the purchased
+`greyChart_OBJ.obj` mesh, textured with its sRGB TIFF) on the Perlin-mottled floor, lit by
+the env map alone; `--no-chart` drops the card, `--gap-mm` floats the stone.
+
 The stone is staged in bright product lighting — a light-gray cyclorama env map
-(`product_studio.hdr`) for ambient/backdrop plus angled overhead softbox `[[lights]]` quads (geometric, so
+(`product_studio.hdr`) as the sole light source (the softbox is baked into the HDR); `--lights` adds angled overhead softbox `[[lights]]` quads (geometric, so
 facets catch crisp streaks) over a subtle Perlin-mottled floor, Blue Nile style (`--dark` switches to the dark-room studio HDR) —
 with caustics on. Generated scenes are normalized so the stone's length is exactly 1 scene unit
 (all distances, camera, photon radius derive from it); the scene also ships a
 ready-to-render `[animation]` / `[animation.orbit]` block whose `radius` / `height` /
 `focus_dist` derive from the camera distance (3.2 × measured length, vfov 30°), so every stone
 gets identical framing — a full 360° orbit, 96 frames at 24 fps. Overrides: `--material`,
-`--cut`, `--gap-mm`, `--no-caustics`, `--no-animation`, `--dark`. Unparseable fields produce warnings,
+`--cut`, `--gap-mm`, `--no-chart`, `--lights`, `--no-caustics`, `--no-animation`, `--dark`. Unparseable fields produce warnings,
 never a broken file.
 The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only
-`scenes/scene.toml`, `scenes/sample.toml` and `scenes/bench.toml` are tracked.
+`scenes/scene.toml`, `scenes/sample.toml` and `scenes/bench.toml` are tracked. Purchased Poly Haven assets (grey chart OBJ/TIFF, lightbox EXR, cameras) stay local too.
 
 ## Implementation notes
 

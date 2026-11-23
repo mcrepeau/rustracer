@@ -4,7 +4,7 @@ rustracer scene TOML with a [[gems]] block.
 
 Usage:
     py report_to_toml.py REPORT.pdf [-o out.toml] [--material PRESET] [--cut CUT]
-                                [--gap-mm 0.1] [--chart] [--no-caustics] [--no-animation] [--dark]
+                                [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation] [--dark]
 
     py report_to_toml.py LG625469749.pdf            # writes scenes/LG625469749.toml
 
@@ -191,9 +191,10 @@ def render_toml(f, args):
     dist = max(3.2 * size, 0.012)                  # camera distance
     lf = (0.43 * dist, cy + 0.26 * dist, -0.86 * dist)  # same view direction as gem_LG625469749
 
-    # Staging: bright product look by default (Blue Nile style: seamless light-gray
-    # backdrop + one large overhead softbox panel, both scaled to the stone);
-    # --dark switches to the dark-room studio HDR.
+    # Staging by default: the stone rests centered on the grey chart card on the
+    # Perlin-mottled floor, lit by the env map alone (product_studio.hdr, or
+    # studio_dark.hdr with --dark). --lights adds geometric softbox quads,
+    # --no-chart drops the card.
     if args.dark:
         bg_lines = ['type = "env_map"', 'path = "assets/studio_dark.hdr"']
         floor_material = '{ type = "pbr", albedo = [0.03, 0.03, 0.035], roughness = 0.95, metallic = 0.0 }'
@@ -201,7 +202,7 @@ def render_toml(f, args):
         lights_block = None
     else:
         # Bright product staging (Blue Nile style): gray cyclorama env map for ambient +
-        # backdrop + caustic seed (product_studio.hdr), PLUS crisp angled softboxes as
+        # backdrop + caustic seed (product_studio.hdr); with --lights, crisp angled softboxes as
         # geometric [[lights]] quads — quad reflections in facets are perfect rectangles,
         # unlike HDR strips which blur at ~0.18 deg/texel. All panel geometry scales with
         # the stone (size = 1 scene unit), and sits outside the camera frame, so only its
@@ -211,7 +212,7 @@ def render_toml(f, args):
         # shots): separates the floor from the smooth gradient backdrop at the horizon
         floor_material = '{ type = "noise", lo = [0.375, 0.375, 0.395], hi = [0.49, 0.49, 0.51], scale = 2.0 }'
 
-        staging = "bright product staging: gradient cyclorama env + perlin-mottled floor + angled overhead softboxes (Blue Nile style)"
+        staging = "bright product staging: gradient cyclorama env map lights the scene + perlin-mottled floor (Blue Nile style)"
         s, d = size, dist
 
         def norm3(v):
@@ -241,26 +242,26 @@ def render_toml(f, args):
             ]
 
         stone = (0.0, cy, 0.0)
-        lights_block = []
+        _lb = []  # quad list is cheap to build; emitted only with --lights
         # key overhead softbox, high enough to stay out of frame; lights the crown
-        lights_block += quad("key overhead softbox, high enough to stay out of frame; lights the crown",
+        _lb += quad("key overhead softbox, high enough to stay out of frame; lights the crown",
                              (0.0, cy + 4.0 * d, 0.0), (0.0, -1.0, 0.0), 3.0 * s, 3.0 * s, (5.0, 5.0, 5.0))
         # left/right softboxes: OVERHEAD and angled down at the stone, so they stay above
         # the camera top ray at every turntable angle (never in frame) while still raking
         # crisp streaks across the crown facets
         lc = (-1.8 * s, cy + 1.8 * d, -0.6 * s)
-        lights_block += quad("left softbox: overhead, angled at the stone (cool streaks)",
+        _lb += quad("left softbox: overhead, angled at the stone (cool streaks)",
                              lc, norm3((stone[0] - lc[0], stone[1] - lc[1], stone[2] - lc[2])),
                              1.7 * s, 1.7 * s, (4.0, 4.2, 4.6))
         rc = (1.8 * s, cy + 1.8 * d, -0.6 * s)
-        lights_block += quad("right softbox: overhead, angled at the stone (warm streaks)",
+        _lb += quad("right softbox: overhead, angled at the stone (warm streaks)",
                              rc, norm3((stone[0] - rc[0], stone[1] - rc[1], stone[2] - rc[2])),
                              1.7 * s, 1.7 * s, (4.6, 4.2, 4.0))
         # front fill: horizontal strip high above the camera side, out of frame at any
         # orbit angle; lifts the crown facing the default camera
-        lights_block += quad("front fill: high strip above the camera side, out of frame at any orbit angle",
+        _lb += quad("front fill: high strip above the camera side, out of frame at any orbit angle",
                              (0.0, cy + 3.2 * d, -3.2 * s), (0.0, -1.0, 0.0), 4.0 * s, 1.2 * s, (2.0, 2.0, 2.0))
-        lights_block = lights_block[:-1]  # drop trailing ""
+        lights_block = _lb[:-1] if args.lights else None  # env-map-only lighting unless --lights
 
     def esc(t):
         return t.replace("\\", "\\\\").replace('"', '\\"')
@@ -280,9 +281,11 @@ def render_toml(f, args):
                      % (f["table_pct"], f["crown_pct"], f["pavilion_pct"], f["depth_pct"], f["culet"], f.get("girdle") or "n/a"))
     lines.append("#")
     if args.chart:
-        lines.append("# Staging: stone rests on a grey chart card (%.6g stone lengths wide); " % args.chart_width + staging + ";")
+        lines.append("# Staging: stone rests centered on a grey chart card (%.6g stone lengths wide); " % args.chart_width + staging + ";")
+        lines.append("#          (needs the local greyChart OBJ+TIFF in scenes/assets; regenerate with --no-chart to skip)")
     else:
         lines.append("# Staging: stone rests on the floor (culet tip + %.6g mm gap); " % args.gap_mm + staging + ";")
+    lines.append("# Lighting: environment map only" + (" plus [[lights]] softbox quads (--lights)" if args.lights else " (--lights adds geometric softboxes)") + ";")
     lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
     lines.append("# Render still:     --render --preset final --width 480 --height 300 --output out.png")
     lines.append("# Render turntable: --render --preset final --width 1280 --height 720 --output frames")
@@ -381,8 +384,10 @@ def main():
     ap.add_argument("--material", default=None, help="override material preset (diamond|sapphire|ruby|emerald)")
     ap.add_argument("--cut", default=None, help="override cut preset (brilliant|step|princess|...)")
     ap.add_argument("--gap-mm", type=float, default=0.1, help="air gap under the stone, mm (default 0.1: culet tip resting)")
-    ap.add_argument("--chart", action="store_true",
-                    help="place a grey chart card (OBJ mesh + TIFF albedo) under the stone; culet rests on it")
+    ap.add_argument("--no-chart", dest="chart", action="store_false",
+                    help="no grey chart card under the stone (default: card on, stone resting centered on it)")
+    ap.add_argument("--lights", action="store_true",
+                    help="add geometric [[lights]] softbox quads on top of env-map lighting (default: env map only)")
     ap.add_argument("--chart-width", type=float, default=4.0,
                     help="chart card width in stone lengths (default 4.0)")
     ap.add_argument("--chart-obj", default="assets/greyChart_OBJ.obj", help="grey chart OBJ path (cm units)")
