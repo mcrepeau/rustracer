@@ -85,11 +85,11 @@ def build_rows(mode="bright"):
         v = (j + 0.5) / H
         # base gradient per mode: "bright" white tent (zenith ~2.4 -> nadir ~0.8);
         # "dark" faint room (zenith ~0.065 -> nadir ~0.015); "product" light-gray
-        # cyclorama (zenith ~0.54 -> horizon ~0.36 -> nadir ~0.30).
+        # cyclorama (zenith ~0.30 -> horizon pool ~0.41 behind stone -> nadir ~0.22).
         if mode == "dark":
             base = 0.015 + 0.05 * (1.0 - v) ** 1.5
         elif mode == "product":
-            base = 0.26 + 0.18 * (1.0 - v) ** 2
+            base = 0.22 + 0.08 * (1.0 - v) ** 2
         else:
             base = 0.8 + 1.6 * (1.0 - v) ** 1.5
         row = bytearray()
@@ -97,11 +97,19 @@ def build_rows(mode="bright"):
             u = (i + 0.5) / W
             if mode == "product":
                 panels, soft, gtint = PRODUCT_PANELS, SOFT_PRODUCT, TINT_PRODUCT
-                # soft vignette centred at (u=0.5, v=0.35): darker edges, brighter middle
+                # bright pool centred on the camera view axis (u=0.5 -> +Z azimuth,
+                # v~0.52 -> slightly below horizontal): the backdrop glows behind the
+                # stone and falls off toward the frame edges, so the gem reads against
+                # a gradient instead of a flat gray field.
                 du = ((u - 0.5 + 0.5) % 1.0) - 0.5
-                dv = v - 0.35
-                d2 = du * du + dv * dv
-                r = g = b = base * (1.0 - 0.30 * min(1.0, d2 / 0.20))
+                dv = v - 0.52
+                d2 = 1.6 * du * du + dv * dv
+                # horizon band (all azimuths, for turntable views) + boost on the
+                # default camera axis (u=0.5)
+                pool = 0.08 * math.exp(-dv * dv / 0.010) + 0.08 * math.exp(-d2 / 0.008)
+                # subtle backdrop pattern: broad soft vertical bands
+                pat = 0.040 * math.sin(2.0 * math.pi * (5.0 * u + 1.3)) * math.sin(2.0 * math.pi * 1.7 * u)
+                r = g = b = (base + pool) * (1.0 + pat)
             else:
                 panels, soft, gtint = (PANELS_DARK, SOFT, TINT) if mode == "dark" else (PANELS, SOFT, TINT)
                 r = g = b = base

@@ -80,7 +80,8 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
 - **`make_studio_softbox.py`** — regenerates the procedural studio env maps: `py make_studio_softbox.py`
   writes the bright white-tent `scenes/assets/studio_softbox.hdr`,
   `py make_studio_softbox.py --product` writes `scenes/assets/product_studio.hdr` (light-gray
-  cyclorama + strip softboxes — the default product look for generated gem scenes), and
+  cyclorama with a soft radial glow behind the stone so it stands out against a gradient
+  backdrop — the default product look for generated gem scenes), and
   `py make_studio_softbox.py --dark` writes `scenes/assets/studio_dark.hdr` — same softbox panels
   over a near-black room, used by gem scenes generated with `--dark` so the stone pops against a
   surround (gradient base + soft glows + warm `TINT`).

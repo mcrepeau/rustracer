@@ -190,7 +190,7 @@ def render_toml(f, args):
         # the stone (size = 1 scene unit), and sits outside the camera frame, so only its
         # reflection is visible — like real product photography.
         bg_lines = ['type = "env_map"', 'path = "assets/product_studio.hdr"']
-        floor_albedo = "[0.55, 0.55, 0.57]"
+        floor_albedo = "[0.42, 0.42, 0.44]"
         staging = "bright product staging: gray cyclorama env + strip softbox panels (Blue Nile style)"
         s, d = size, dist
         lights_block = [
@@ -212,11 +212,12 @@ def render_toml(f, args):
             "v      = [0.0, %.5g, 0.0]" % (cy + 2.2 * d + 0.5),
             "color  = [4.6, 4.2, 4.0]",   # warm
             "",
-            "[[lights]]   # front fill behind the camera: lifts the floor and pavilion, out of frame",
-            "corner = [%.5g, 0.3, %.5g]" % (-2.0 * s, -3.2 * s),
+            "[[lights]]   # front fill: high strip above the camera side, out of frame at",
+            "              # any orbit angle; lifts the crown facing the default camera",
+            "corner = [%.5g, %.5g, %.5g]" % (-2.0 * s, cy + 3.2 * d, -3.2 * s),
             "u      = [%.5g, 0.0, 0.0]" % (4.0 * s),
-            "v      = [0.0, %.5g, 0.0]" % (1.8 * s),
-            "color  = [2.5, 2.5, 2.5]",
+            "v      = [0.0, %.5g, 0.0]" % (1.2 * s),
+            "color  = [2.0, 2.0, 2.0]",
         ]
 
     def esc(t):
