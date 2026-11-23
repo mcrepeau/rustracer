@@ -1,0 +1,182 @@
+# rustracer — SAMPLE SCENE: the full parameter reference, every field commented.
+#
+# Copy this file to start a new scene, uncomment and adjust what you need:
+#   cargo run --release -- --scene scenes/sample.toml                 # interactive viewer
+#   cargo run --release -- --render --scene scenes/sample.toml --preset final --output out.png
+# Press [R] in the viewer to hot-reload after editing.
+#
+# Coordinate system: Y is up. Units are arbitrary but must be consistent within a scene.
+# Asset paths (env maps, textures, OBJ meshes) resolve relative to THIS file's folder
+# first, then the working directory — that is why scenes/ carries its own assets/.
+
+name        = "Sample scene"
+max_samples = 2000          # hard cap on samples per pixel (adaptive mode / default for --render)
+
+# ── [camera] ──────────────────────────────────────────────────────────────────
+# Only look_from / look_at are required; everything else has a default.
+[camera]
+look_from       = [0.0, 1.5, 5.0]
+look_at         = [0.0, 0.5, 0.0]
+vfov            = 40.0      # vertical field of view in degrees (default 40)
+aperture        = 0.0       # depth of field; 0 = pin-sharp
+aperture_blades = 0         # polygonal bokeh: 0 = round, 5/6/8 = lens-shaped
+focus_dist      = 5.0       # optional; defaults to |look_from - look_at|
+move_speed      = 0.5       # free-cam step per keypress — scale it to your scene!
+
+# ── [background] ── exactly one of three types ────────────────────────────────
+[background]
+type = "env_map"                          # HDR equirectangular panorama
+path = "assets/studio_softbox.hdr"
+# type          = "physical"               # Preetham sky + sun disc
+# sun_azimuth   = 0.0                     # degrees clockwise from +Z, seen from above (default 0)
+# sun_elevation = 30.0                    # degrees above the horizon (default 30)
+# turbidity     = 3.0                     # 1.7 = min valid, 2 = very clear, 5 = light haze, 10 = heavy (default 3)
+# type  = "solid"
+# color = [0.05, 0.05, 0.07]
+
+# ── [[objects]] ── shapes, materials, per-object transforms ───────────────────
+# Transforms apply in SRT order (scale → rotate_y → translate) and are optional:
+#   scale     = 0.01        # uniform scale (e.g. cm → m for OBJ exports)
+#   rotate_y  = 90.0        # degrees around world Y
+#   translate = [x, y, z]   # applied last
+
+# Floor. Use `disk`, not `infinite_plane`, when the background is an env map —
+# an infinite plane extends to the horizon and clips into the sky.
+[[objects]]
+shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }
+material = { type = "pbr", albedo = [0.5, 0.48, 0.46], roughness = 0.25, metallic = 0.0 }
+
+# A hero object.
+[[objects]]
+shape    = { type = "sphere", center = [0, 0.5, 0], radius = 0.5 }
+material = { type = "lambertian", color = [0.7, 0.3, 0.3] }
+
+# All shape types (inline-table form):
+#   { type = "sphere",         center = [x,y,z], radius = r }
+#   { type = "quad",           corner = [x,y,z], u = [x,y,z], v = [x,y,z] }
+#   { type = "box",            p_min  = [x,y,z], p_max = [x,y,z] }
+#   { type = "cylinder",       center = [x,y,z], radius = r, height = h }
+#   { type = "cone",           center = [x,y,z], radius = r, height = h }
+#   { type = "disk",           center = [x,y,z], normal = [x,y,z], radius = r }
+#   { type = "infinite_plane", point  = [x,y,z], normal = [x,y,z],
+#                              wave_amplitude = 0.0, wave_scale = 1.0 }
+#   { type = "mesh",           path   = "assets/file.obj" }
+#   { type = "diamond",        center = [x,y,z], radius = r,
+#                              table_pct = 53.0, crown_angle = 34.5, pavilion_angle = 40.75,
+#                              oval_ratio = 1.0, girdle_facets = 32 }
+#                              # brilliant family; oval_ratio > 1 -> oval girdle (vertices lie
+#                              # exactly on the ellipse: girdle_facets = 64 looks perfectly
+#                              # round-oval, 16 shows straight edges)
+#   { type = "step_cut",       center = [x,y,z], length = 9.0, width = 6.0,
+#                              table_pct = 65.0, crown_angle = 35.0, pavilion_angle = 42.0,
+#                              outline = "rect",            # rect | rounded_rect | triangle |
+#                                                           # hexagon | marquise | pear | polygon
+#                              points = [[x,z], ...],       # outline = "polygon" only (XZ, relative)
+#                              corner_pct = 12.0, corner_segs = 4,   # rect / rounded_rect chamfer
+#                              oval_segs = 24, pear = false,          # marquise / pear outline
+#                              crown_steps = 3, pavilion_steps = 3,  # stepped rows per edge
+#                              culet_pct = 8.0, step_spread = 0.25, chevrons = 0 }
+#                              # step-cut family: polygon girdle + step rows; chevrons adds
+#                              # extra facets per girdle vertex (princess cut look)
+#   Volumes (the `material` field is ignored; color/density are inline):
+#   { type = "constant_volume_sphere", center = [x,y,z], radius = r, density = d, color = [r,g,b], g = 0.0 }
+#   { type = "constant_volume_box",    p_min = [x,y,z], p_max = [x,y,z], density = d, color = [r,g,b], g = 0.0 }
+#   { type = "noise_volume_sphere",    center = [x,y,z], radius = r, density = d, color = [r,g,b],
+#                                       noise_scale = 5.0, threshold = 0.0, g = 0.0 }
+#   { type = "noise_volume_box",       p_min = [x,y,z], p_max = [x,y,z], density = d, color = [r,g,b],
+#                                       noise_scale = 5.0, threshold = 0.0, g = 0.0 }
+# (g = Henyey-Greenstein anisotropy, -1..1)
+
+# All material types (inline-table form; `material` is optional — defaults to lambertian grey):
+#   { type = "lambertian",          color = [r,g,b] }
+#   { type = "checker",             even = [r,g,b], odd = [r,g,b], scale = 2.0 }
+#   { type = "image",               path = "assets/textures/wood.png" }      # texture, tiled by UV/world
+#   { type = "metal",               color = [r,g,b], fuzz = 0.0 }
+#   { type = "dielectric",          ior = 1.5 }                               # plain glass (white)
+#   { type = "spectral_dielectric", ior = 2.417, dispersion = 0.023,             # dispersive glass: diamond
+#                                   absorption = [0,0,0] }                    # fire! Beer-Lambert sigma/unit
+#   { type = "diffuse_light",       color = [8,8,8] }                        # emissive (>1 = HDR)
+#   { type = "pbr",                 albedo = [r,g,b], metallic = 0.0, roughness = 0.5,
+#                                   anisotropy = 0.0, anisotropy_angle = 0.0,
+#                                   clearcoat = 0.0, clearcoat_roughness = 0.03,
+#                                   film_thickness = 0.0, film_ior = 1.3,     # thin-film iridescence
+#                                   sheen = 0.0, sheen_tint = 0.0,
+#                                   emission = [0,0,0], emission_strength = 0.0 }
+#   { type = "textured_pbr",        albedo_path = "...albedo.png",
+#                                   roughness_path = "...", metallic_path = "...",
+#                                   ao_path = "...", normal_path = "...",
+#                                   roughness = 0.5, metallic = 0.0 }
+#   { type = "spectral_metal",      variant = "gold", roughness = 0.2 }       # gold | copper | silver
+#   { type = "sss",                 albedo = [r,g,b], sigma_a = [r,g,b], ior = 1.4,
+#                                   density = 1.0, g = 0.0 }                   # subsurface scattering
+#   { type = "pearl",               base_color = [r,g,b], ior = 1.8,
+#                                   film_thickness = 350.0, orient_strength = 0.5,
+#                                   film_scale = 1.0, luster_roughness = 0.25 }
+
+# ── [[lights]] ── emissive quads; they also join the NEE light list ───────────
+[[lights]]
+corner = [2.0, 4.0, -1.0]
+u      = [1.5, 0.0, 0.0]
+v      = [0.0, 0.0, 1.5]
+color  = [6.0, 6.0, 6.0]
+# temp_k    = 6500.0              # optional blackbody emitter (color ignored then)
+# intensity = 8.0                 # optional scalar multiplier
+
+# ── [[gems]] ── analytic gemstones from grading-report fields ─────────────────
+# Best generated by `py report_to_toml.py REPORT.pdf` (writes a ready scene);
+# by hand, the fields are:
+# [[gems]]
+# report          = "LG625469749 (IGI 2024-03-09, ...)"   # free-text provenance
+# carat           = 1.50                    # size via carat ... (optional)
+# measurements_mm = [8.99, 6.42, 3.97]      # ... or L x W x D in mm; L != W -> oval (ratio L/W)
+# table_pct       = 58.0                    # proportions (defaults: Tolkowsky 53 / 34.5° / 40.75°)
+# crown_angle     = 34.6                    # degrees (or IGI-style crown_pct = 16)
+# pavilion_angle  = 40.8                    # degrees (or pavilion_pct = 41)
+# depth_pct       = 61.8                    # optional; cross-checked against angles (warning if off)
+# color_grade     = "E"                     # D..Z -> faint body tint (Beer-Lambert)
+# cut             = "brilliant"             # brilliant (round/oval) | step (emerald) | princess |
+#                                           # asscher | radiant | baguette | cushion | trillion |
+#                                           # marquise | pear
+# material        = "diamond"               # preset: diamond | sapphire | ruby | emerald
+#                                           # (IOR + dispersion + body absorption)
+# cauchy_b        = 2.351                   # optional explicit overrides of the preset:
+# cauchy_c        = 0.0230                  #   Cauchy IOR n(λ) = B + C/λ² (µm²)
+# absorption      = [0.0, 0.0, 0.0]         # extra Beer-Lambert sigma, added to the grade tint
+# chevrons        = 3                       # optional override of the cut's default chevron count
+# girdle_facets   = 64                      # brilliant girdle sides (auto-64 for ovals)
+# center          = [0.0, 0.02, 0.0]        # girdle centre, scene units
+# scale_mm        = 0.001                   # mm -> scene units (default 0.001)
+# scale / rotate_y / translate              # same per-object transforms as [[objects]]
+
+# ── [caustics] ── photon-map caustics (glass/water pools of light) ────────────
+# [caustics]
+# enabled       = true
+# gather_radius = 0.15        # world units; larger = smoother, smaller = sharper
+# num_photons   = 500_000     # small objects need more (5_000_000 for a small diamond)
+
+# ── [animation] ── video output: one PNG per frame + printed ffmpeg command ───
+# [animation]
+# fps      = 24
+# duration = 6.0              # frames = fps x duration
+#
+# [animation.orbit]           # perfect circular camera path (takes precedence over keyframes)
+# center      = [0.0, 0.0, 0.0]   # XZ of the circle (Y ignored)
+# radius      = 4.5
+# height      = 2.0               # world-space Y of the camera
+# look_at     = [0.0, 1.0, 0.0]
+# start_angle = 0.0               # degrees; 0 = +Z from center
+# end_angle   = 360.0             # full orbit
+# vfov / aperture / focus_dist    # optional per-orbit camera overrides
+#
+# or [[animation.keyframes]] entries for a Catmull-Rom path:
+# [[animation.keyframes]]
+# time      = 0.0
+# look_from = [5.0, 2.0, 0.0]
+# look_at   = [0.0, 1.0, 0.0]
+# vfov / aperture / focus_dist    # optional per-keyframe overrides
+#
+# Render:  cargo run --release -- --render --scene scenes/sample.toml --preset final \
+#              --width 1280 --height 720 --output frames
+# Stills: add --frames 1 (then --output is a single file, not a directory).
+# The BVH and photon map are built once and reused across frames; each frame
+# motion-blurs over its own 1/fps time slice.

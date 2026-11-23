@@ -4,13 +4,6 @@ A physically-based path tracer built in Rust. It simulates how light actually be
 
 **Scenes are TOML files.** There are no built-in scenes: the viewer, `--render`, and `--bench` all load a scene file (`scenes/scene.toml` / `scenes/bench.toml` by default, or anything you pass with `--scene`).
 
-## Gallery
-
-No committed renders — generate your own: `scenes/scene.toml` (chair + basketball demo),
-`scenes/cuts_gallery.toml` (every gem cut on a checkerboard), or a stone straight from an
-IGI/GIA report via `report_to_toml.py`. Render headless with `--render --preset final` and
-check the result with `render_qa.py` (see Tools).
-
 ## Build & Run
 
 ```sh
@@ -85,7 +78,7 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
   ```
 
 - **`make_studio_softbox.py`** — regenerates the procedural studio env maps: `py make_studio_softbox.py`
-  writes the bright white-tent `scenes/assets/studio_softbox.hdr` (used by the gallery), and
+  writes the bright white-tent `scenes/assets/studio_softbox.hdr`, and
   `py make_studio_softbox.py --dark` writes `scenes/assets/studio_dark.hdr` — same softbox panels
   over a near-black room, used by the single-stone gem scenes so the stone pops against a dark
   surround (gradient base + soft glows + warm `TINT`).
@@ -195,151 +188,19 @@ Asset paths inside a scene file (env maps, textures, OBJ meshes) resolve relativ
 scene file's own folder first, then the working directory — that is why `scenes/` carries
 its own `assets/` subfolder.
 
-```toml
-name = "My Scene"
-max_samples = 2000
+**`scenes/sample.toml` is the full parameter reference** — every section (`[camera]`,
+`[background]`, `[[objects]]` shapes + transforms + materials, `[[lights]]`, `[[gems]]`,
+`[caustics]`, `[animation]`) with every field commented. Copy it to start a new scene;
+the other files in `scenes/` are working examples.
 
-[camera]
-look_from  = [0.0, 2.0, 5.0]
-look_at    = [0.0, 1.0, 0.0]
-vfov       = 40.0
-aperture   = 0.0            # depth of field; aperture_blades = 0/5/6/8 for bokeh shape
-focus_dist = 5.0            # optional; defaults to look_from->look_at distance
-move_speed = 0.5            # free-cam step per keypress (scale it to your scene!)
-```
+Gem cuts: `diamond` is the brilliant family (round, or oval via `oval_ratio > 1`) and
+`step_cut` the step-cut family (polygon girdle outline, stepped rows, optional chevrons);
+`[[gems]]` `cut = "..."` presets cover brilliant / step (emerald) / princess / asscher /
+radiant / baguette / cushion / trillion / marquise / pear. All cuts are analytic convex
+polyhedra (half-space intersection, ray cost O(planes)); non-convex cuts (hearts,
+clover) need an OBJ mesh.
 
-### Shapes
-
-```toml
-[[objects]]
-shape    = { type = "sphere",         center = [x,y,z], radius = r }
-material = { type = "lambertian", color = [r,g,b] }
-
-# other shapes:
-# { type = "quad",           corner = [x,y,z], u = [x,y,z], v = [x,y,z] }
-# { type = "box",            p_min = [x,y,z],  p_max = [x,y,z] }
-# { type = "cylinder",       center = [x,y,z], radius = r, height = h }
-# { type = "cone",           center = [x,y,z], radius = r, height = h }
-# { type = "disk",           center = [x,y,z], normal = [x,y,z], radius = r }
-# { type = "infinite_plane", point  = [x,y,z], normal = [x,y,z] }
-# { type = "mesh",           path   = "assets/file.obj" }
-# { type = "diamond",        center = [x,y,z], radius = r, table_pct = 53.0,
-#                             crown_angle = 34.5, pavilion_angle = 40.75, oval_ratio = 1.0,
-# { type = "step_cut",       center = [x,y,z], length = 0.009, width = 0.006,
-#                             table_pct = 65.0, crown_angle = 35.0, pavilion_angle = 42.0,
-#                             outline = "rect",            # rect | rounded_rect | triangle |
-#                                                          # hexagon | marquise | pear | polygon
-#                             corner_pct = 12.0, corner_segs = 4,  # rect / rounded_rect
-#                             oval_segs = 24, pear = false,        # marquise / pear
-#                             points = [[x,z], ...],               # outline = "polygon" only
-#                             crown_steps = 3, pavilion_steps = 3,
-#                             culet_pct = 8.0, step_spread = 0.25, chevrons = 0 }
-# { type = "constant_volume_box",    p_min, p_max, density, color, g = 0.0 }
-# { type = "noise_volume_sphere",   center, radius, density, color, g = 0.0 }
-# { type = "noise_volume_box",      p_min, p_max, density, color, g = 0.0 }
-```
-
-> Use `disk` rather than `infinite_plane` when an env map is the background — an infinite plane extends to the horizon and clips into the sky.
-
-> **Cut types:** `diamond` is a brilliant-family cutter (table + alternating crown/pavilion mains
-> over an N-gon girdle). Round and oval are the same topology - oval is just `oval_ratio > 1`
-> (vertices lie exactly on the ellipse, so `girdle_facets = 64` makes the outline a visually perfect
-> oval; at 16 the stretched 16-gon shows straight edges). `step_cut` is the step-cut family with a
-> **polygon girdle outline** (`outline = "rect" | "rounded_rect" | "triangle" | "hexagon" |
-> "marquise" | "pear" | "polygon"`), stepped crown/pavilion rows per edge (`crown_steps` /
-> `pavilion_steps`, angles spread by `step_spread`), optional chevron rows per vertex (`chevrons`),
-> and a flat table/culet. `[[gems]]` exposes named presets: `cut = "step"` (emerald cut),
-> `"princess"` (square + chevrons), `"asscher"`, `"radiant"`, `"baguette"`, `"cushion"`,
-> `"trillion"`, `"marquise"`, `"pear"`. All are analytic convex polyhedra (half-space
-> intersection), so ray cost is O(planes). Non-convex cuts (hearts, clovers) are not modeled -
-> use an OBJ mesh for those. `[[gems]]` presets are the report-driven path: proportions come
-> from the IGI/GIA fields, with `girdle_facets` auto-set to 64 for ovals.
-
-Per-object transforms, applied in SRT order (scale → rotate_y → translate):
-
-```toml
-scale     = 0.01        # e.g. cm -> m for most OBJ exports
-rotate_y  = 90.0        # degrees around world Y
-translate = [x, y, z]
-```
-
-### Lights, gems, caustics
-
-```toml
-[[lights]]              # emissive quad; joins the NEE light list
-corner = [0.0, 5.0, 0.0]
-u      = [3.0, 0.0, 0.0]
-v      = [0.0, 0.0, 3.0]
-color  = [8.0, 8.0, 8.0]
-# temp_k = 6500.0     # optional blackbody emitter (color ignored)
-# intensity = 8.0
-
-[[gems]]                # gem built from a grading report (IGI/GIA fields)
-report          = "LG625469749 (IGI 2024-03-09, ...)"
-carat           = 1.50
-measurements_mm = [8.99, 6.42, 3.97]   # L x W x D mm (overrides carat for size)
-table_pct       = 58.0
-crown_pct       = 16.0                 # IGI proportions-diagram style (% of minor axis)
-pavilion_pct    = 41.0
-depth_pct       = 61.8                 # cross-checked against the angles
-color_grade     = "E"                  # Beer-Lambert tint from the grade
-cut             = "brilliant"          # "brilliant" (round/oval), "step" (emerald cut),
-                                       # "princess" (square brilliant + chevrons), "asscher",
-                                       # "radiant", "baguette", "cushion", "trillion", "marquise", "pear"
-material        = "diamond"            # preset: "diamond" | "sapphire" | "ruby" | "emerald"
-                                       # (IOR/dispersion/body colour; grade tint adds on top;
-                                       #  cauchy_b/cauchy_c/absorption override explicitly)
-center          = [0.0, 0.02, 0.0]
-scale_mm        = 0.001                # mm -> metres
-
-[caustics]
-enabled       = true
-gather_radius = 0.15      # world units; increase for smoother, decrease for sharper
-num_photons   = 500_000   # small objects need more (5_000_000 for a small diamond)
-```
-
-### Animation
-
-```toml
-[animation]
-fps      = 24
-duration = 6.0            # fps x duration = frame count
-
-[animation.orbit]         # perfect circular camera path
-center      = [0.0, 0.0, 0.0]
-radius      = 4.5
-height      = 2.0
-look_at     = [0.0, 1.0, 0.0]
-start_angle = 0.0         # degrees; 0 = +Z from center
-end_angle   = 360.0
-# vfov / aperture / focus_dist optional (inherit from [camera])
-```
-
-or `[[animation.keyframes]]` entries (`time`, `look_from`, `look_at`, optional `vfov`/`aperture`/`focus_dist`) for a Catmull-Rom camera path.
-
-Render a video — one PNG per frame plus a printed ffmpeg command:
-
-```sh
-cargo run --release --features denoise -- --render --scene scenes/myfile.toml --preset final --width 1280 --height 720 --output frames
-```
-
-Frame files are `{slug}_{frame:04d}.png`. Use `--frames 1` for a single still (`--output` is then a file path, not a directory). The BVH and photon map are built once and reused across frames; each frame motion-blurs over its own 1/fps time slice.
-
-## Scenes shipped in `scenes/`
-
-All scene TOMLs live in `scenes/`, together with their `scenes/assets/` (env maps, OBJ meshes,
-textures). Asset paths in the TOMLs stay `assets/...` and resolve next to the scene file.
-
-1. **`scenes/scene.toml`** — default demo: old wooden chair and basketball OBJ meshes with PBR textures (normal map on the basketball), concrete disk floor, sunset HDR env map, orbit animation.
-2. **`scenes/gem_LG625469749.toml`** — your IGI-graded stone as an oval brilliant (`[[gems]]`), floating in a dark-room studio HDR (`scenes/assets/studio_dark.hdr`), caustics on.
-3. **`scenes/gem_emerald.toml`** — demo step-cut gem (`cut = "step"`, `material = "emerald"` preset) in the same staging.
-4. **`scenes/bench.toml`** — the `--bench` reference scene (dusk room + blackbody panel + round-brilliant diamond and princess-cut sapphire with photon caustics + gold OBJ mesh). Baseline 9.1 Mpx/s since the 2026-11 sphere->gem swap (was 8.1 Mpx/s with glass/SSS spheres).
-5. **`scenes/625469629.toml`** — generated by `report_to_toml.py` from `625469629.pdf` (IGI): round brilliant, 0.55 ct, F/VS1, 5.29 x 3.24 mm.
-6. **`scenes/625469717.toml`** — from `625469717.pdf`: princess cut, 0.53 ct, F/VVS2, 4.50 x 4.46 x 3.14 mm, table 72%.
-7. **`scenes/625469899.toml`** — from `625469899.pdf`: emerald (step) cut, 2.20 ct, F/VS1, 8.63 x 6.01 x 4.13 mm.
-8. **`scenes/cuts_gallery.toml`** — all cut presets (round/oval brilliant, princess, emerald/step, cushion, asscher, radiant, baguette, trillion, marquise, pear) x material presets on a checkerboard floor, 6x2 grid, caustics on. Doubles as the gem benchmark: `rustracer --bench scenes/cuts_gallery.toml` (13.2 Mpx/s vs 9.1 for `scenes/bench.toml`).
-
-### From a grading-report PDF
+## From a grading-report PDF
 
 `py report_to_toml.py REPORT.pdf` (Python stdlib only) pulls the IGI/GIA fields straight out of the
 PDF's FlateDecode text streams — report number/date, description (-> material preset), cutting

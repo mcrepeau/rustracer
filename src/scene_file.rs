@@ -1037,6 +1037,16 @@ fn build_material(cfg: MaterialConfig, base: &std::path::Path) -> Result<Arc<dyn
 mod tests {
     use super::*;
 
+    #[test]
+    fn sample_scene_file_loads() {
+        // scenes/sample.toml is the documented parameter reference (README points
+        // to it) — it must always parse and build.
+        let scene = load("scenes/sample.toml").expect("scenes/sample.toml must load");
+        assert_eq!(scene.name, "Sample scene");
+        assert!(!scene.lights.objects.is_empty(), "sample scene should have one light");
+        assert!(scene.animation.is_none(), "sample scene ships with animation commented out");
+    }
+
     fn parse_gem(gem_block: &str) -> GemConfig {
         let text = format!(
             "name = \"t\"
