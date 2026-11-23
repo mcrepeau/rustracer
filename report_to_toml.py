@@ -4,7 +4,7 @@ rustracer scene TOML with a [[gems]] block.
 
 Usage:
     py report_to_toml.py REPORT.pdf [-o out.toml] [--material PRESET] [--cut CUT]
-                                [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation] [--dark]
+                                [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation]
 
     py report_to_toml.py LG625469749.pdf            # writes scenes/LG625469749.toml
 
@@ -191,28 +191,13 @@ def render_toml(f, args):
     dist = max(3.2 * size, 0.012)                  # camera distance
     lf = (0.43 * dist, cy + 0.26 * dist, -0.86 * dist)  # same view direction as gem_LG625469749
 
-    # Staging by default: the stone rests centered on the grey chart card on the
-    # Perlin-mottled floor, lit by the env map alone (product_studio.hdr, or
-    # studio_dark.hdr with --dark). --lights adds geometric softbox quads,
-    # --no-chart drops the card.
-    if args.dark:
-        bg_lines = ['type = "env_map"', 'path = "assets/studio_dark.hdr"']
-        floor_material = '{ type = "pbr", albedo = [0.03, 0.03, 0.035], roughness = 0.95, metallic = 0.0 }'
-        staging = "dark-room studio: the stone pops against a near-black surround"
-        lights_block = None
-    else:
-        # Bright product staging (Blue Nile style): gray cyclorama env map for ambient +
-        # backdrop + caustic seed (product_studio.hdr); with --lights, crisp angled softboxes as
-        # geometric [[lights]] quads — quad reflections in facets are perfect rectangles,
-        # unlike HDR strips which blur at ~0.18 deg/texel. All panel geometry scales with
-        # the stone (size = 1 scene unit), and sits outside the camera frame, so only its
-        # reflection is visible — like real product photography.
-        bg_lines = ['type = "env_map"', 'path = "assets/product_studio.hdr"']
-        # subtle Perlin-mottled floor (seamless-paper look, like Blue Nile product
-        # shots): separates the floor from the smooth gradient backdrop at the horizon
-        floor_material = '{ type = "noise", lo = [0.375, 0.375, 0.395], hi = [0.49, 0.49, 0.51], scale = 2.0 }'
-
-        staging = "bright product staging: gradient cyclorama env map lights the scene + perlin-mottled floor (Blue Nile style)"
+    # Staging: stone rests centered on the grey chart card (unless --no-chart) on a
+    # pbr disk floor (radius 30), lit by the purchased lightbox HDR env map alone;
+    # --lights adds geometric softbox quads on top.
+    bg_lines = ['type = "env_map"', 'path = "assets/hdri_lightbox_default_2k_sRGBlinear.exr"']
+    staging = "lightbox studio HDR env map lights the scene; pbr disk floor (Blue Nile style)"
+    lights_block = None
+    if args.lights:
         s, d = size, dist
 
         def norm3(v):
@@ -261,7 +246,7 @@ def render_toml(f, args):
         # orbit angle; lifts the crown facing the default camera
         _lb += quad("front fill: high strip above the camera side, out of frame at any orbit angle",
                              (0.0, cy + 3.2 * d, -3.2 * s), (0.0, -1.0, 0.0), 4.0 * s, 1.2 * s, (2.0, 2.0, 2.0))
-        lights_block = _lb[:-1] if args.lights else None  # env-map-only lighting unless --lights
+        lights_block = _lb[:-1]  # drop trailing ""
 
     def esc(t):
         return t.replace("\\", "\\\\").replace('"', '\\"')
@@ -285,7 +270,7 @@ def render_toml(f, args):
         lines.append("#          (needs the local greyChart OBJ+TIFF in scenes/assets; regenerate with --no-chart to skip)")
     else:
         lines.append("# Staging: stone rests on the floor (culet tip + %.6g mm gap); " % args.gap_mm + staging + ";")
-    lines.append("# Lighting: environment map only" + (" plus [[lights]] softbox quads (--lights)" if args.lights else " (--lights adds geometric softboxes)") + ";")
+    lines.append("# Lighting: assets/hdri_lightbox_default_2k_sRGBlinear.exr only" + (" plus [[lights]] softbox quads (--lights)" if args.lights else "") + ";")
     lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
     lines.append("# Render still:     --render --preset final --width 480 --height 300 --output out.png")
     lines.append("# Render turntable: --render --preset final --width 1280 --height 720 --output frames")
@@ -305,8 +290,8 @@ def render_toml(f, args):
     lines.extend(bg_lines)
     lines.append("")
     lines.append("[[objects]]")
-    lines.append('shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }')
-    lines.append('material = %s' % floor_material)
+    lines.append('shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }')
+    lines.append('material = { type = "pbr", albedo = [0.5, 0.48, 0.46], roughness = 0.25, metallic = 0.0 }')
     lines.append("")
     if args.chart:
         lines.append("[[objects]]")
@@ -396,8 +381,6 @@ def main():
     ap.add_argument("--no-caustics", action="store_true")
     ap.add_argument("--no-animation", action="store_true",
                     help="do not emit the [animation] / [animation.orbit] turntable block")
-    ap.add_argument("--dark", action="store_true",
-                    help="dark-room studio staging (default: bright product staging, Blue Nile style)")
     args = ap.parse_args()
 
     if not os.path.exists(args.pdf):

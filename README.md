@@ -77,18 +77,14 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
   py render_qa.py render.png --annotate               # save render_qa.png with circles
   ```
 
-- **`make_studio_softbox.py`** — regenerates the procedural studio env maps: `py make_studio_softbox.py`
-  writes the bright white-tent `scenes/assets/studio_softbox.hdr`,
-  `py make_studio_softbox.py --product` writes `scenes/assets/product_studio.hdr` (light-gray
-  cyclorama with a soft radial glow behind the stone so it stands out against a gradient
-  backdrop — the default product look for generated gem scenes), and
-  `py make_studio_softbox.py --dark` writes `scenes/assets/studio_dark.hdr` — same softbox panels
-  over a near-black room, used by gem scenes generated with `--dark` so the stone pops against a
-  surround (gradient base + soft glows + warm `TINT`).
+- **`scenes/assets/`** — env maps, textures, meshes. Generated gem scenes (see below) use the
+  purchased Poly Haven lightbox HDR `hdri_lightbox_default_2k_sRGBlinear.exr` (linear-sRGB
+  primaries; sampled bilinearly so the 2k map renders smoothly). Purchased assets stay local
+  (git-ignored); `scenes/scene.toml` demos with the local `sunset_puresky_4k.hdr`.
 
 - **`report_to_toml.py`** — turns an IGI/GIA grading-report PDF into a renderable `scenes/<report>.toml`
   (stdlib only; see "From a grading-report PDF" below):
-  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation] [--dark]`
+  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation]`
 
 ## Features
 
@@ -218,18 +214,18 @@ cargo run --release -- --scene scenes/625469899.toml
 ```
 
 By default the generated scene rests the stone centered on a grey chart card (the purchased
-`greyChart_OBJ.obj` mesh, textured with its sRGB TIFF) on the Perlin-mottled floor, lit by
-the env map alone; `--no-chart` drops the card, `--gap-mm` floats the stone.
+`greyChart_OBJ.obj` mesh, textured with its sRGB TIFF) on a pbr disk floor (radius 30), lit by
+the `hdri_lightbox_default_2k_sRGBlinear.exr` env map alone; `--no-chart` drops the card, `--gap-mm` floats the stone.
 
-The stone is staged in bright product lighting — a light-gray cyclorama env map
-(`product_studio.hdr`) as the sole light source (the softbox is baked into the HDR); `--lights` adds angled overhead softbox `[[lights]]` quads (geometric, so
-facets catch crisp streaks) over a subtle Perlin-mottled floor, Blue Nile style (`--dark` switches to the dark-room studio HDR) —
+The stone is staged in bright product lighting — a studio lightbox env map
+(`hdri_lightbox_default_2k_sRGBlinear.exr`, the purchased 2k lightbox HDR) as the sole light source; `--lights` adds angled overhead softbox `[[lights]]` quads (geometric, so
+facets catch crisp streaks) over a pbr disk floor (radius 30), Blue Nile style —
 with caustics on. Generated scenes are normalized so the stone's length is exactly 1 scene unit
 (all distances, camera, photon radius derive from it); the scene also ships a
 ready-to-render `[animation]` / `[animation.orbit]` block whose `radius` / `height` /
 `focus_dist` derive from the camera distance (3.2 × measured length, vfov 30°), so every stone
 gets identical framing — a full 360° orbit, 96 frames at 24 fps. Overrides: `--material`,
-`--cut`, `--gap-mm`, `--no-chart`, `--lights`, `--no-caustics`, `--no-animation`, `--dark`. Unparseable fields produce warnings,
+`--cut`, `--gap-mm`, `--no-chart`, `--lights`, `--no-caustics`, `--no-animation`. Unparseable fields produce warnings,
 never a broken file.
 The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only
 `scenes/scene.toml`, `scenes/sample.toml` and `scenes/bench.toml` are tracked. Purchased Poly Haven assets (grey chart OBJ/TIFF, lightbox EXR, cameras) stay local too.

@@ -27,7 +27,7 @@ move_speed      = 0.5       # free-cam step per keypress — scale it to your sc
 [background]
 type = "env_map"                          # HDR equirectangular panorama (.hdr or linear-sRGB .exr;
                                            # sampled bilinearly, so 2k maps render smoothly)
-path = "assets/studio_softbox.hdr"
+path = "assets/hdri_lightbox_default_2k_sRGBlinear.exr"
 # type          = "physical"               # Preetham sky + sun disc
 # sun_azimuth   = 0.0                     # degrees clockwise from +Z, seen from above (default 0)
 # sun_elevation = 30.0                    # degrees above the horizon (default 30)
