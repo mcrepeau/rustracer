@@ -80,12 +80,12 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
 - **`make_studio_softbox.py`** — regenerates the procedural studio env maps: `py make_studio_softbox.py`
   writes the bright white-tent `scenes/assets/studio_softbox.hdr`, and
   `py make_studio_softbox.py --dark` writes `scenes/assets/studio_dark.hdr` — same softbox panels
-  over a near-black room, used by the single-stone gem scenes so the stone pops against a dark
+  over a near-black room, used by gem scenes generated with `--dark` so the stone pops against a
   surround (gradient base + soft glows + warm `TINT`).
 
 - **`report_to_toml.py`** — turns an IGI/GIA grading-report PDF into a renderable `scenes/<report>.toml`
   (stdlib only; see "From a grading-report PDF" below):
-  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 15] [--no-caustics] [--no-animation]`
+  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 15] [--no-caustics] [--no-animation] [--dark]`
 
 ## Features
 
@@ -213,12 +213,14 @@ py report_to_toml.py 625469899.pdf        # writes scenes/625469899.toml
 cargo run --release -- --scene scenes/625469899.toml
 ```
 
-The stone is staged floating above a dark floor in the studio light-tent HDR with caustics on;
+The stone is staged in bright product lighting — seamless light-gray backdrop (which also acts
+as ambient fill) plus one overhead softbox panel sized relative to the stone, Blue Nile style
+(`--dark` switches to the dark-room studio HDR) — with caustics on;
 camera distance and photon gather radius scale with the measured size. The scene also ships a
 ready-to-render `[animation]` / `[animation.orbit]` block whose `radius` / `height` /
 `focus_dist` derive from the camera distance (3.2 × measured length, vfov 30°), so every stone
 gets identical framing — a full 360° orbit, 96 frames at 24 fps. Overrides: `--material`,
-`--cut`, `--gap-mm`, `--no-caustics`, `--no-animation`. Unparseable fields produce warnings,
+`--cut`, `--gap-mm`, `--no-caustics`, `--no-animation`, `--dark`. Unparseable fields produce warnings,
 never a broken file.
 The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only
 `scenes/scene.toml`, `scenes/sample.toml` and `scenes/bench.toml` are tracked.

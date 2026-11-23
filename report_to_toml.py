@@ -4,7 +4,7 @@ rustracer scene TOML with a [[gems]] block.
 
 Usage:
     py report_to_toml.py REPORT.pdf [-o out.toml] [--material PRESET] [--cut CUT]
-                                [--gap-mm 15.0] [--no-caustics] [--no-animation]
+                                [--gap-mm 15.0] [--no-caustics] [--no-animation] [--dark]
 
     py report_to_toml.py LG625469749.pdf            # writes scenes/LG625469749.toml
 
@@ -170,6 +170,28 @@ def render_toml(f, args):
     dist = max(3.2 * size, 0.012)                  # camera distance
     lf = (0.43 * dist, cy + 0.26 * dist, -0.86 * dist)  # same view direction as gem_LG625469749
 
+    # Staging: bright product look by default (Blue Nile style: seamless light-gray
+    # backdrop + one large overhead softbox panel, both scaled to the stone);
+    # --dark switches to the dark-room studio HDR.
+    if args.dark:
+        bg_lines = ['type = "env_map"', 'path = "assets/studio_dark.hdr"']
+        floor_albedo = "[0.03, 0.03, 0.035]"
+        staging = "dark-room studio: the stone pops against a near-black surround"
+        lights_block = None
+    else:
+        bg_lines = ['type = "solid"', 'color = [0.45, 0.45, 0.48]']   # gray backdrop; also acts as ambient fill
+        floor_albedo = "[0.55, 0.55, 0.57]"
+        staging = "bright product staging: gray seamless backdrop + overhead softbox panel"
+        half = 1.2 * size                      # panel half-width, scales with the stone
+        ph   = cy + 2.2 * dist                 # panel height above the floor
+        lights_block = [
+            "[[lights]]   # overhead softbox panel (sized relative to the stone)",
+            "corner = [%.5g, %.5g, %.5g]" % (-half, ph, -half),
+            "u      = [%.5g, 0.0, 0.0]" % (2.0 * half),
+            "v      = [0.0, 0.0, %.5g]" % (2.0 * half),
+            "color  = [3.5, 3.5, 3.5]",   # tuned so the table reflection stays below clipping at 64 spp + OIDN
+        ]
+
     def esc(t):
         return t.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -187,7 +209,7 @@ def render_toml(f, args):
         lines.append("# table %.6g%%, crown %.6g%% / pavilion %.6g%%, depth %.6g%%, culet %s"
                      % (f["table_pct"], f["crown_pct"], f["pavilion_pct"], f["depth_pct"], f["culet"]))
     lines.append("#")
-    lines.append("# Staging: stone floats above a dark floor in the studio light-tent env map;")
+    lines.append("# Staging: stone floats in " + staging + ";")
     lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
     lines.append("# Render still:     --render --preset final --width 480 --height 300 --output out.png")
     lines.append("# Render turntable: --render --preset final --width 1280 --height 720 --output frames")
@@ -204,12 +226,15 @@ def render_toml(f, args):
     lines.append("move_speed = %.5g" % (dist / 28.0))
     lines.append("")
     lines.append("[background]")
-    lines.append('type = "env_map"')
-    lines.append('path = "assets/studio_dark.hdr"')   # dark-room studio: stone pops against the surround
+    lines.extend(bg_lines)
     lines.append("")
     lines.append("[[objects]]")
     lines.append('shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }')
-    lines.append('material = { type = "pbr", albedo = [0.03, 0.03, 0.035], roughness = 0.9, metallic = 0.0 }')   # dark, near-diffuse floor
+    lines.append('material = { type = "pbr", albedo = %s, roughness = 0.95, metallic = 0.0 }' % floor_albedo)
+    lines.append("")
+    if lights_block:
+        lines.extend(lights_block)
+        lines.append("")
     lines.append("")
     lines.append("[[gems]]")
     lines.append('report          = "%s"' % esc('%s (IGI %s, %s)' % (f["report"], f["date"], f["description"])))
@@ -273,6 +298,8 @@ def main():
     ap.add_argument("--no-caustics", action="store_true")
     ap.add_argument("--no-animation", action="store_true",
                     help="do not emit the [animation] / [animation.orbit] turntable block")
+    ap.add_argument("--dark", action="store_true",
+                    help="dark-room studio staging (default: bright product staging, Blue Nile style)")
     args = ap.parse_args()
 
     if not os.path.exists(args.pdf):
