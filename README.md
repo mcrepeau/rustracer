@@ -78,7 +78,9 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
   ```
 
 - **`make_studio_softbox.py`** — regenerates the procedural studio env maps: `py make_studio_softbox.py`
-  writes the bright white-tent `scenes/assets/studio_softbox.hdr`, and
+  writes the bright white-tent `scenes/assets/studio_softbox.hdr`,
+  `py make_studio_softbox.py --product` writes `scenes/assets/product_studio.hdr` (light-gray
+  cyclorama + strip softboxes — the default product look for generated gem scenes), and
   `py make_studio_softbox.py --dark` writes `scenes/assets/studio_dark.hdr` — same softbox panels
   over a near-black room, used by gem scenes generated with `--dark` so the stone pops against a
   surround (gradient base + soft glows + warm `TINT`).
@@ -213,10 +215,11 @@ py report_to_toml.py 625469899.pdf        # writes scenes/625469899.toml
 cargo run --release -- --scene scenes/625469899.toml
 ```
 
-The stone is staged in bright product lighting — seamless light-gray backdrop (which also acts
-as ambient fill) plus one overhead softbox panel sized relative to the stone, Blue Nile style
-(`--dark` switches to the dark-room studio HDR) — with caustics on;
-camera distance and photon gather radius scale with the measured size. The scene also ships a
+The stone is staged in bright product lighting — a light-gray cyclorama env map
+(`product_studio.hdr`) for ambient/backdrop plus strip-softbox `[[lights]]` quads (geometric, so
+facets catch crisp streaks), Blue Nile style (`--dark` switches to the dark-room studio HDR) —
+with caustics on. Generated scenes are normalized so the stone's length is exactly 1 scene unit
+(all distances, camera, photon radius derive from it); the scene also ships a
 ready-to-render `[animation]` / `[animation.orbit]` block whose `radius` / `height` /
 `focus_dist` derive from the camera distance (3.2 × measured length, vfov 30°), so every stone
 gets identical framing — a full 360° orbit, 96 frames at 24 fps. Overrides: `--material`,

@@ -6,9 +6,11 @@ an even light from all sides; the four softbox positions only add very soft,
 low-contrast glows (no hard rectangle edges, nothing pixellated). Directional
 lighting and caustics come from this map. A warm global tint (TINT) sets the
 color temperature.
-Run from the repo root:  py make_studio_softbox.py           # bright white-tent map
-                         py make_studio_softbox.py --dark    # same softboxes, near-black room
-                                                            # (studio_dark.hdr) for gem scenes
+Run from the repo root:  py make_studio_softbox.py            # bright white-tent map
+                         py make_studio_softbox.py --dark     # same softboxes, near-black room
+                                                             # (studio_dark.hdr) for dark gem scenes
+                         py make_studio_softbox.py --product  # light-gray cyclorama + crisp strip
+                                                             # softboxes (product_studio.hdr), Blue Nile look
 """
 import math
 import os
@@ -17,7 +19,9 @@ import sys
 W, H = 2048, 1024
 HERE = os.path.dirname(os.path.abspath(__file__))
 DARK = "--dark" in sys.argv
-OUT = os.path.join(HERE, "scenes", "assets", "studio_dark.hdr" if DARK else "studio_softbox.hdr")
+PRODUCT = "--product" in sys.argv
+OUT = os.path.join(HERE, "scenes", "assets",
+    "product_studio.hdr" if PRODUCT else ("studio_dark.hdr" if DARK else "studio_softbox.hdr"))
 COMPARE = os.path.join(HERE, "scenes", "assets", "sunset_puresky_4k.hdr")
 
 
@@ -60,30 +64,54 @@ PANELS_DARK = PANELS + [
     (0.50, 0.07, 0.012, 0.008, 60.0, (1.00, 1.00, 1.00)),  # spot
 ]
 
+# --product: light-gray "cyclorama" base (gradient + soft vignette) plus one wide
+# overhead key glow. The crisp strip softboxes that give crown facets their contrast
+# are NOT in the HDR (2048px equirect = ~0.18 deg/texel blurs them) — generated scenes
+# add them as geometric [[lights]] quads instead, which reflect as perfect rectangles.
+PRODUCT_PANELS = [
+    (0.50, 0.07, 0.25, 0.14, 6.0, (1.00, 1.00, 1.00)),   # key overhead glow (ambient + caustic seed)
+]
+SOFT_PRODUCT = 0.9
+TINT_PRODUCT = (1.05, 1.00, 0.94)
+
 # Global color-temperature tint applied to everything: warm (~3500 K look),
 # R up / B down relative to neutral daylight.
 TINT = (1.12, 1.00, 0.84)
 
 
-def build_rows(dark=False):
+def build_rows(mode="bright"):
     rows = []
     for j in range(H):
         v = (j + 0.5) / H
-        # base gradient: bright "white tent" by default (zenith ~2.4 -> nadir ~0.8);
-        # --dark keeps only a faint room (zenith ~0.065 -> nadir ~0.015) so the visible
-        # background goes dark and the stone pops — the softbox panels still light it.
-        base = (0.015 + 0.05 * (1.0 - v) ** 1.5) if dark else (0.8 + 1.6 * (1.0 - v) ** 1.5)
+        # base gradient per mode: "bright" white tent (zenith ~2.4 -> nadir ~0.8);
+        # "dark" faint room (zenith ~0.065 -> nadir ~0.015); "product" light-gray
+        # cyclorama (zenith ~0.54 -> horizon ~0.36 -> nadir ~0.30).
+        if mode == "dark":
+            base = 0.015 + 0.05 * (1.0 - v) ** 1.5
+        elif mode == "product":
+            base = 0.26 + 0.18 * (1.0 - v) ** 2
+        else:
+            base = 0.8 + 1.6 * (1.0 - v) ** 1.5
         row = bytearray()
         for i in range(W):
             u = (i + 0.5) / W
-            r = g = b = base
-            for (cu, cv, hu, hv, rad, tint) in (PANELS_DARK if dark else PANELS):
-                w = rect(u, v, cu, cv, hu, hv, SOFT)
+            if mode == "product":
+                panels, soft, gtint = PRODUCT_PANELS, SOFT_PRODUCT, TINT_PRODUCT
+                # soft vignette centred at (u=0.5, v=0.35): darker edges, brighter middle
+                du = ((u - 0.5 + 0.5) % 1.0) - 0.5
+                dv = v - 0.35
+                d2 = du * du + dv * dv
+                r = g = b = base * (1.0 - 0.30 * min(1.0, d2 / 0.20))
+            else:
+                panels, soft, gtint = (PANELS_DARK, SOFT, TINT) if mode == "dark" else (PANELS, SOFT, TINT)
+                r = g = b = base
+            for (cu, cv, hu, hv, rad, tint) in panels:
+                w = rect(u, v, cu, cv, hu, hv, soft)
                 if w > 0.0:
                     r += rad * tint[0] * w
                     g += rad * tint[1] * w
                     b += rad * tint[2] * w
-            row += rgbe(r * TINT[0], g * TINT[1], b * TINT[2])
+            row += rgbe(r * gtint[0], g * gtint[1], b * gtint[2])
         rows.append(bytes(row))
     return rows
 
@@ -179,7 +207,7 @@ def stats(path):
 
 
 if __name__ == "__main__":
-    write_hdr(OUT, build_rows(DARK))
+    write_hdr(OUT, build_rows("product" if PRODUCT else ("dark" if DARK else "bright")))
     w, h, mean, mx = stats(OUT)
     print("%s: %dx%d  mean lum %.3f  max lum %.1f" % (os.path.basename(OUT), w, h, mean, mx))
     if os.path.exists(COMPARE):
