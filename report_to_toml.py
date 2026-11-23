@@ -194,23 +194,29 @@ def render_toml(f, args):
         staging = "bright product staging: gray cyclorama env + strip softbox panels (Blue Nile style)"
         s, d = size, dist
         lights_block = [
-            "[[lights]]   # key overhead softbox (out of frame; lights the crown, seeds caustics)",
-            "corner = [%.5g, %.5g, %.5g]" % (-1.5 * s, cy + 2.5 * d, -1.5 * s),
-            "u      = [%.5g, 0.0, 0.0]" % (3.0 * s),
-            "v      = [0.0, 0.0, %.5g]" % (3.0 * s),
-            "color  = [5.0, 5.0, 5.0]",
-            "",
-            "[[lights]]   # left vertical strip (cool) - crisp streak in crown facets",
-            "corner = [%.5g, %.5g, %.5g]" % (-2.2 * s, cy + 0.6 * d, -0.3 * s),
-            "u      = [0.0, 0.0, %.5g]" % (-0.6 * s),
-            "v      = [0.0, %.5g, 0.0]" % (1.6 * d),
-            "color  = [4.0, 4.2, 4.6]",
-            "",
-            "[[lights]]   # right vertical strip (warm)",
-            "corner = [%.5g, %.5g, %.5g]" % (2.2 * s, cy + 0.6 * d, -0.3 * s),
-            "u      = [0.0, 0.0, %.5g]" % (0.6 * s),
-            "v      = [0.0, %.5g, 0.0]" % (1.6 * d),
-            "color  = [4.6, 4.2, 4.0]",
+            "[[lights]]   # key overhead softbox, high enough to stay out of frame; lights the crown",
+            "corner = [%.5g, %.5g, %.5g]" % (-1.5 * s, cy + 4.0 * d, -1.5 * s),
+            "u      = [%.5g, 0.0, 0.0]" % (3.0 * s),
+            "v      = [0.0, 0.0, %.5g]" % (3.0 * s),
+            "color  = [5.0, 5.0, 5.0]",
+            "",
+            "[[lights]]   # left strip softbox, full height (floor to above frame) - crisp streaks",
+            "corner = [%.5g, -0.5, %.5g]" % (-2.2 * s, -0.3 * s),
+            "u      = [0.0, 0.0, %.5g]" % (-0.6 * s),
+            "v      = [0.0, %.5g, 0.0]" % (cy + 2.2 * d + 0.5),
+            "color  = [4.0, 4.2, 4.6]",   # cool
+            "",
+            "[[lights]]   # right strip softbox, full height (warm)",
+            "corner = [%.5g, -0.5, %.5g]" % (2.2 * s, -0.3 * s),
+            "u      = [0.0, 0.0, %.5g]" % (0.6 * s),
+            "v      = [0.0, %.5g, 0.0]" % (cy + 2.2 * d + 0.5),
+            "color  = [4.6, 4.2, 4.0]",   # warm
+            "",
+            "[[lights]]   # front fill behind the camera: lifts the floor and pavilion, out of frame",
+            "corner = [%.5g, 0.3, %.5g]" % (-2.0 * s, -3.2 * s),
+            "u      = [%.5g, 0.0, 0.0]" % (4.0 * s),
+            "v      = [0.0, %.5g, 0.0]" % (1.8 * s),
+            "color  = [2.5, 2.5, 2.5]",
         ]
 
     def esc(t):
