@@ -8,7 +8,7 @@ use crate::vec3::{Color, Point3, Vec3};
 use crate::ray::Ray;
 use crate::hittable::{HitRecord, Material, ScatterRecord, ShadingParams};
 use crate::texture::Texture;
-use crate::spectrum::{cauchy_ior, copper_ior, fresnel_conductor, gold_ior, planck_raw, silver_ior, spectral_to_rgb};
+use crate::spectrum::{cauchy_ior, copper_ior, fresnel_conductor, gold_ior, planck_raw, silver_ior, spectral_fire_rgb, spectral_to_rgb};
 use crate::volume::hg_sample;
 
 pub struct DiffuseLight {
@@ -338,11 +338,12 @@ impl Material for Dielectric {
 /// n(λ) = B + C/λ² (λ in μm), so refracted rays bend by a
 /// wavelength-dependent angle -- smooth spectral dispersion (rainbows, diamond
 /// fire) without the coarse R/G/B bands of a 3-channel approach.  On the first
-/// spectral bounce the CMF weight `spectral_to_rgb(λ)` is folded into the
-/// throughput (then `spectral_weighted` stays set), so transmitted light carries
-/// the hero wavelength's colour: the gem shows fire and its caustics are rainbow.
-/// Averaged over λ the weight is white (CMF is per-channel normalised), so energy
-/// is conserved.  Reflections keep the same weight (Fresnel is nearly achromatic).
+/// spectral bounce the luminance-weighted CMF tint `spectral_fire_rgb(λ)` is
+/// folded into the throughput (then `spectral_weighted` stays set), so
+/// transmitted light carries the hero wavelength's colour: the gem shows fire
+/// and its caustics are rainbow.  Averaged over λ the tint is white (per-channel
+/// normalised), so energy is conserved.  External Fresnel reflection keeps
+/// weight (1,1,1) — Fresnel is nearly achromatic and carries no dispersion.
 ///
 /// Cauchy parameters for common materials (B, C in μm²):
 /// - Crown glass:  cauchy_b ≈ 1.507, cauchy_c ≈ 0.00375
@@ -368,19 +369,22 @@ impl Default for SpectralDielectric {
 impl Material for SpectralDielectric {
     fn scatter(&self, r_in: &Ray, rec: &HitRecord<'_>, rng: &mut dyn RngCore) -> Option<ScatterRecord> {
         let ior = cauchy_ior(r_in.wavelength, self.cauchy_b, self.cauchy_c);
-        let (direction, _reflected) = dielectric_boundary(ior, r_in, rec, rng);
+        let (direction, reflected) = dielectric_boundary(ior, r_in, rec, rng);
 
-        // Dispersion is directional (Cauchy) and chromatic: on the first spectral
-        // bounce, fold spectral_to_rgb(λ) into the throughput — that is what makes
-        // the hero wavelength visible as fire (the photon map picks up the same
-        // attenuation, so caustics through the gem are rainbow too).  The flag then
-        // stays set and the weight is applied exactly once per path (SpectralMetal
-        // pattern).
-        let mut attenuation = if r_in.spectral_weighted {
-            Color::new(1.0, 1.0, 1.0)
-        } else {
-            spectral_to_rgb(r_in.wavelength)
-        };
+        // Dispersion is directional (Cauchy) and chromatic: on the first *refracted*
+        // bounce, fold the luminance-weighted CMF tint spectral_fire_rgb(λ) into the
+        // throughput — that is what makes the hero wavelength visible as fire (the
+        // photon map picks up the same attenuation, so caustics through the gem are
+        // rainbow too).  External reflection stays white: Fresnel is nearly
+        // achromatic and a reflected ray is not dispersed.  The flag is set only
+        // when the tint was applied, so the weight lands exactly once per path
+        // (SpectralMetal pattern).
+        let mut attenuation = Color::new(1.0, 1.0, 1.0);
+        let mut tinted = false;
+        if !r_in.spectral_weighted && !reflected {
+            attenuation = spectral_fire_rgb(r_in.wavelength);
+            tinted = true;
+        }
 
         // Beer-Lambert absorption: applied on every interior segment (exit or TIR).
         // rec.t is the chord length since the last boundary event, so absorption
@@ -393,7 +397,7 @@ impl Material for SpectralDielectric {
         }
 
         let mut scattered = Ray::scatter_from(rec.p, direction, r_in);
-        if !r_in.spectral_weighted { scattered.spectral_weighted = true; }
+        if tinted { scattered.spectral_weighted = true; }
         Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
     }
 }
@@ -1495,6 +1499,66 @@ mod tests {
                 &&  (sr.attenuation.z - 1.0).abs() < 1e-6,
                 "attenuation must be white, got {:?}", sr.attenuation);
         }
+    }
+
+    #[test]
+    fn spectral_dielectric_reflection_white_refraction_tinted() {
+        // Diamond-like spectral glass: external Fresnel reflection must stay
+        // achromatic white (reflection is not dispersed), while refraction folds
+        // in the luminance-weighted CMF tint exactly once per path.
+        let gem = SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.023, absorption: Color::new(0.0, 0.0, 0.0) };
+        let mut r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        r.wavelength = 450.0;
+        let rec = front_hit_normal_incidence(&gem);
+
+        // Grazing incidence: Fresnel → 1, guaranteed reflection for any seed.
+        let mut grazing = Ray::new(Point3::new(0.0, -5.0, -0.01), Vec3::new(0.0, 1.0, 0.01).unit());
+        grazing.wavelength = 450.0;
+        let grec = HitRecord {
+            p: Point3::new(0.0, 0.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            mat: &gem,
+            t: 1.0, u: 0.0, v: 0.0,
+            front_face: true,
+            tangent: Vec3::default(),
+            shading: std::sync::OnceLock::new(),
+        };
+        // Fresnel ≈ 0.94 at grazing: search seeds for a guaranteed reflection
+        // (reflected direction has z < 0 against normal (0,0,-1)).
+        let mut rng = SmallRng::seed_from_u64(7);
+        let mut sr = None;
+        for _ in 0..200 {
+            let cand = gem.scatter(&grazing, &grec, &mut rng).expect("always scatters");
+            if cand.ray.direction.z < 0.0 { sr = Some(cand); break; }
+        }
+        let sr = sr.expect("some seed must reflect at grazing incidence");
+        assert!((sr.attenuation.x - 1.0).abs() < 1e-6
+            && (sr.attenuation.y - 1.0).abs() < 1e-6
+            && (sr.attenuation.z - 1.0).abs() < 1e-6,
+            "external reflection must stay white, got {:?}", sr.attenuation);
+        assert!(!sr.ray.spectral_weighted, "reflection must not set the spectral flag");
+
+        // Normal incidence: find a seed that transmits (Fresnel ≈ 0.17 for n ≈ 2.4).
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut transmitted = None;
+        for _ in 0..200 {
+            let sr = gem.scatter(&r, &rec, &mut rng).expect("always scatters");
+            if sr.ray.direction.z > 0.0 { transmitted = Some(sr); break; }
+        }
+        let sr = transmitted.expect("some seed must transmit at normal incidence");
+        let want = spectral_fire_rgb(450.0);
+        assert!((sr.attenuation.x - want.x).abs() < 1e-6
+            && (sr.attenuation.y - want.y).abs() < 1e-6
+            && (sr.attenuation.z - want.z).abs() < 1e-6,
+            "refraction must carry the CMF fire tint, got {:?} want {:?}", sr.attenuation, want);
+        assert!(sr.ray.spectral_weighted, "refraction must set the spectral flag");
+
+        // Second bounce: flag set → attenuation white again (tint applied once).
+        let sr2 = gem.scatter(&sr.ray, &rec, &mut rng).expect("always scatters");
+        assert!((sr2.attenuation.x - 1.0).abs() < 1e-6
+            && (sr2.attenuation.y - 1.0).abs() < 1e-6
+            && (sr2.attenuation.z - 1.0).abs() < 1e-6,
+            "second bounce must be white, got {:?}", sr2.attenuation);
     }
 
     #[test]

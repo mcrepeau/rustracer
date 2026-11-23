@@ -113,6 +113,56 @@ pub fn spectral_to_rgb(lambda: f32) -> Color {
     Color::new(r * n[0], g * n[1], b * n[2])
 }
 
+// ── Luminance-weighted fire tint ─────────────────────────────────────────────
+// `spectral_to_rgb` gives every wavelength equal *channel* energy, so after AgX
+// tonemapping the low-luminance violet end stays fully saturated while bright
+// mid-spectrum sparkles wash toward white — dispersed white light then reads as
+// purple-dominant. Weighting the CMF by the photopic luminance ȳ(λ) (compressed
+// with exponent 0.5, floored) before the per-channel normalisation keeps
+// E_λ = (1,1,1) but moves perceptual energy toward the mid-spectrum, so diamond
+// fire reads as a balanced rainbow like in jewelry photography.
+
+static FIRE_NORMS: OnceLock<[f32; 3]> = OnceLock::new();
+/// Exponent applied to ȳ(λ) in the fire tint (0.5 = square-root luminance).
+const FIRE_LUMA_POW: f32 = 0.5;
+/// Floor for the luminance weight so deep violet is dimmed, not erased.
+const FIRE_LUMA_FLOOR: f32 = 0.08;
+
+fn fire_norms() -> [f32; 3] {
+    *FIRE_NORMS.get_or_init(|| {
+        let mut sum = [0.0f32; 3];
+        for i in 0..CIE_N {
+            let w = CIE_Y[i].powf(FIRE_LUMA_POW).max(FIRE_LUMA_FLOOR);
+            let rgb = xyz_to_srgb_clamped(CIE_X[i], CIE_Y[i], CIE_Z[i]);
+            sum[0] += rgb[0] * w;
+            sum[1] += rgb[1] * w;
+            sum[2] += rgb[2] * w;
+        }
+        [
+            CIE_N as f32 / sum[0].max(1e-6),
+            CIE_N as f32 / sum[1].max(1e-6),
+            CIE_N as f32 / sum[2].max(1e-6),
+        ]
+    })
+}
+
+/// Hero-wavelength tint for dispersive *transmission* (diamond fire): like
+/// `spectral_to_rgb` but luminance-weighted so violet/blue fire carries less
+/// energy than green/yellow. Still per-channel normalised (E_λ = (1,1,1)), so
+/// white light stays white on average.
+pub fn spectral_fire_rgb(lambda: f32) -> Color {
+    let t    = ((lambda - CIE_START) / CIE_STEP).clamp(0.0, (CIE_N - 1) as f32);
+    let i    = (t as usize).min(CIE_N - 2);
+    let frac = t - i as f32;
+    let x = CIE_X[i] + frac * (CIE_X[i + 1] - CIE_X[i]);
+    let y = CIE_Y[i] + frac * (CIE_Y[i + 1] - CIE_Y[i]);
+    let z = CIE_Z[i] + frac * (CIE_Z[i + 1] - CIE_Z[i]);
+    let w = y.powf(FIRE_LUMA_POW).max(FIRE_LUMA_FLOOR);
+    let [r, g, b] = xyz_to_srgb_clamped(x, y, z);
+    let n = fire_norms();
+    Color::new(r * w * n[0], g * w * n[1], b * w * n[2])
+}
+
 /// Planck spectral radiance, un-normalised.
 ///
 /// Returns a relative power value proportional to B(λ, T).  To get a
@@ -218,6 +268,39 @@ mod tests {
         assert!((mean[0] - 1.0).abs() < 1e-4, "R mean = {}", mean[0]);
         assert!((mean[1] - 1.0).abs() < 1e-4, "G mean = {}", mean[1]);
         assert!((mean[2] - 1.0).abs() < 1e-4, "B mean = {}", mean[2]);
+    }
+
+    #[test]
+    fn fire_tint_mean_is_white() {
+        // Same invariant as normalization_mean_is_white but for the
+        // luminance-weighted fire tint: E_λ[spectral_fire_rgb(λ)] = (1,1,1).
+        let mut sum = [0.0f64; 3];
+        for i in 0..CIE_N {
+            let lambda = CIE_START + i as f32 * CIE_STEP;
+            let c = spectral_fire_rgb(lambda);
+            sum[0] += c.x as f64;
+            sum[1] += c.y as f64;
+            sum[2] += c.z as f64;
+        }
+        let mean = [sum[0] / CIE_N as f64, sum[1] / CIE_N as f64, sum[2] / CIE_N as f64];
+        assert!((mean[0] - 1.0).abs() < 1e-4, "R mean = {}", mean[0]);
+        assert!((mean[1] - 1.0).abs() < 1e-4, "G mean = {}", mean[1]);
+        assert!((mean[2] - 1.0).abs() < 1e-4, "B mean = {}", mean[2]);
+    }
+
+    #[test]
+    fn fire_tint_dims_violet_relative_to_green() {
+        // Luminance weighting must reduce the blue/violet end relative to green
+        // compared with the unweighted CMF tint — this is what keeps dispersed
+        // white light from reading as purple after tonemapping.
+        let plain = spectral_to_rgb(450.0).luminance() / spectral_to_rgb(550.0).luminance();
+        let fire  = spectral_fire_rgb(450.0).luminance() / spectral_fire_rgb(550.0).luminance();
+        assert!(fire < plain * 0.8, "fire blue/green luma ratio {fire:.3} should be well below plain {plain:.3}");
+        // Hue is preserved: 450 nm stays blue-dominant, 550 nm green-dominant.
+        let b = spectral_fire_rgb(450.0);
+        let g = spectral_fire_rgb(550.0);
+        assert!(b.z > b.x && b.z > b.y, "450 nm fire should stay blue-dominant");
+        assert!(g.y > g.x && g.y > g.z, "550 nm fire should stay green-dominant");
     }
 
     #[test]
