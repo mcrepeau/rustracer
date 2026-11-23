@@ -337,10 +337,12 @@ impl Material for Dielectric {
 /// At each boundary event the IOR is evaluated via the Cauchy equation
 /// n(λ) = B + C/λ² (λ in μm), so refracted rays bend by a
 /// wavelength-dependent angle -- smooth spectral dispersion (rainbows, diamond
-/// fire) without the coarse R/G/B bands of a 3-channel approach.  The CMF weight
-/// is NOT applied here (unlike SpectralMetal): attenuation stays white, keeping
-/// diffuse surfaces and photon-map caustics downstream of the glass achromatic.
-/// Reflections carry (1,1,1) since Fresnel is nearly achromatic.
+/// fire) without the coarse R/G/B bands of a 3-channel approach.  On the first
+/// spectral bounce the CMF weight `spectral_to_rgb(λ)` is folded into the
+/// throughput (then `spectral_weighted` stays set), so transmitted light carries
+/// the hero wavelength's colour: the gem shows fire and its caustics are rainbow.
+/// Averaged over λ the weight is white (CMF is per-channel normalised), so energy
+/// is conserved.  Reflections keep the same weight (Fresnel is nearly achromatic).
 ///
 /// Cauchy parameters for common materials (B, C in μm²):
 /// - Crown glass:  cauchy_b ≈ 1.507, cauchy_c ≈ 0.00375
@@ -368,12 +370,17 @@ impl Material for SpectralDielectric {
         let ior = cauchy_ior(r_in.wavelength, self.cauchy_b, self.cauchy_c);
         let (direction, _reflected) = dielectric_boundary(ior, r_in, rec, rng);
 
-        // Glass only affects direction (Cauchy dispersion), not amplitude.
-        // The CMF weight is NOT applied here — that keeps diffuse surfaces and
-        // photon-map caustics downstream of glass white instead of rainbow-tinted
-        // by the camera sample's random wavelength.  spectral_weighted stays as-is
-        // so SpectralMetal and BlackbodyLight on the same path are unaffected.
-        let mut attenuation = Color::new(1.0, 1.0, 1.0);
+        // Dispersion is directional (Cauchy) and chromatic: on the first spectral
+        // bounce, fold spectral_to_rgb(λ) into the throughput — that is what makes
+        // the hero wavelength visible as fire (the photon map picks up the same
+        // attenuation, so caustics through the gem are rainbow too).  The flag then
+        // stays set and the weight is applied exactly once per path (SpectralMetal
+        // pattern).
+        let mut attenuation = if r_in.spectral_weighted {
+            Color::new(1.0, 1.0, 1.0)
+        } else {
+            spectral_to_rgb(r_in.wavelength)
+        };
 
         // Beer-Lambert absorption: applied on every interior segment (exit or TIR).
         // rec.t is the chord length since the last boundary event, so absorption
@@ -385,7 +392,8 @@ impl Material for SpectralDielectric {
             attenuation.z *= (-self.absorption.z * d).exp();
         }
 
-        let scattered = Ray::scatter_from(rec.p, direction, r_in);
+        let mut scattered = Ray::scatter_from(rec.p, direction, r_in);
+        if !r_in.spectral_weighted { scattered.spectral_weighted = true; }
         Some(ScatterRecord { attenuation, ray: scattered, skip_pdf: true })
     }
 }

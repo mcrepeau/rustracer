@@ -53,6 +53,13 @@ PANELS = [
 ]
 SOFT = 0.9
 
+# --dark adds a small, very bright overhead spot (like a jewelry-store
+# downlight): angularly small source + strong Cauchy dispersion = visible
+# rainbow fire at the gem's edges, against the dark surround.
+PANELS_DARK = PANELS + [
+    (0.50, 0.07, 0.012, 0.008, 60.0, (1.00, 1.00, 1.00)),  # spot
+]
+
 # Global color-temperature tint applied to everything: warm (~3500 K look),
 # R up / B down relative to neutral daylight.
 TINT = (1.12, 1.00, 0.84)
@@ -70,7 +77,7 @@ def build_rows(dark=False):
         for i in range(W):
             u = (i + 0.5) / W
             r = g = b = base
-            for (cu, cv, hu, hv, rad, tint) in PANELS:
+            for (cu, cv, hu, hv, rad, tint) in (PANELS_DARK if dark else PANELS):
                 w = rect(u, v, cu, cv, hu, hv, SOFT)
                 if w > 0.0:
                     r += rad * tint[0] * w

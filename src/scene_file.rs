@@ -569,8 +569,9 @@ fn resolve_asset(base: &std::path::Path, p: &str) -> String {
 /// Beer-Lambert sigma per scene unit, added on top of the color_grade tint.
 fn gem_preset(name: &str) -> Result<(f32, f32, Color), String> {
     match name {
-        // Diamond: with these (pre-existing) constants nD = 2.412, nF-nC = 0.011.
-        "diamond"  => Ok((2.395, 0.00585, Color::new(0.0, 0.0, 0.0))),
+        // Diamond: nD = 2.417, nF-nC ~= 0.044 (textbook dispersion — the old
+        // C = 0.00585 gave only 0.011, so refracted light barely separated: no fire).
+        "diamond"  => Ok((2.351, 0.0230, Color::new(0.0, 0.0, 0.0))),
         // Corundum (sapphire / ruby): nD 1.768, dispersion ~ 0.018.  Blue
         // sapphire absorbs red+yellow (Cr3+/Fe-Ti charge transfer); ruby
         // absorbs green+violet (Cr3+).
@@ -1152,7 +1153,11 @@ center = [0,0,0]
         let s = gem_preset("sapphire").unwrap();
         let r = gem_preset("ruby").unwrap();
         let e = gem_preset("emerald").unwrap();
-        assert!((d.0 - 2.395).abs() < 1e-6 && d.2.length_squared() == 0.0);
+        assert!((d.0 - 2.351).abs() < 1e-6 && d.2.length_squared() == 0.0);
+        // Diamond dispersion must be physical: nF - nC ~= 0.044, not 0.011.
+        let nf = crate::spectrum::cauchy_ior(486.1, d.0, d.1);
+        let nc = crate::spectrum::cauchy_ior(656.3, d.0, d.1);
+        assert!((nf - nc - 0.044).abs() < 0.002, "diamond nF-nC = {:.4}", nf - nc);
         assert!((s.0 - 1.741).abs() < 1e-6 && (e.0 - 1.556).abs() < 1e-6);
         assert!(s.2.x > 100.0 && s.2.z < 100.0, "sapphire: absorb red, transmit blue");
         assert!(r.2.y > 100.0 && r.2.x < 100.0, "ruby: absorb green, transmit red");

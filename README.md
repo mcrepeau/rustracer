@@ -111,7 +111,7 @@ Path tracing works by sending many rays from the camera into the scene. Each ray
 Most path tracers work entirely in RGB — red, green, and blue channels. This tracer optionally goes further by simulating actual wavelengths of light, which enables physically correct phenomena that RGB cannot reproduce.
 
 - **Hero-wavelength spectral rendering** — one wavelength λ (between 380 and 700 nm) is sampled per camera ray and tracked through all bounces. The final colour is reconstructed using the CIE 1931 colour matching functions.
-- **SpectralDielectric** — glass whose refractive index depends on wavelength (Cauchy equation: `n(λ) = B + C/λ²`). Different colours bend by different amounts, producing chromatic aberration and rainbow caustics.
+- **SpectralDielectric** — glass whose refractive index depends on wavelength (Cauchy equation: `n(λ) = B + C/λ²`). Different colours bend by different amounts, and the CMF weight `spectral_to_rgb(λ)` is folded into the throughput at the first dispersive bounce (applied once per path), producing chromatic aberration, diamond fire, and rainbow caustics. Gem presets use physical constants (diamond nD 2.417, nF−nC ≈ 0.044).
 - **SpectralMetal** — conductor Fresnel reflectance computed from measured IOR data (Johnson & Christy 1972) for gold, copper, and silver.
 
 ### Acceleration
