@@ -471,10 +471,10 @@ fn run_render(args: RenderArgs) {
                     };
                     let path = if is_anim {
                         let out_dir = args.output.as_deref().unwrap_or(".");
-                        format!("{out_dir}/{slug}_{frame_idx:04}_denoised.png")
+                        format!("{out_dir}/{slug}_{frame_idx:04}.png")
                     } else {
                         args.output.clone().unwrap_or_else(|| {
-                            format!("render_{}_{:04}spp_denoised.png", slug, actual_spp)
+                            format!("render_{}_{:04}spp.png", slug, actual_spp)
                         })
                     };
                     // output is already per-pixel-normalized; samples=1 so save_png
