@@ -41,7 +41,7 @@ impl Hittable for Cone {
             if disc >= 0.0 {
                 let sqrtd = disc.sqrt();
                 for root in [(-half_b - sqrtd) / a, (-half_b + sqrtd) / a] {
-                    if root < t_min || root >= best_t { continue; }
+                    if root < t_min || root > best_t { continue; }
                     let p       = r.at(root);
                     let local_y = p.y - self.center.y;
                     if local_y < 0.0 || local_y > h { continue; }
@@ -65,7 +65,7 @@ impl Hittable for Cone {
         // ── Base disk at y = 0 ────────────────────────────────────────────────
         if dy.abs() > 1e-8 {
             let t = -oc.y / dy;
-            if t >= t_min && t < best_t {
+            if t >= t_min && t <= best_t {
                 let p  = r.at(t);
                 let lx = p.x - self.center.x;
                 let lz = p.z - self.center.z;
@@ -101,7 +101,7 @@ impl Hittable for Cone {
             if disc >= 0.0 {
                 let sqrtd = disc.sqrt();
                 for root in [(-half_b - sqrtd) / a, (-half_b + sqrtd) / a] {
-                    if root < t_min || root >= t_max { continue; }
+                    if root < t_min || root > t_max { continue; }
                     let local_y = r.at(root).y - self.center.y;
                     if local_y < 0.0 || local_y > h { continue; }
                     return true;
@@ -112,7 +112,7 @@ impl Hittable for Cone {
         // ── Base disk at y = 0 ────────────────────────────────────────────────
         if dy.abs() > 1e-8 {
             let t = -oc.y / dy;
-            if t >= t_min && t < t_max {
+            if t >= t_min && t <= t_max {
                 let p  = r.at(t);
                 let lx = p.x - self.center.x;
                 let lz = p.z - self.center.z;
@@ -152,6 +152,24 @@ mod tests {
     fn shoot(c: &Cone, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32) -> Option<HitRecord<'_>> {
         let r = Ray::new(Point3::new(ox, oy, oz), Vec3::new(dx, dy, dz));
         c.hit(&r, 0.001, f32::INFINITY)
+    }
+
+    #[test]
+    fn cone_accepts_hit_at_exactly_t_max() {
+        // Convention: [t_min, t_max] is closed — a root at exactly t_max
+        // counts as a hit, in hit() and any_hit() alike.
+        let c = unit_cone();
+        // Lateral hit at exactly t = 4.5 (ray along +z from (0,1,-5)).
+        let r = Ray::new(Point3::new(0.0, 1.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = c.hit(&r, 0.001, 4.5).expect("lateral t == t_max must be accepted");
+        assert!((rec.t - 4.5).abs() < 1e-5);
+        assert!(c.any_hit(&r, 0.001, 4.5), "any_hit must agree with hit");
+        assert!(c.hit(&r, 0.001, 4.5 - 1e-4).is_none(), "root just above t_max must miss");
+        // Base cap at exactly t = 5.0 (ray along +y from (0.5,-5,0); lateral is at t=6).
+        let r2 = Ray::new(Point3::new(0.5, -5.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+        let rec2 = c.hit(&r2, 0.001, 5.0).expect("base cap at t == t_max must be accepted");
+        assert!((rec2.t - 5.0).abs() < 1e-5);
+        assert!(c.any_hit(&r2, 0.001, 5.0));
     }
 
     #[test]

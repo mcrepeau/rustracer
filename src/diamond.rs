@@ -159,15 +159,20 @@ pub(crate) fn convex_hit(planes: &[(Vec3, f32)], r: &Ray, t_min: f32, t_max: f32
                 }
             }
 
-            if t_enter >= t_exit { return None; }
+            if t_enter > t_exit { return None; }
         }
 
-        if t_enter >= t_exit { return None; }
+        if t_enter > t_exit { return None; }
+        // Zero-chord interval (t_enter == t_exit): reject interior tangents — in
+        // f32 they are rounding slivers around edges/vertices, not real hits, and
+        // accepting them measurably slows gem-heavy scenes — but accept the closed
+        // endpoint t == t_max per the Hittable convention.
+        if t_enter == t_exit && t_enter < t_max { return None; }
 
         if entry_found {
             Some((t_enter, enter_normal))
         } else {
-            if t_exit >= t_max { return None; }
+            if t_exit > t_max { return None; }
             Some((t_exit, exit_outward_normal))
         }
 }
@@ -202,6 +207,17 @@ mod tests {
     use crate::material::Dielectric;
 
     fn mat() -> Arc<dyn Material> { Arc::new(Dielectric { ir: 1.5 }) }
+
+    #[test]
+    fn convex_hit_accepts_entry_at_exactly_t_max() {
+        // Closed-interval convention: entering the solid at t == t_max is a
+        // hit (slab x in [-1, 1]: ray along +x from x=-5 enters at t=4).
+        let planes = [(Vec3::new(1.0, 0.0, 0.0), 1.0), (Vec3::new(-1.0, 0.0, 0.0), 1.0)];
+        let r = Ray::new(Point3::new(-5.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+        let hit = convex_hit(&planes, &r, 0.001, 4.0).expect("entry at t == t_max must be accepted");
+        assert!((hit.0 - 4.0).abs() < 1e-6, "t = {}", hit.0);
+        assert!(convex_hit(&planes, &r, 0.001, 4.0 - 1e-4).is_none(), "entry just above t_max must miss");
+    }
 
     #[test]
     fn girdle_facets_scales_plane_count() {
