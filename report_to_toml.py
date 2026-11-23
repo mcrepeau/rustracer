@@ -295,7 +295,7 @@ def render_toml(f, args):
     lines.append("")
     lines.append("[[objects]]")
     lines.append('shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }')
-    lines.append('material = { type = "pbr", albedo = [0.5, 0.48, 0.46], roughness = 0.25, metallic = 0.0 }')
+    lines.append('material = { type = "pbr", albedo = [0.5, 0.48, 0.46], roughness = 0.0, metallic = 0.0 }')
     lines.append("")
     if args.chart:
         lines.append("[[objects]]")
