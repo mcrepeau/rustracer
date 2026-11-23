@@ -56,7 +56,9 @@ impl Default for DiamondParams {
 /// Recommended material: `SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585, .. }`.
 /// With `girdle_pct` > 0 the crown/pavilion planes attach at y = +/-g/2 and N
 /// extra vertical planes form a flat girdle band around the widest outline
-/// (2N+1 half-spaces total); with 0 the crown and pavilion meet at a knife edge.
+/// With a band: 3N+1 half-spaces (1 table + N crown + N pavilion + N vertical band),
+/// and a crown/pavilion plane runs through EVERY girdle edge so the band height is
+/// uniform all around; with girdle_pct = 0 it stays N+1 (knife edge).
 pub struct Diamond {
 
     planes:     Vec<(Vec3, f32)>,   // (outward unit normal n, offset d) — interior iff n·x ≤ d
@@ -80,7 +82,7 @@ impl Diamond {
 
         let n = (params.girdle_facets.max(4) / 2) * 2;  // even, >= 4
         let m = n / 2;                                   // main facets per side
-        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity((2 * n + 1) as usize);
+        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity((3 * n + 1) as usize);
 
         // Push a facet plane given its ROUND-space unit normal `n` and a point
         // `g` on it: the oval shape is the round shape scaled by S = diag(q,1,1),
@@ -98,10 +100,15 @@ impl Diamond {
         // At azimuth θ = k · 45°.  The face runs from the girdle edge (r, 0) to
         // the table edge (table_r, crown_h) in the radial-Y plane, so:
         //   unnorm outward normal = (cos θ · crown_h,  r − table_r,  sin θ · crown_h)
-        for k in 0..m {
-            let theta = k as f32 * 2.0 * PI / m as f32;
+        // With a girdle band, a crown plane runs through EVERY girdle edge (not just
+        // every other one): otherwise nothing bounds the band at +g/2 on the edges
+        // where a pavilion facet converges, and the band bulges vertically there.
+        let crown_n = if girdle_h > 0.0 { n } else { m };
+        for k in 0..crown_n {
+            let theta = k as f32 * 2.0 * PI / crown_n as f32;
             let (s, c) = theta.sin_cos();
             let n = Vec3::new(c * crown_h, r - table_r, s * crown_h).unit();
+
             // Face passes through the top edge of the girdle band at this azimuth.
             let girdle_pt = Vec3::new(center.x + c * r, center.y + 0.5 * girdle_h, center.z + s * r);
 
@@ -112,10 +119,16 @@ impl Diamond {
         // Offset half a segment from crown so the girdle is a uniform N-gon.
         // Face runs from girdle (r, 0) down to the culet (0, −pavilion_h):
         //   unnorm outward normal = (cos φ · pavilion_h,  −r,  sin φ · pavilion_h)
-        for k in 0..m {
-            let phi = k as f32 * 2.0 * PI / m as f32 + PI / m as f32;
+        let pav_n = if girdle_h > 0.0 { n } else { m };
+        for k in 0..pav_n {
+            let phi = if girdle_h > 0.0 {
+                k as f32 * 2.0 * PI / n as f32
+            } else {
+                k as f32 * 2.0 * PI / m as f32 + PI / m as f32
+            };
             let (s, c) = phi.sin_cos();
             let n = Vec3::new(c * pavilion_h, -r, s * pavilion_h).unit();
+
             let girdle_pt = Vec3::new(center.x + c * r, center.y - 0.5 * girdle_h, center.z + s * r);
 
             push_plane(n, girdle_pt);
@@ -247,16 +260,16 @@ mod tests {
     fn girdle_facets_scales_plane_count() {
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
             DiamondParams { girdle_facets: 64, ..Default::default() }, mat());
-        assert_eq!(d.planes.len(), 129);  // 1 table + 32 crown + 32 pavilion + 64 band
+        assert_eq!(d.planes.len(), 193);  // 1 table + 64 crown + 64 pavilion + 64 band
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
-        assert_eq!(d.planes.len(), 33);   // classic: 1 + 8 + 8 + 16 band
+        assert_eq!(d.planes.len(), 49);   // classic: 1 + 16 + 16 + 16 band
     }
 
     #[test]
     fn odd_facet_count_rounds_down_to_even() {
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
             DiamondParams { girdle_facets: 17, ..Default::default() }, mat());
-        assert_eq!(d.planes.len(), 33);   // 17 -> 16 -> 1 + 8 + 8 + 16 band
+        assert_eq!(d.planes.len(), 49);   // 17 -> 16 -> 1 + 16 + 16 + 16 band
     }
 
     #[test]
@@ -311,7 +324,31 @@ mod tests {
     }
 
     #[test]
+    fn band_height_is_uniform_on_every_edge() {
+        // default girdle_pct = 2 -> band spans y in [-0.02, +0.02] for r = 1;
+        // just above +g/2 every azimuth must hit a CROWN facet (normal.y > 0),
+        // never the vertical band plane (normal.y == 0) — i.e. no per-edge bulge.
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
+        for j in 0..16u32 {
+            let a = j as f32 * 2.0 * PI / 16.0;
+            let (s, c) = a.sin_cos();
+            let r = Ray::new(Point3::new(10.0 * c, 0.021, 10.0 * s), Vec3::new(-c, 0.0, -s));
+            let rec = d.hit(&r, 0.001, 100.0).expect("hit");
+            assert!(rec.normal.y > 0.5, "edge {j}: expected crown facet above band, n = {:?}", rec.normal);
+        }
+        // and just below -g/2 every azimuth must hit a PAVILION facet (normal.y < 0)
+        for j in 0..16u32 {
+            let a = j as f32 * 2.0 * PI / 16.0;
+            let (s, c) = a.sin_cos();
+            let r = Ray::new(Point3::new(10.0 * c, -0.021, 10.0 * s), Vec3::new(-c, 0.0, -s));
+            let rec = d.hit(&r, 0.001, 100.0).expect("hit");
+            assert!(rec.normal.y < -0.5, "edge {j}: expected pavilion facet below band, n = {:?}", rec.normal);
+        }
+    }
+
+    #[test]
     fn zero_girdle_pct_keeps_the_knife_edge() {
+
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
             DiamondParams { girdle_pct: 0.0, ..Default::default() }, mat());
         assert_eq!(d.planes.len(), 17);   // no vertical band planes
