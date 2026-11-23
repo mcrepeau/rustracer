@@ -179,7 +179,7 @@ def render_toml(f, args):
     # --dark switches to the dark-room studio HDR.
     if args.dark:
         bg_lines = ['type = "env_map"', 'path = "assets/studio_dark.hdr"']
-        floor_albedo = "[0.03, 0.03, 0.035]"
+        floor_material = '{ type = "pbr", albedo = [0.03, 0.03, 0.035], roughness = 0.95, metallic = 0.0 }'
         staging = "dark-room studio: the stone pops against a near-black surround"
         lights_block = None
     else:
@@ -190,8 +190,10 @@ def render_toml(f, args):
         # the stone (size = 1 scene unit), and sits outside the camera frame, so only its
         # reflection is visible — like real product photography.
         bg_lines = ['type = "env_map"', 'path = "assets/product_studio.hdr"']
-        floor_albedo = "[0.42, 0.42, 0.44]"
-        staging = "bright product staging: gray cyclorama env + angled overhead softbox panels (Blue Nile style)"
+        # subtle checker floor (tiles = 4 world units = 4x the stone, ~6% contrast):
+        # separates the floor from the smooth gradient backdrop at the horizon line
+        floor_material = '{ type = "checker", even = [0.44, 0.44, 0.46], odd = [0.415, 0.415, 0.435], scale = 0.25 }'
+        staging = "bright product staging: gradient cyclorama env + subtle checker floor + angled overhead softboxes (Blue Nile style)"
         s, d = size, dist
 
         def norm3(v):
@@ -280,7 +282,7 @@ def render_toml(f, args):
     lines.append("")
     lines.append("[[objects]]")
     lines.append('shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }')
-    lines.append('material = { type = "pbr", albedo = %s, roughness = 0.95, metallic = 0.0 }' % floor_albedo)
+    lines.append('material = %s' % floor_material)
     lines.append("")
     if lights_block:
         lines.extend(lights_block)
