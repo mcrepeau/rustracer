@@ -4,7 +4,7 @@ rustracer scene TOML with a [[gems]] block.
 
 Usage:
     py report_to_toml.py REPORT.pdf [-o out.toml] [--material PRESET] [--cut CUT]
-                                [--gap-mm 15.0] [--no-caustics] [--no-animation] [--dark]
+                                [--gap-mm 0.1] [--chart] [--no-caustics] [--no-animation] [--dark]
 
     py report_to_toml.py LG625469749.pdf            # writes scenes/LG625469749.toml
 
@@ -178,8 +178,16 @@ def render_toml(f, args):
     oval = cut == "brilliant" and l_mm / w_mm > 1.05
     # pavilion height in mm = W * pavilion_pct/100 (see build_gem angle conversion)
     pav_mm = w_mm * (f["pavilion_pct"] or 41.0) / 100.0
-    cy = (pav_mm + args.gap_mm) * scale          # girdle centre height above the floor
     size = l_mm * scale                            # stone length in scene units
+    # Optional grey-chart card under the stone: the OBJ is in centimetres
+    # (18 cm wide, 0.4 cm tall); scale it so the card is --chart-width stone
+    # lengths wide. Its top becomes the new "floor" the culet tip rests on.
+    card_top = 0.0
+    chart_scale = 0.0
+    if args.chart:
+        chart_scale = (args.chart_width * size) / 18.0   # OBJ units are cm
+        card_top = 0.4 * chart_scale                     # OBJ y max = 0.4 cm
+    cy = (pav_mm + args.gap_mm) * scale + card_top       # girdle centre height above the floor
     dist = max(3.2 * size, 0.012)                  # camera distance
     lf = (0.43 * dist, cy + 0.26 * dist, -0.86 * dist)  # same view direction as gem_LG625469749
 
@@ -271,7 +279,10 @@ def render_toml(f, args):
         lines.append("# table %.6g%%, crown %.6g%% / pavilion %.6g%%, depth %.6g%%, culet %s, girdle %s"
                      % (f["table_pct"], f["crown_pct"], f["pavilion_pct"], f["depth_pct"], f["culet"], f.get("girdle") or "n/a"))
     lines.append("#")
-    lines.append("# Staging: stone floats in " + staging + ";")
+    if args.chart:
+        lines.append("# Staging: stone rests on a grey chart card (%.6g stone lengths wide); " % args.chart_width + staging + ";")
+    else:
+        lines.append("# Staging: stone rests on the floor (culet tip + %.6g mm gap); " % args.gap_mm + staging + ";")
     lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
     lines.append("# Render still:     --render --preset final --width 480 --height 300 --output out.png")
     lines.append("# Render turntable: --render --preset final --width 1280 --height 720 --output frames")
@@ -294,6 +305,14 @@ def render_toml(f, args):
     lines.append('shape    = { type = "infinite_plane", point = [0, 0, 0], normal = [0, 1, 0] }')
     lines.append('material = %s' % floor_material)
     lines.append("")
+    if args.chart:
+        lines.append("[[objects]]")
+        lines.append('# grey chart card the stone rests on (OBJ in cm: %s)' % args.chart_obj)
+        lines.append('shape    = { type = "mesh", path = "%s" }' % args.chart_obj)
+        lines.append('material = { type = "textured_pbr", albedo_path = "%s", roughness = 0.9, metallic = 0.0 }' % args.chart_tex)
+        lines.append("scale    = %.6g              # card 18 cm wide -> %.6g stone lengths" % (chart_scale, args.chart_width))
+        lines.append("translate = [0.0, 0.0, 0.0]  # card bottom on the floor; top at y = %.6g" % card_top)
+        lines.append("")
     if lights_block:
         lines.extend(lights_block)
         lines.append("")
@@ -317,7 +336,10 @@ def render_toml(f, args):
     lines.append('color_grade     = "%s"' % f["color_grade"])
     lines.append('cut             = "%s"' % cut)
     lines.append('material        = "%s"' % material)
-    lines.append("center          = [0.0, %.5g, 0.0]   # pavilion (%.2f mm) + %.6g mm air gap" % (cy, pav_mm, args.gap_mm))
+    if args.chart:
+        lines.append("center          = [0.0, %.5g, 0.0]   # pavilion (%.2f mm) + %.6g mm gap on chart top y=%.6g" % (cy, pav_mm, args.gap_mm, card_top))
+    else:
+        lines.append("center          = [0.0, %.5g, 0.0]   # pavilion (%.2f mm) + %.6g mm gap above the floor" % (cy, pav_mm, args.gap_mm))
     lines.append("scale_mm        = %.6g               # mm -> scene units (stone length = 1)" % scale)
     lines.append("")
     if not args.no_caustics:
@@ -358,7 +380,14 @@ def main():
     ap.add_argument("-o", "--output", default=None, help="output .toml (default: scenes/<report>.toml next to this script)")
     ap.add_argument("--material", default=None, help="override material preset (diamond|sapphire|ruby|emerald)")
     ap.add_argument("--cut", default=None, help="override cut preset (brilliant|step|princess|...)")
-    ap.add_argument("--gap-mm", type=float, default=15.0, help="air gap under the stone, mm (default 15)")
+    ap.add_argument("--gap-mm", type=float, default=0.1, help="air gap under the stone, mm (default 0.1: culet tip resting)")
+    ap.add_argument("--chart", action="store_true",
+                    help="place a grey chart card (OBJ mesh + TIFF albedo) under the stone; culet rests on it")
+    ap.add_argument("--chart-width", type=float, default=4.0,
+                    help="chart card width in stone lengths (default 4.0)")
+    ap.add_argument("--chart-obj", default="assets/greyChart_OBJ.obj", help="grey chart OBJ path (cm units)")
+    ap.add_argument("--chart-tex", default="assets/greyChart_default_default_COL_sRGB.tiff",
+                    help="grey chart albedo TIFF (sRGB, decoded to linear at sample time)")
     ap.add_argument("--no-caustics", action="store_true")
     ap.add_argument("--no-animation", action="store_true",
                     help="do not emit the [animation] / [animation.orbit] turntable block")

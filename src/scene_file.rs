@@ -1080,6 +1080,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn load_img_supports_tiff() {
+        // Poly Haven-style TIFF maps must load through image::open (tiff is a
+        // default image feature) and round-trip pixel values exactly.
+        let path = std::env::temp_dir().join(format!("rustracer_tiff_test_{}.tiff", std::process::id()));
+        let img = image::RgbImage::from_fn(2, 2, |x, y| image::Rgb([(x * 40) as u8, (y * 80) as u8, 200u8]));
+        img.save(&path).expect("save test tiff");
+        let loaded = load_img(path.to_str().unwrap()).expect("load tiff");
+        assert_eq!(loaded.dimensions(), (2, 2));
+        assert_eq!(loaded.get_pixel(1, 1).0, [40, 80, 200]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn sample_scene_file_loads() {
         // scenes/sample.toml is the documented parameter reference (README points
         // to it) — it must always parse and build.
