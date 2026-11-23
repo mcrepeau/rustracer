@@ -4,7 +4,7 @@ rustracer scene TOML with a [[gems]] block.
 
 Usage:
     py report_to_toml.py REPORT.pdf [-o out.toml] [--material PRESET] [--cut CUT]
-                                [--gap-mm 15.0] [--no-caustics]
+                                [--gap-mm 15.0] [--no-caustics] [--no-animation]
 
     py report_to_toml.py LG625469749.pdf            # writes scenes/LG625469749.toml
 
@@ -189,7 +189,9 @@ def render_toml(f, args):
     lines.append("#")
     lines.append("# Staging: stone floats above a dark floor in the studio light-tent env map;")
     lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
-    lines.append("# Render still: --render --preset final --width 480 --height 300 --output out.png")
+    lines.append("# Render still:     --render --preset final --width 480 --height 300 --output out.png")
+    lines.append("# Render turntable: --render --preset final --width 1280 --height 720 --output frames")
+    lines.append("#                   (the [animation.orbit] block at the bottom frames the stone automatically)")
     lines.append("")
     lines.append('name = "%s %s"' % (f["report"], f["style"]))
     lines.append("")
@@ -235,6 +237,28 @@ def render_toml(f, args):
         lines.append("gather_radius = %.5g" % (1.2 * w_mm * scale))
         lines.append("num_photons   = 300000")
         lines.append("")
+
+    if not args.no_animation:
+        # Auto-framed 360-degree orbit: radius/height/focus_dist all derive from the
+        # camera distance `dist` = 3.2 x stone length, so with vfov = 30 deg the gem
+        # fills the same fraction of the frame whatever its measured size.
+        lines.append("# --- Animation: auto-framed 360-degree orbit (scales with the stone) ---")
+        lines.append("# radius = camera distance, height = still-camera elevation, look_at = girdle centre:")
+        lines.append("# the framing is identical for every stone. Turntable render command is in the header.")
+        lines.append("[animation]")
+        lines.append("fps      = 24")
+        lines.append("duration = 4.0   # 96 frames")
+        lines.append("")
+        lines.append("[animation.orbit]")
+        lines.append("center      = [0.0, 0.0, 0.0]    # orbit axis (XZ only; Y comes from `height`)")
+        lines.append("radius      = %.5g              # = camera distance: constant framing" % dist)
+        lines.append("height      = %.5g              # same elevation as the still camera" % (cy + 0.26 * dist))
+        lines.append("look_at     = [0.0, %.5g, 0.0]  # the stone (girdle centre)" % cy)
+        lines.append("start_angle = 180.0              # start on the default camera side (-Z)")
+        lines.append("end_angle   = 540.0              # full 360-degree orbit")
+        lines.append("vfov        = 30.0")
+        lines.append("focus_dist  = %.5g" % dist)
+        lines.append("")
     return "\n".join(lines), warnings, dict(cut=cut, material=material, oval=oval)
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -247,6 +271,8 @@ def main():
     ap.add_argument("--cut", default=None, help="override cut preset (brilliant|step|princess|...)")
     ap.add_argument("--gap-mm", type=float, default=15.0, help="air gap under the stone, mm (default 15)")
     ap.add_argument("--no-caustics", action="store_true")
+    ap.add_argument("--no-animation", action="store_true",
+                    help="do not emit the [animation] / [animation.orbit] turntable block")
     args = ap.parse_args()
 
     if not os.path.exists(args.pdf):

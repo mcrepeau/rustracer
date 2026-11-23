@@ -85,7 +85,7 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
 
 - **`report_to_toml.py`** — turns an IGI/GIA grading-report PDF into a renderable `scenes/<report>.toml`
   (stdlib only; see "From a grading-report PDF" below):
-  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 15] [--no-caustics]`
+  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 15] [--no-caustics] [--no-animation]`
 
 ## Features
 
@@ -214,8 +214,12 @@ cargo run --release -- --scene scenes/625469899.toml
 ```
 
 The stone is staged floating above a dark floor in the studio light-tent HDR with caustics on;
-camera distance and photon gather radius scale with the measured size. Overrides: `--material`,
-`--cut`, `--gap-mm`, `--no-caustics`. Unparseable fields produce warnings, never a broken file.
+camera distance and photon gather radius scale with the measured size. The scene also ships a
+ready-to-render `[animation]` / `[animation.orbit]` block whose `radius` / `height` /
+`focus_dist` derive from the camera distance (3.2 × measured length, vfov 30°), so every stone
+gets identical framing — a full 360° orbit, 96 frames at 24 fps. Overrides: `--material`,
+`--cut`, `--gap-mm`, `--no-caustics`, `--no-animation`. Unparseable fields produce warnings,
+never a broken file.
 The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only
 `scenes/scene.toml`, `scenes/sample.toml` and `scenes/bench.toml` are tracked.
 
