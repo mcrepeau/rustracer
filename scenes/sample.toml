@@ -63,7 +63,7 @@ material = { type = "lambertian", color = [0.7, 0.3, 0.3] }
 #   { type = "mesh",           path   = "assets/file.obj" }
 #   { type = "diamond",        center = [x,y,z], radius = r,
 #                              table_pct = 53.0, crown_angle = 34.5, pavilion_angle = 40.75,
-#                              oval_ratio = 1.0, girdle_facets = 32 }
+#                              oval_ratio = 1.0, girdle_facets = 32, girdle_pct = 2.0 }
 #                              # brilliant family; oval_ratio > 1 -> oval girdle (vertices lie
 #                              # exactly on the ellipse: girdle_facets = 64 looks perfectly
 #                              # round-oval, 16 shows straight edges)
@@ -75,7 +75,8 @@ material = { type = "lambertian", color = [0.7, 0.3, 0.3] }
 #                              corner_pct = 12.0, corner_segs = 4,   # rect / rounded_rect chamfer
 #                              oval_segs = 24, pear = false,          # marquise / pear outline
 #                              crown_steps = 3, pavilion_steps = 3,  # stepped rows per edge
-#                              culet_pct = 8.0, step_spread = 0.25, chevrons = 0 }
+#                              culet_pct = 8.0, step_spread = 0.25, chevrons = 0,
+#                              girdle_pct = 2.0 }
 #                              # step-cut family: polygon girdle + step rows; chevrons adds
 #                              # extra facets per girdle vertex (princess cut look)
 #   Volumes (the `material` field is ignored; color/density are inline):
@@ -144,6 +145,7 @@ color  = [6.0, 6.0, 6.0]
 # absorption      = [0.0, 0.0, 0.0]         # extra Beer-Lambert sigma, added to the grade tint
 # chevrons        = 3                       # optional override of the cut's default chevron count
 # girdle_facets   = 64                      # brilliant girdle sides (auto-64 for ovals)
+# girdle_pct      = 2.0                     # girdle band thickness, % of diameter (0 = knife edge)
 # center          = [0.0, 0.02, 0.0]        # girdle centre, scene units
 # scale_mm        = 0.001                   # mm -> scene units (default 0.001)
 # scale / rotate_y / translate              # same per-object transforms as [[objects]]

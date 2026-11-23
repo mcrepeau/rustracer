@@ -188,6 +188,9 @@ pub enum ShapeConfig {
         /// want 64+ so the stretched outline reads as a true ellipse.
         #[serde(default = "default_girdle_facets")]
         girdle_facets:  u32,
+        /// Girdle band thickness as % of the girdle diameter (0 = knife edge).
+        #[serde(default = "default_girdle_pct")]
+        girdle_pct:     f32,
     },
     /// Step-family cut (emerald/princess/cushion/trillion/marquise/...) as an
     /// analytic convex polyhedron: polygon girdle outline, stepped crown and
@@ -237,6 +240,9 @@ pub enum ShapeConfig {
         /// Diagonal chevron rows per outline vertex (0 = none).
         #[serde(default)]
         chevrons:       u32,
+        /// Girdle band thickness as % of the width (0 = knife edge).
+        #[serde(default = "default_girdle_pct")]
+        girdle_pct:     f32,
     },
     InfinitePlane {
         point:  [f32; 3],
@@ -508,6 +514,9 @@ pub struct GemConfig {
     /// (ratio > 1.05) so the girdle outline is a smooth ellipse.
     #[serde(default)]
     pub girdle_facets:   Option<u32>,
+    /// Girdle band thickness as a percentage of the girdle diameter/width
+    /// (GIA-style: thin ~1.5%, medium ~3%, thick ~5%).  Default 2%; 0 = knife edge.
+    pub girdle_pct:      Option<f32>,
     /// Girdle centre in scene units.
     pub center:          [f32; 3],
     /// mm -> scene units applied to the size.
@@ -527,6 +536,7 @@ fn default_crown_angle()   -> f32  { 34.5  }
 fn default_pavilion_angle()-> f32  { 40.75 }
 fn default_oval_ratio()    -> f32  { 1.0   }
 fn default_girdle_facets()  -> u32  { 16    }
+fn default_girdle_pct()     -> f32  { 2.0   }
 fn default_corner_pct()     -> f32  { 12.0  }
 fn default_corner_segs()    -> u32  { 4     }
 fn default_oval_segs()      -> u32  { 24    }
@@ -624,6 +634,7 @@ fn step_cut_preset(cut: &str, g: &GemConfig, crown_angle: f32, pavilion_angle: f
     Ok(StepCutParams {
         table_pct: g.table_pct, crown_angle, pavilion_angle,
         outline, culet_pct, crown_steps, pavilion_steps, step_spread, chevrons: chev,
+        girdle_pct: g.girdle_pct.unwrap_or(2.0),
     })
 }
 
@@ -671,16 +682,19 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         pavilion_angle,
         oval_ratio,
         girdle_facets:  g.girdle_facets.unwrap_or(if oval_ratio > 1.05 { 64 } else { 16 }),
+        girdle_pct:     g.girdle_pct.unwrap_or(2.0),
     };
 
     // Cross-check the reported total depth against the facet heights (warning
-    // only; the reported depth includes the girdle, which we do not model).
+    // only; the reported depth includes the girdle band, which we now model).
     if let Some(depth) = g.depth_pct {
         let crown_h    = (radius - table_r) * crown_angle.to_radians().tan();
         let pavilion_h = radius * pavilion_angle.to_radians().tan();
-        let calc = (crown_h + pavilion_h) / (2.0 * radius) * 100.0;
+        let girdle_h   = g.girdle_pct.unwrap_or(2.0) / 100.0 * 2.0 * radius;
+        let calc = (girdle_h + crown_h + pavilion_h) / (2.0 * radius) * 100.0;
+
         if (calc - depth).abs() > 6.0 {
-            eprintln!("warning: gem '{}': reported depth {depth}% but proportions give {calc:.1}% (girdle excluded)",
+            eprintln!("warning: gem '{}': reported depth {depth}% but proportions give {calc:.1}% (girdle included)",
                       g.report);
         }
     }
@@ -821,18 +835,18 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
                         Arc::new(Cone { center: p3(center), radius, height, mat }),
                     ShapeConfig::Disk { center, normal, radius } =>
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
-                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets } =>
+                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct } =>
                         Arc::new(Diamond::new(
                             p3(center), radius,
-                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets },
+                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct },
                             mat,
                         )),
-                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, outline, points, corner_pct, corner_segs, oval_segs, pear, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons } => {
+                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, outline, points, corner_pct, corner_segs, oval_segs, pear, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons, girdle_pct } => {
                         let ol = step_outline_name(outline.as_deref().unwrap_or("rect"), corner_pct, corner_segs, oval_segs, pear, points)
                             .map_err(|e| format!("objects[{i}].shape: {e}"))?;
                         let sc = StepCut::new(
                             p3(center), 0.5 * length, 0.5 * width,
-                            StepCutParams { table_pct, crown_angle, pavilion_angle, outline: ol, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons },
+                            StepCutParams { table_pct, crown_angle, pavilion_angle, outline: ol, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons, girdle_pct },
                             mat,
                         ).map_err(|e| format!("objects[{i}].shape: {e}"))?;
                         Arc::new(sc)
@@ -1136,11 +1150,12 @@ center = [0,0,0]
         let exp_crown = (0.16 * 6.42 / (r_mm - table_r)).atan().to_degrees();
         let exp_pav   = (0.41 * 6.42 / r_mm).atan().to_degrees();
         // build_gem doesn't expose params; rebuild the same math here and check
-        // the constructed diamond's bbox height matches crown_h + pavilion_h.
+        // the constructed diamond's bbox height matches girdle + crown_h + pavilion_h
+        // (default girdle_pct = 2% of the 6.42 mm minor-axis diameter).
         let h = build_gem(&g).unwrap();
         let bb = h.bounding_box().unwrap();
         let h_mm = (bb.max.y - bb.min.y) / 0.001;
-        let exp_h = 0.16 * 6.42 + 0.41 * 6.42;
+        let exp_h = 0.02 * 6.42 + 0.16 * 6.42 + 0.41 * 6.42;
         assert!((h_mm - exp_h).abs() < 0.02, "height {h_mm} mm vs expected {exp_h} mm");
         assert!((exp_crown - 37.3).abs() < 0.2 && (exp_pav - 39.35).abs() < 0.2,
                 "angles {exp_crown} / {exp_pav}");

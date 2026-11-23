@@ -30,11 +30,15 @@ pub struct DiamondParams {
     /// so the outline deviation is ~r*(pi/N)^2/2 — 1.9% of the radius at
     /// N=16, 0.12% at N=64, i.e. a visually perfect oval.
     pub girdle_facets: u32,
+    /// Girdle band thickness as a percentage of the girdle diameter (GIA-style:
+    /// thin ~1.5%, medium ~3%, thick ~5%).  0 = knife edge.  Default 2%.
+    pub girdle_pct: f32,
 }
+
 
 impl Default for DiamondParams {
     fn default() -> Self {
-        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0, girdle_facets: 16 }
+        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0, girdle_facets: 16, girdle_pct: 2.0 }
     }
 }
 
@@ -50,13 +54,18 @@ impl Default for DiamondParams {
 /// explicit vertical girdle planes.
 ///
 /// Recommended material: `SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585, .. }`.
+/// With `girdle_pct` > 0 the crown/pavilion planes attach at y = +/-g/2 and N
+/// extra vertical planes form a flat girdle band around the widest outline
+/// (2N+1 half-spaces total); with 0 the crown and pavilion meet at a knife edge.
 pub struct Diamond {
+
     planes:     Vec<(Vec3, f32)>,   // (outward unit normal n, offset d) — interior iff n·x ≤ d
     bbox:       Aabb,
     mat:        Arc<dyn Material>,
     center:     Point3,
     crown_h:    f32,
     pavilion_h: f32,
+    girdle_h:   f32,
 }
 
 impl Diamond {
@@ -66,10 +75,12 @@ impl Diamond {
         let table_r    = (params.table_pct / 100.0) * r;
         let crown_h    = (r - table_r) * params.crown_angle.to_radians().tan();
         let pavilion_h = r             * params.pavilion_angle.to_radians().tan();
+        // Girdle band height: pct of the (minor-axis) diameter, GIA-style.
+        let girdle_h   = ((params.girdle_pct / 100.0) * 2.0 * r).clamp(0.0, 0.3 * r);
 
         let n = (params.girdle_facets.max(4) / 2) * 2;  // even, >= 4
         let m = n / 2;                                   // main facets per side
-        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity((n + 1) as usize);
+        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity((2 * n + 1) as usize);
 
         // Push a facet plane given its ROUND-space unit normal `n` and a point
         // `g` on it: the oval shape is the round shape scaled by S = diag(q,1,1),
@@ -81,7 +92,7 @@ impl Diamond {
         };
 
         // ── Table ──────────────────────────────────────────────────────────────
-        push_plane(Vec3::new(0.0, 1.0, 0.0), Vec3::new(center.x, center.y + crown_h, center.z));
+        push_plane(Vec3::new(0.0, 1.0, 0.0), Vec3::new(center.x, center.y + 0.5 * girdle_h + crown_h, center.z));
 
         // ── Crown main facets (8, bezel facets) ───────────────────────────────
         // At azimuth θ = k · 45°.  The face runs from the girdle edge (r, 0) to
@@ -91,8 +102,9 @@ impl Diamond {
             let theta = k as f32 * 2.0 * PI / m as f32;
             let (s, c) = theta.sin_cos();
             let n = Vec3::new(c * crown_h, r - table_r, s * crown_h).unit();
-            // Face passes through the girdle edge at this azimuth.
-            let girdle_pt = Vec3::new(center.x + c * r, center.y, center.z + s * r);
+            // Face passes through the top edge of the girdle band at this azimuth.
+            let girdle_pt = Vec3::new(center.x + c * r, center.y + 0.5 * girdle_h, center.z + s * r);
+
             push_plane(n, girdle_pt);
         }
 
@@ -104,19 +116,31 @@ impl Diamond {
             let phi = k as f32 * 2.0 * PI / m as f32 + PI / m as f32;
             let (s, c) = phi.sin_cos();
             let n = Vec3::new(c * pavilion_h, -r, s * pavilion_h).unit();
-            let girdle_pt = Vec3::new(center.x + c * r, center.y, center.z + s * r);
+            let girdle_pt = Vec3::new(center.x + c * r, center.y - 0.5 * girdle_h, center.z + s * r);
+
             push_plane(n, girdle_pt);
         }
 
         // ── Bounding box ───────────────────────────────────────────────────────
         // Circumradius of the N-gon girdle = r / cos(π/N).
+        // Girdle band: N vertical planes through the girdle N-gon edges
+        // (apothem r), spanning y in [-g/2, +g/2] between crown and pavilion.
+        if girdle_h > 0.0 {
+            for j in 0..n {
+                let a = j as f32 * 2.0 * PI / n as f32;
+                let (s, c) = a.sin_cos();
+                push_plane(Vec3::new(c, 0.0, s), Vec3::new(center.x + c * r, center.y, center.z + s * r));
+            }
+        }
+
         let circ_r = r / (PI / n as f32).cos();
         let bbox = Aabb::new(
-            center - Vec3::new(circ_r * q, pavilion_h, circ_r),
-            center + Vec3::new(circ_r * q, crown_h,    circ_r),
+            center - Vec3::new(circ_r * q, 0.5 * girdle_h + pavilion_h, circ_r),
+            center + Vec3::new(circ_r * q, 0.5 * girdle_h + crown_h,    circ_r),
         );
 
-        Self { planes, bbox, mat, center, crown_h, pavilion_h }
+
+        Self { planes, bbox, mat, center, crown_h, pavilion_h, girdle_h }
     }
 
 }
@@ -186,7 +210,7 @@ impl Hittable for Diamond {
         let rel = p - self.center;
         // Cylindrical UV: u = azimuth (0–1), v = height bottom-to-top (0–1).
         let u = ((-rel.z).atan2(rel.x) + PI) / (2.0 * PI);
-        let v = ((rel.y + self.pavilion_h) / (self.crown_h + self.pavilion_h)).clamp(0.0, 1.0);
+        let v = ((rel.y + 0.5 * self.girdle_h + self.pavilion_h) / (self.crown_h + self.pavilion_h + self.girdle_h)).clamp(0.0, 1.0);
 
         let mut rec = HitRecord::new(p, t, &*self.mat, r, outward_normal);
         rec.u = u;
@@ -223,16 +247,16 @@ mod tests {
     fn girdle_facets_scales_plane_count() {
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
             DiamondParams { girdle_facets: 64, ..Default::default() }, mat());
-        assert_eq!(d.planes.len(), 65);   // 1 table + 32 crown + 32 pavilion
+        assert_eq!(d.planes.len(), 129);  // 1 table + 32 crown + 32 pavilion + 64 band
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
-        assert_eq!(d.planes.len(), 17);   // classic: 1 + 8 + 8
+        assert_eq!(d.planes.len(), 33);   // classic: 1 + 8 + 8 + 16 band
     }
 
     #[test]
     fn odd_facet_count_rounds_down_to_even() {
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
             DiamondParams { girdle_facets: 17, ..Default::default() }, mat());
-        assert_eq!(d.planes.len(), 17);   // 17 -> 16 -> 1 + 8 + 8
+        assert_eq!(d.planes.len(), 33);   // 17 -> 16 -> 1 + 8 + 8 + 16 band
     }
 
     #[test]
@@ -272,7 +296,30 @@ mod tests {
     }
 
     #[test]
+    fn girdle_band_is_a_flat_vertical_ring() {
+        // default girdle_pct = 2 -> band height g = 0.04 for r = 1
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
+        let r = Ray::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
+        let rec = d.hit(&r, 0.001, 100.0).expect("hit");
+        assert!((rec.p.x - 1.0).abs() < 1e-4, "x = {}", rec.p.x);
+        assert!(rec.normal.y.abs() < 1e-6, "band face normal is horizontal: {:?}", rec.normal);
+        let bb = d.bounding_box().unwrap();
+        let crown_h = (1.0 - 0.53) * 34.5f32.to_radians().tan();
+        let pav_h = 40.75f32.to_radians().tan();
+        assert!((bb.max.y - (0.02 + crown_h)).abs() < 1e-4, "max.y = {}", bb.max.y);
+        assert!((bb.min.y + (0.02 + pav_h)).abs() < 1e-4, "min.y = {}", bb.min.y);
+    }
+
+    #[test]
+    fn zero_girdle_pct_keeps_the_knife_edge() {
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+            DiamondParams { girdle_pct: 0.0, ..Default::default() }, mat());
+        assert_eq!(d.planes.len(), 17);   // no vertical band planes
+    }
+
+    #[test]
     fn round_default_still_hits_table_from_above() {
+
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
         let r = Ray::new(Point3::new(0.0, 10.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
         let rec = d.hit(&r, 0.001, 100.0).expect("hit");

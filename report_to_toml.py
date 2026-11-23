@@ -90,7 +90,14 @@ def material_from_description(desc, warnings):
     warnings.append("unknown description '%s'; defaulting material to 'diamond'" % desc)
     return "diamond"
 
+# GIA-style girdle descriptor -> band thickness as % of the girdle diameter
+GIRDLE_TO_PCT = {
+    "Extremely Thin": 0.5, "Very Thin": 1.0, "Thin": 1.75, "Medium": 3.0,
+    "Slightly Thick": 4.0, "Thick": 5.0, "Very Thick": 6.5, "Extremely Thick": 8.0,
+}
+
 def parse_measurements(text, warnings):
+
     m = re.search(r"Measurements\s+([\d.]+(?:\s*-\s*[\d.]+)?)\s*X\s*([\d.]+)\s*X\s*([\d.]+)\s*MM", text)
     if m:
         return [float(m.group(1).replace(" ", "")), float(m.group(2)), float(m.group(3))]
@@ -138,6 +145,8 @@ def parse_report(text):
     else:
         warnings.append("no proportions diagram found; cut angles will use defaults")
         f["crown_pct"] = f["table_pct"] = f["pavilion_pct"] = f["depth_pct"] = None
+    gm = re.search(r"(Extremely Thin|Very Thin|Thin|Medium|Slightly Thick|Thick|Very Thick|Extremely Thick)", text)
+    f["girdle"] = gm.group(1) if gm else None
     m = re.search(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}", text)
     f["date"] = m.group(0) if m else "unknown date"
     f["measurements_mm"] = parse_measurements(text, warnings)
@@ -258,8 +267,8 @@ def render_toml(f, args):
             desc += ", %.6g mm diameter" % l_mm
         lines.append("# " + desc)
     if f["table_pct"] is not None:
-        lines.append("# table %.6g%%, crown %.6g%% / pavilion %.6g%%, depth %.6g%%, culet %s"
-                     % (f["table_pct"], f["crown_pct"], f["pavilion_pct"], f["depth_pct"], f["culet"]))
+        lines.append("# table %.6g%%, crown %.6g%% / pavilion %.6g%%, depth %.6g%%, culet %s, girdle %s"
+                     % (f["table_pct"], f["crown_pct"], f["pavilion_pct"], f["depth_pct"], f["culet"], f.get("girdle") or "n/a"))
     lines.append("#")
     lines.append("# Staging: stone floats in " + staging + ";")
     lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
@@ -300,6 +309,8 @@ def render_toml(f, args):
         lines.append("crown_pct       = %.6g                 # %% of minor axis" % f["crown_pct"])
         lines.append("pavilion_pct    = %.6g" % f["pavilion_pct"])
         lines.append("depth_pct       = %.6g" % f["depth_pct"])
+        gp = GIRDLE_TO_PCT.get(f.get("girdle"), 2.0)
+        lines.append("girdle_pct       = %.6g                 # girdle band, %% of diameter (report: %s)" % (gp, f.get("girdle") or "n/a"))
     if oval and cut == "brilliant":
         lines.append("girdle_facets   = 64      # smooth oval outline (16 would show polygon edges)")
     lines.append('color_grade     = "%s"' % f["color_grade"])

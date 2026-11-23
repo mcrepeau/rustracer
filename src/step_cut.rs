@@ -138,6 +138,9 @@ pub struct StepCutParams {
     pub step_spread:    f32,
     /// Diagonal chevron rows per outline vertex (0 = none).
     pub chevrons:       u32,
+    /// Girdle band thickness as a percentage of the gem width (minor axis);
+    /// GIA-style: thin ~1.5%, medium ~3%.  0 = knife edge.
+    pub girdle_pct:     f32,
 }
 
 impl Default for StepCutParams {
@@ -152,6 +155,7 @@ impl Default for StepCutParams {
             culet_pct:      8.0,
             step_spread:    0.25,
             chevrons:       0,
+            girdle_pct:     0.0,
         }
     }
 }
@@ -171,6 +175,7 @@ pub struct StepCut {
     center:     Point3,
     crown_h:    f32,
     pavilion_h: f32,
+    girdle_h:   f32,
 }
 
 #[inline]
@@ -238,6 +243,9 @@ impl StepCut {
         let sp   = b * (1.0 - kc);                                       // culet inset (perpendicular)
         let crown_h    = s  * params.crown_angle.to_radians().tan();
         let pavilion_h = sp * params.pavilion_angle.to_radians().tan();
+        // Girdle band height: pct of the width (2b), GIA-style.
+        let girdle_h   = (params.girdle_pct / 100.0 * 2.0 * b).clamp(0.0, 0.3 * b);
+
         if !(crown_h > 0.0 && pavilion_h > 0.0) {
             return Err(format!("StepCut: crown/pavilion angles must be in (0, 90) degrees, got {} / {}",
                                params.crown_angle, params.pavilion_angle));
@@ -271,7 +279,7 @@ impl StepCut {
 
         let ch = params.chevrons;
         let mut planes: Vec<(Vec3, f32)> =
-            Vec::with_capacity(2 + edges.len() * (cs + ps) as usize + 2 * nv * ch as usize);
+            Vec::with_capacity(2 + edges.len() * (cs + ps) as usize + 2 * nv * ch as usize + nv);
 
         // Row runs are normalized so the total inset is exactly s (table) / sp
         // (culet): with step_spread > 0 the raw sum of dh differs from s, which
@@ -287,8 +295,13 @@ impl StepCut {
 
         for &(m, h) in &edges {
             // ── Crown steps: equal vertical rises, runs set by the row angle ──
+            if girdle_h > 0.0 {
+                // vertical girdle band face through this outline edge
+                planes.push((Vec3::new(m.x, 0.0, m.z), m.x * center.x + m.z * center.z + h));
+            }
             let mut dist = h;                       // distance along m of the current profile point
-            let mut y    = 0.0f32;
+            let mut y    = 0.5f32 * girdle_h;
+
             for i in 0..cs {
                 let dh = dv / (tan_c * factor(i, cs)) * norm_c;
                 let n = Vec3::new(m.x * dv, dh, m.z * dv).unit();
@@ -299,7 +312,8 @@ impl StepCut {
             }
             // ── Pavilion steps ──
             let mut dist = h;
-            let mut y    = 0.0f32;
+            let mut y    = -0.5f32 * girdle_h;
+
             for i in 0..ps {
                 let dh = dvp / (tan_p * factor(i, ps)) * norm_p;
                 let n = Vec3::new(m.x * dvp, -dh, m.z * dvp).unit();
@@ -323,8 +337,8 @@ impl StepCut {
             let t  = (-bis.1, bis.0);
             let c3 = Vec3::new(center.x + v.0, center.y, center.z + v.1);
             let d3 = Vec3::new(t.0, 0.0, t.1);
-            let tc = Vec3::new(center.x + v.0 * k,  center.y + crown_h,    center.z + v.1 * k);
-            let cc = Vec3::new(center.x + v.0 * kc, center.y - pavilion_h, center.z + v.1 * kc);
+            let tc = Vec3::new(center.x + v.0 * k,  center.y + 0.5 * girdle_h + crown_h,    center.z + v.1 * k);
+            let cc = Vec3::new(center.x + v.0 * kc, center.y - 0.5 * girdle_h - pavilion_h, center.z + v.1 * kc);
             for j in 0..ch {
                 let f = (j + 1) as f32 / ch as f32;
                 for p in [c3 + (tc - c3) * f, c3 + (cc - c3) * f] {
@@ -336,8 +350,8 @@ impl StepCut {
         }
 
         // ── Table and culet caps ──────────────────────────────────────────────
-        planes.push((Vec3::new(0.0,  1.0, 0.0),  center.y + crown_h));
-        planes.push((Vec3::new(0.0, -1.0, 0.0), -(center.y - pavilion_h)));
+        planes.push((Vec3::new(0.0,  1.0, 0.0),  center.y + 0.5 * girdle_h + crown_h));
+        planes.push((Vec3::new(0.0, -1.0, 0.0), -(center.y - 0.5 * girdle_h - pavilion_h)));
 
         // Exact bbox in X/Z from the outline vertices.  In Y, the caps sit at
         // ±crown_h/pavilion_h, but when the inset exceeds the outline apothem
@@ -348,14 +362,15 @@ impl StepCut {
         let minz = verts.iter().map(|v| v.1).fold(f32::INFINITY, f32::min);
         let maxz = verts.iter().map(|v| v.1).fold(f32::NEG_INFINITY, f32::max);
         let apothem = edges.iter().map(|&(_, h)| h).fold(f32::INFINITY, f32::min);
-        let top    = s.min(apothem)  * tan_c;
-        let bottom = sp.min(apothem) * tan_p;
+        let top    = 0.5 * girdle_h + s.min(apothem)  * tan_c;
+        let bottom = 0.5 * girdle_h + sp.min(apothem) * tan_p;
+
         let bbox = Aabb::new(
             Point3::new(center.x + minx, center.y - bottom, center.z + minz),
             Point3::new(center.x + maxx, center.y + top,    center.z + maxz),
         );
 
-        Ok(Self { planes, bbox, mat, center, crown_h, pavilion_h })
+        Ok(Self { planes, bbox, mat, center, crown_h, pavilion_h, girdle_h })
     }
 }
 
@@ -368,7 +383,7 @@ impl Hittable for StepCut {
         let rel = p - self.center;
         // Cylindrical UV: u = azimuth (0–1), v = height bottom-to-top (0–1).
         let u = ((-rel.z).atan2(rel.x) + PI) / (2.0 * PI);
-        let v = ((rel.y + self.pavilion_h) / (self.crown_h + self.pavilion_h)).clamp(0.0, 1.0);
+        let v = ((rel.y + 0.5 * self.girdle_h + self.pavilion_h) / (self.crown_h + self.pavilion_h + self.girdle_h)).clamp(0.0, 1.0);
 
         let mut rec = HitRecord::new(p, t, &*self.mat, r, outward_normal);
         rec.u = u;
@@ -421,7 +436,24 @@ mod tests {
     }
 
     #[test]
+    fn girdle_band_adds_vertical_faces_and_height() {
+        // girdle_pct = 10% of width (2b = 2) -> band height 0.2
+        let p = StepCutParams { girdle_pct: 10.0, ..params() };
+        let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, p, mat()).unwrap();
+        assert_eq!(s.planes.len(), 2 + 8 + 8 * (3 + 3));   // +8 vertical band planes
+        let r = Ray::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
+        let rec = s.hit(&r, 0.001, 100.0).expect("hit");
+        assert!((rec.p.x - 2.0).abs() < 1e-4 && rec.normal.y.abs() < 1e-6,
+                "band face: x={}, n.y={}", rec.p.x, rec.normal.y);
+        let bb = s.bounding_box().unwrap();
+        // crown_h = 0.5*tan45 = 0.5, pavilion_h = 0.92*tan45 = 0.92, band = 0.2
+        assert!((bb.max.y - 0.6).abs() < 1e-4, "max.y = {}", bb.max.y);
+        assert!((bb.min.y + 1.02).abs() < 1e-4, "min.y = {}", bb.min.y);
+    }
+
+    #[test]
     fn horizontal_ray_hits_girdle_edge_at_semi_axis() {
+
         let s = StepCut::new(Point3::new(0.0, 0.0, 0.0), 2.0, 1.0, params(), mat()).unwrap();
         let r = Ray::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
         let rec = s.hit(&r, 0.001, 100.0).expect("hit");
