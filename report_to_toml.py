@@ -24,6 +24,7 @@ Field mapping:
 """
 
 import argparse
+import math
 import os
 import re
 import sys
@@ -188,8 +189,11 @@ def render_toml(f, args):
         chart_scale = (args.chart_width * size) / 18.0   # OBJ units are cm
         card_top = 0.4 * chart_scale                     # OBJ y max = 0.4 cm
     cy = (pav_mm + args.gap_mm) * scale + card_top       # girdle centre height above the floor
-    dist = max(3.2 * size, 0.012)                  # camera distance
-    lf = (0.43 * dist, cy + 0.26 * dist, -0.86 * dist)  # same view direction as gem_LG625469749
+    dist = max(3.2 * size, 0.012)                  # still used for --lights scaling
+    # Fixed default camera: identical framing for every stone (stone length = 1 unit).
+    lf = (2.8954, 2.7513, -4.9337)                 # look_from
+    la = (0.3114, 0.5552, -0.3957)                 # look_at
+    focus = math.dist(lf, la)                      # focus_dist = |look_from - look_at|
 
     # Staging: stone rests centered on the grey chart card (unless --no-chart) on a
     # pbr disk floor (radius 30), lit by the purchased lightbox HDR env map alone;
@@ -279,12 +283,12 @@ def render_toml(f, args):
     lines.append('name = "%s %s"' % (f["report"], f["style"]))
     lines.append("")
     lines.append("[camera]")
-    lines.append("look_from  = [%.5g, %.5g, %.5g]" % lf)
-    lines.append("look_at    = [0.0, %.5g, 0.0]" % cy)
+    lines.append("look_from  = [%.4f, %.4f, %.4f]" % lf)
+    lines.append("look_at    = [%.4f, %.4f, %.4f]" % la)
     lines.append("vfov       = 30.0")
-    lines.append("aperture   = 0.0")
-    lines.append("focus_dist = %.5g" % dist)
-    lines.append("move_speed = %.5g" % (dist / 28.0))
+    lines.append("aperture   = 0.000")
+    lines.append("focus_dist = %.5g" % focus)
+    lines.append("move_speed = %.5g" % (focus / 28.0))
     lines.append("")
     lines.append("[background]")
     lines.extend(bg_lines)
@@ -299,7 +303,7 @@ def render_toml(f, args):
         lines.append('shape    = { type = "mesh", path = "%s" }' % args.chart_obj)
         lines.append('material = { type = "textured_pbr", albedo_path = "%s", roughness = 0.9, metallic = 0.0 }' % args.chart_tex)
         lines.append("scale    = %.6g              # card 18 cm wide -> %.6g stone lengths" % (chart_scale, args.chart_width))
-        lines.append("translate = [0.0, 0.0, 0.0]  # card bottom on the floor; top at y = %.6g" % card_top)
+        lines.append("translate = [0.0, 0.0, -0.4]  # card shifted back 0.4; bottom on the floor, top at y = %.6g" % card_top)
         lines.append("")
     if lights_block:
         lines.extend(lights_block)
@@ -338,25 +342,26 @@ def render_toml(f, args):
         lines.append("")
 
     if not args.no_animation:
-        # Auto-framed 360-degree orbit: radius/height/focus_dist all derive from the
-        # camera distance `dist` = 3.2 x stone length, so with vfov = 30 deg the gem
-        # fills the same fraction of the frame whatever its measured size.
-        lines.append("# --- Animation: auto-framed 360-degree orbit (scales with the stone) ---")
-        lines.append("# radius = camera distance, height = still-camera elevation, look_at = girdle centre:")
-        lines.append("# the framing is identical for every stone. Turntable render command is in the header.")
+        # Auto-framed 360-degree orbit matching the still camera: radius, height and
+        # start_angle derive from look_from (orbit angle 0 = +Z), look_at is the same
+        # point, so frame 0 of the turntable is exactly the still shot and the framing
+        # is identical for every stone (stone length = 1 scene unit, vfov = 30 deg).
+        orb_r = math.hypot(lf[0], lf[2])
+        orb_a = math.degrees(math.atan2(lf[0], lf[2]))
+        lines.append("# --- Animation: 360-degree orbit matching the still camera (frame 0 = still shot) ---")
         lines.append("[animation]")
         lines.append("fps      = 24")
         lines.append("duration = 4.0   # 96 frames")
         lines.append("")
         lines.append("[animation.orbit]")
         lines.append("center      = [0.0, 0.0, 0.0]    # orbit axis (XZ only; Y comes from `height`)")
-        lines.append("radius      = %.5g              # = camera distance: constant framing" % dist)
-        lines.append("height      = %.5g              # same elevation as the still camera" % (cy + 0.26 * dist))
-        lines.append("look_at     = [0.0, %.5g, 0.0]  # the stone (girdle centre)" % cy)
-        lines.append("start_angle = 180.0              # start on the default camera side (-Z)")
-        lines.append("end_angle   = 540.0              # full 360-degree orbit")
+        lines.append("radius      = %.5g              # horizontal distance of look_from" % orb_r)
+        lines.append("height      = %.5g              # look_from y" % lf[1])
+        lines.append("look_at     = [%.4f, %.4f, %.4f]  # same as the still camera" % la)
+        lines.append("start_angle = %.5g              # orbit angle of look_from" % orb_a)
+        lines.append("end_angle   = %.5g              # full 360-degree orbit" % (orb_a + 360.0))
         lines.append("vfov        = 30.0")
-        lines.append("focus_dist  = %.5g" % dist)
+        lines.append("focus_dist  = %.5g" % focus)
         lines.append("")
     return "\n".join(lines), warnings, dict(cut=cut, material=material, oval=oval)
 
