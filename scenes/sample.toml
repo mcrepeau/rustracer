@@ -144,7 +144,8 @@ color  = [6.0, 6.0, 6.0]
 #                                           # (IOR + dispersion + body absorption)
 # cauchy_b        = 2.351                   # optional explicit overrides of the preset:
 # cauchy_c        = 0.0230                  #   Cauchy IOR n(λ) = B + C/λ² (µm²)
-# absorption      = [0.0, 0.0, 0.0]         # extra Beer-Lambert sigma, added to the grade tint
+# absorption      = [0.0, 0.0, 0.0]         # extra Beer-Lambert sigma per SCENE UNIT (not rescaled
+#                                           # by scale_mm), added on top of preset + grade tint
 # chevrons        = 3                       # optional override of the cut's default chevron count
 # girdle_facets   = 64                      # brilliant girdle sides (auto-64 for ovals)
 # girdle_pct      = 2.0                     # girdle band thickness, % of diameter (0 = knife edge)

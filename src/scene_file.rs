@@ -516,7 +516,10 @@ pub struct GemConfig {
     #[serde(default)]
     pub cauchy_c:        Option<f32>,
     #[serde(default)]
+    /// Extra Beer-Lambert sigma per SCENE UNIT (not rescaled by scale_mm), added
+    /// on top of the preset + grade tint.
     pub absorption:      Option<[f32; 3]>,
+
     /// Diagonal chevron rows per corner for step/princess cuts
     /// (default 0 for "step", 3 for "princess").
     #[serde(default)]
@@ -587,8 +590,11 @@ fn resolve_asset(base: &std::path::Path, p: &str) -> String {
 
 /// Material presets for `[[gems]]`: `(cauchy_b, cauchy_c, absorption)`.
 /// Cauchy B/C in µm² (see [`crate::spectrum::cauchy_ior`]); the absorption is a
-/// Beer-Lambert sigma per scene unit, added on top of the color_grade tint.
+/// Beer-Lambert sigma per scene unit at the calibration scale_mm = 0.001 (mm -> m,
+/// a 6.5 mm stone spans ~0.0065 units), added on top of the color_grade tint.
+/// [`gem_absorption`] rescales it to the gem's actual scale_mm.
 fn gem_preset(name: &str) -> Result<(f32, f32, Color), String> {
+
     match name {
         // Diamond: nD = 2.417, nF-nC ~= 0.044 (textbook dispersion — the old
         // C = 0.00585 gave only 0.011, so refracted light barely separated: no fire).
@@ -622,7 +628,30 @@ fn step_outline_name(name: &str, corner_pct: f32, corner_segs: u32, oval_segs: u
     })
 }
 
+/// Total Beer-Lambert absorption for a gem: material-preset body colour + D..Z
+/// grade tint, both calibrated for scale_mm = 0.001 and rescaled by 0.001/scale_mm
+/// so the body colour is independent of the scene's mm->unit scale (a 5 mm stone
+/// normalized to 1 scene unit must not go black), plus any explicit `absorption`
+/// override, which is per scene unit and NOT rescaled.
+fn gem_absorption(g: &GemConfig, preset_abs: Color) -> Color {
+    // Colour grade D..Z -> faint yellow-brown body tint (heuristic Beer-Lambert).
+    let sigma = match g.color_grade.trim().to_uppercase().chars().next() {
+        Some('D') | Some('E') | Some('F') => 0.0,
+        Some('G') => 50.0,
+        Some('H') => 80.0,
+        Some('I') => 120.0,
+        Some('J') => 170.0,
+        Some('K') => 230.0,
+        Some('L') | Some('M') => 300.0,
+        _         => 400.0,
+    };
+    let grade_tint = Color::new(1.0, 0.75, 0.35) * sigma;
+    let unit_fix = 0.001 / g.scale_mm;
+    (preset_abs + grade_tint) * unit_fix + g.absorption.map(col).unwrap_or_default()
+}
+
 /// Named cut presets for `[[gems]] cut = "..."` (other than "brilliant"):
+
 /// (outline, culet_pct, crown_steps, pavilion_steps, step_spread, default chevrons).
 fn step_cut_preset(cut: &str, g: &GemConfig, crown_angle: f32, pavilion_angle: f32)
     -> Result<StepCutParams, String>
@@ -710,25 +739,11 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         }
     }
 
-    // Colour grade D..Z -> faint yellow-brown body tint (heuristic Beer-Lambert,
-    // per scene unit; a 6.5 mm stone at scale_mm=0.001 spans ~0.0065 units).
-    let sigma = match g.color_grade.trim().to_uppercase().chars().next() {
-        Some('D') | Some('E') | Some('F') => 0.0,
-        Some('G') => 50.0,
-        Some('H') => 80.0,
-        Some('I') => 120.0,
-        Some('J') => 170.0,
-        Some('K') => 230.0,
-        Some('L') | Some('M') => 300.0,
-        _         => 400.0,
-    };
-    // Material preset (IOR / dispersion / body colour) + D..Z grade tint, which
-    // adds in the Beer-Lambert exponent, + optional explicit overrides.
-    let grade_tint = Color::new(1.0, 0.75, 0.35) * sigma;
     let (mut cauchy_b, mut cauchy_c, preset_abs) = gem_preset(g.material.as_deref().unwrap_or("diamond"))?;
     if let Some(v) = g.cauchy_b { cauchy_b = v; }
     if let Some(v) = g.cauchy_c { cauchy_c = v; }
-    let absorption = preset_abs + grade_tint + g.absorption.map(col).unwrap_or_default();
+    let absorption = gem_absorption(g, preset_abs);
+
     let mat: Arc<dyn Material> = Arc::new(SpectralDielectric { cauchy_b, cauchy_c, absorption });
 
     // Cut style: brilliant (round/oval) or a step-family preset.
@@ -1075,7 +1090,29 @@ mod tests {
     }
 
     #[test]
+    fn gem_absorption_rescales_with_scale_mm() {
+        let (_, _, ruby) = gem_preset("ruby").unwrap();   // [25, 550, 450] at scale_mm 0.001
+        let g_m = parse_gem("[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"ruby\"\ncolor_grade = \"F\"\ncenter = [0,0,0]\nscale_mm = 0.001\n");
+        let a_m = gem_absorption(&g_m, ruby);
+        assert!((a_m.x - 25.0).abs() < 1e-4 && (a_m.y - 550.0).abs() < 1e-3, "calibration scale: {a_m:?}");
+        // same stone normalized to 1 scene unit (scale_mm = 1/5): 200x less sigma,
+        // so Beer-Lambert depth over the 1-unit path matches the physical stone
+        let g_n = parse_gem("[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"ruby\"\ncolor_grade = \"F\"\ncenter = [0,0,0]\nscale_mm = 0.2\n");
+        let a_n = gem_absorption(&g_n, ruby);
+        assert!((a_n.x - 25.0 * 0.005).abs() < 1e-5 && (a_n.y - 550.0 * 0.005).abs() < 1e-4, "normalized scale: {a_n:?}");
+        // explicit absorption is per scene unit and must NOT be rescaled
+        let g_x = parse_gem("[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"ruby\"\ncolor_grade = \"F\"\nabsorption = [1.0, 2.0, 3.0]\ncenter = [0,0,0]\nscale_mm = 0.2\n");
+        let a_x = gem_absorption(&g_x, ruby);
+        assert!((a_x.z - (450.0 * 0.005 + 3.0)).abs() < 1e-4, "explicit override: {a_x:?}");
+        // grade tint also rescales: grade K at scale 0.001 has sigma 230
+        let g_k = parse_gem("[[gems]]\ncarat = 1.0\ncolor_grade = \"K\"\ncenter = [0,0,0]\nscale_mm = 0.001\n");
+        let a_k = gem_absorption(&g_k, Color::new(0.0, 0.0, 0.0));
+        assert!((a_k.x - 230.0).abs() < 1e-3, "grade K tint: {a_k:?}");
+    }
+
+    #[test]
     fn noise_material_builds_from_toml() {
+
         let cfg: MaterialConfig = toml::from_str(
             "type = \"noise\"
 lo = [0.4,0.4,0.42]
