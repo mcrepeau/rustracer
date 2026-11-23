@@ -13,7 +13,7 @@ pub enum Texture {
     #[allow(dead_code)]
     Noise { perlin: Arc<Perlin>, scale: f32 },
     /// Soft Perlin mottle between two colours (seamless studio-floor look):
-    /// lerp(lo, hi, clamp(0.5 * turb(p * scale, 7), 0, 1))
+    /// lerp(lo, hi, clamp(2.0 * turb(p * scale, 7), 0, 1))
     Mottle { perlin: Arc<Perlin>, scale: f32, lo: Color, hi: Color },
 }
 
@@ -47,7 +47,7 @@ impl Texture {
                     * (1.0 + (scale * p.z + 10.0 * perlin.turb(p, 7)).sin())
             }
             Texture::Mottle { perlin, scale, lo, hi } => {
-                let m = (0.5 * perlin.turb(Point3::new(p.x * scale, p.y * scale, p.z * scale), 7)).clamp(0.0, 1.0);
+                let m = (2.0 * perlin.turb(Point3::new(p.x * scale, p.y * scale, p.z * scale), 7)).clamp(0.0, 1.0);
                 *lo * (1.0 - m) + *hi * m
             }
 

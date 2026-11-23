@@ -201,7 +201,7 @@ def render_toml(f, args):
         bg_lines = ['type = "env_map"', 'path = "assets/product_studio.hdr"']
         # subtle Perlin-mottled floor (seamless-paper look, like Blue Nile product
         # shots): separates the floor from the smooth gradient backdrop at the horizon
-        floor_material = '{ type = "noise", lo = [0.40, 0.40, 0.42], hi = [0.45, 0.45, 0.47], scale = 3.0 }'
+        floor_material = '{ type = "noise", lo = [0.375, 0.375, 0.395], hi = [0.49, 0.49, 0.51], scale = 2.0 }'
 
         staging = "bright product staging: gradient cyclorama env + perlin-mottled floor + angled overhead softboxes (Blue Nile style)"
         s, d = size, dist
