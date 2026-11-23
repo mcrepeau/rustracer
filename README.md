@@ -380,3 +380,5 @@ scene for `LG625469749.pdf`.
 | `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | Samples above `max(FIREFLY_CLAMP × running pixel mean, FIREFLY_ABS_FLOOR)` luminance are scaled down to that threshold. Downward bias on high-variance pixels — use `--denoise` for bias-free firefly suppression in finals. |
 | `FIREFLY_MIN_SAMPLES` | `src/main.rs` | `4` | Minimum samples before per-pixel firefly clamping activates. |
 | `FIREFLY_ABS_FLOOR` | `src/main.rs` | `5.0` | Absolute floor (linear luminance) for the clamp threshold — without it, a pixel whose running mean is still ~0 clamps its first legitimate bright sample to ~0 and renders black. |
+| `FIRE_LUMA_POW` | `src/spectrum.rs` | `0.5` | Exponent applied to the photopic luminance ȳ(λ) in the `spectral_fire_rgb` dispersion tint. Higher (→1.0) dims violet/blue fire harder so the gem reads warmer/whiter; lower (→0.0) gives full rainbow fire with more blue/violet sparkle. The tint stays per-channel normalised, so white light is white on average at any value. |
+| `FIRE_LUMA_FLOOR` | `src/spectrum.rs` | `0.08` | Floor for the ȳ(λ)^`FIRE_LUMA_POW` weight so deep violet (380–420 nm) is dimmed, not erased, in the fire tint. |
