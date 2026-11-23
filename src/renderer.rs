@@ -71,18 +71,34 @@ impl EnvMapData {
         }
     }
 
+    /// Bilinear sample (u wraps around the seam, v clamps at the poles) so a
+    /// low-res (e.g. 2k) env map renders smoothly instead of nearest-neighbour blocks.
     fn sample(&self, dir: Vec3) -> Color {
         use std::f32::consts::PI;
         let d  = dir.unit();
         let u  = (0.5 + d.x.atan2(d.z) / (2.0 * PI)).rem_euclid(1.0);
         let v  = d.y.clamp(-1.0, 1.0).acos() / PI;
-        let w  = self.image.width();
-        let h  = self.image.height();
-        let px = ((u * w as f32) as u32).min(w - 1);
-        let py = ((v * h as f32) as u32).min(h - 1);
-        let p  = self.image.get_pixel(px, py);
-        Color::new(p[0], p[1], p[2])
+        let w  = self.image.width()  as f32;
+        let h  = self.image.height() as f32;
+        let x  = u * w - 0.5;
+        let y  = v * h - 0.5;
+        let x0 = x.floor() as i32;
+        let y0 = y.floor() as i32;
+        let fx = x - x0 as f32;
+        let fy = y - y0 as f32;
+        let wi = self.image.width()  as i32;
+        let hi = self.image.height() as i32;
+        let get = |ix: i32, iy: i32| {
+            let p = self.image.get_pixel(ix.rem_euclid(wi) as u32, iy.clamp(0, hi - 1) as u32);
+            Color::new(p[0], p[1], p[2])
+        };
+        let c00 = get(x0,     y0);
+        let c10 = get(x0 + 1, y0);
+        let c01 = get(x0,     y0 + 1);
+        let c11 = get(x0 + 1, y0 + 1);
+        (c00 * (1.0 - fx) + c10 * fx) * (1.0 - fy) + (c01 * (1.0 - fx) + c11 * fx) * fy
     }
+
 
     /// Importance-sample a world-space direction proportional to luminance × solid angle.
     /// Returns (direction, solid-angle PDF).
@@ -655,4 +671,37 @@ pub fn render_tiles(
             *out = ray_color(&cam_ray, world, background, lights, bg_scale, photon_map, &mut rng);
         }
     });
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+    use image::Rgb;
+
+    #[test]
+    fn env_sample_is_bilinear_not_nearest() {
+        // 4x2 map: texel columns 0-1 black, 2-3 white (sharp edge between i=1 and i=2)
+        let mut img = Rgb32FImage::new(4, 2);
+        for j in 0..2u32 {
+            for i in 0..4u32 {
+                let v = if i >= 2 { 1.0f32 } else { 0.0 };
+                img.put_pixel(i, j, Rgb([v, v, v]));
+            }
+        }
+        let env = EnvMapData::new(img);
+        // +Z maps to u=0.5 -> x = 1.5, halfway between texels 1 (0) and 2 (1) -> 0.5
+        let c = env.sample(Vec3::new(0.0, 0.0, 1.0));
+        assert!((c.x - 0.5).abs() < 1e-6, "edge midpoint should interpolate to 0.5, got {}", c.x);
+        // texel-2 centre: u = 0.625 -> phi = pi/4
+        let s = (std::f32::consts::FRAC_PI_4).sin_cos();
+        let c = env.sample(Vec3::new(s.0, 0.0, s.1));
+        assert!((c.x - 1.0).abs() < 1e-6, "texel centre should stay 1.0, got {}", c.x);
+        // u wraps the seam: -Z sits exactly on the u=0/1 seam (texel 3=white, texel 0=black)
+        // -> interpolates to 0.5 across the wrap; slightly off-seam into texel 3 -> 1.0
+        let a = env.sample(Vec3::new(0.0, 0.0, -1.0));
+        assert!((a.x - 0.5).abs() < 1e-6, "seam should interpolate across the wrap, got {}", a.x);
+        let s = (3.0 * std::f32::consts::FRAC_PI_4).sin_cos();
+        let b = env.sample(Vec3::new(s.0, 0.0, s.1));
+        assert!((b.x - 1.0).abs() < 1e-6, "texel 3 centre should be 1.0, got {}", b.x);
+    }
 }

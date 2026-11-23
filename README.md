@@ -141,7 +141,8 @@ turbidity     = 3.0        # must be >= 1.7
 
 ```toml
 [background]
-type = "env_map"           # equirectangular HDR (.hdr Radiance RGBE or .exr), v=0 = zenith
+type = "env_map"           # equirectangular HDR (.hdr Radiance RGBE or .exr in linear sRGB --
+                            # for ACEScg downloads use the *_sRGBlinear file; v=0 = zenith; bilinear)
 path = "assets/sunset_puresky_4k.hdr"
 ```
 
