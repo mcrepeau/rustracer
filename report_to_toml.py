@@ -316,7 +316,7 @@ def render_toml(f, args):
     lines.append("[camera]")
     lines.append("look_from  = [%.4f, %.4f, %.4f]" % lf)
     lines.append("look_at    = [%.4f, %.4f, %.4f]" % la)
-    lines.append("vfov       = 30.0")
+    lines.append("vfov       = 20.0")
     lines.append("aperture   = 0.000")
     lines.append("focus_dist = %.5g" % focus)
     lines.append("move_speed = %.5g" % (focus / 28.0))
@@ -326,7 +326,7 @@ def render_toml(f, args):
     lines.append("")
     lines.append("[[objects]]")
     lines.append('shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }')
-    lines.append('material = { type = "pbr", albedo = [0.5, 0.48, 0.46], roughness = 0.0, metallic = 0.0 }')
+    lines.append('material = { type = "pbr", albedo = [0.5, 0.48, 0.46], roughness = 0.5, metallic = 0.0 }')
     lines.append("")
     if args.chart:
         lines.append("[[objects]]")
@@ -378,7 +378,7 @@ def render_toml(f, args):
         # Auto-framed 360-degree orbit matching the still camera: radius, height and
         # start_angle derive from look_from (orbit angle 0 = +Z), look_at is the same
         # point, so frame 0 of the turntable is exactly the still shot and the framing
-        # is identical for every stone (stone length = 1 scene unit, vfov = 30 deg).
+        # is identical for every stone (stone length = 1 scene unit, vfov = 20 deg).
         orb_r = math.hypot(lf[0], lf[2])
         orb_a = math.degrees(math.atan2(lf[0], lf[2]))
         lines.append("# --- Animation: 360-degree orbit matching the still camera (frame 0 = still shot) ---")
@@ -393,7 +393,7 @@ def render_toml(f, args):
         lines.append("look_at     = [%.4f, %.4f, %.4f]  # same as the still camera" % la)
         lines.append("start_angle = %.5g              # orbit angle of look_from" % orb_a)
         lines.append("end_angle   = %.5g              # full 360-degree orbit" % (orb_a + 360.0))
-        lines.append("vfov        = 30.0")
+        lines.append("vfov        = 20.0")
         lines.append("focus_dist  = %.5g" % focus)
         lines.append("")
     return "\n".join(lines), warnings, dict(cut=cut, material=material, oval=oval)
