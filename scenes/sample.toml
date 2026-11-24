@@ -36,10 +36,12 @@ path = "assets/hdri_lightbox_default_2k_sRGBlinear.exr"
 # color = [0.05, 0.05, 0.07]
 
 # ── [[objects]] ── shapes, materials, per-object transforms ───────────────────
-# Transforms apply in SRT order (scale → rotate_y → translate) and are optional:
-#   scale     = 0.01        # uniform scale (e.g. cm → m for OBJ exports)
-#   rotate_y  = 90.0        # degrees around world Y
-#   translate = [x, y, z]   # applied last
+# Transforms apply in SRT order (scale -> rotate -> translate) and are optional:
+#   scale     = 0.01          # uniform scale (e.g. cm -> m for OBJ exports)
+#   rotate    = [rx, ry, rz]  # Euler degrees, fwd = Ry*Rx*Rz (Rz first); about the
+#                             # object's local origin (gems: about their center)
+#   rotate_y  = 90.0          # shorthand adding to rotate[1]
+#   translate = [x, y, z]     # applied last
 
 # Floor. Use `disk`, not `infinite_plane`, when the background is an env map —
 # an infinite plane extends to the horizon and clips into the sky.
@@ -152,7 +154,7 @@ color  = [6.0, 6.0, 6.0]
 # girdle_pct      = 2.0                     # girdle band thickness, % of diameter (0 = knife edge)
 # center          = [0.0, 0.02, 0.0]        # girdle centre, scene units
 # scale_mm        = 0.001                   # mm -> scene units (default 0.001)
-# scale / rotate_y / translate              # same per-object transforms as [[objects]]
+# scale / rotate / rotate_y / translate      # same per-object transforms as [[objects]] (gems rotate about center)
 
 # ── [caustics] ── photon-map caustics (glass/water pools of light) ────────────
 # [caustics]
@@ -178,6 +180,8 @@ color  = [6.0, 6.0, 6.0]
 # [animation.spin]            # camera-wise, orbit takes precedence when both are set
 # start_angle = 0.0           # degrees at frame 0 (ray time 0)
 # end_angle   = 360.0         # degrees at the last frame (ray time = duration)
+#                             # STEP rotation: each frame is a crisp still at its
+#                             # exact angle (fps x duration frames, uniform step)
 #
 # or [[animation.keyframes]] entries for a Catmull-Rom path:
 # [[animation.keyframes]]

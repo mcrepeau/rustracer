@@ -163,6 +163,16 @@ fn mat_apply_t(m: &[[f32; 3]; 3], v: Vec3) -> Vec3 {
     )
 }
 
+fn mat_mul(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut m = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    m
+}
+
 fn rotated_aabb(m: &[[f32; 3]; 3], bb: &Aabb) -> Aabb {
     let mut min = Point3::new( f32::INFINITY,  f32::INFINITY,  f32::INFINITY);
     let mut max = Point3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
@@ -191,13 +201,26 @@ impl Rotate {
         Self { object, fwd, bbox, photon_bbox }
     }
 
-    pub fn around_y(object: Arc<dyn Hittable>, angle_deg: f32) -> Self {
-        let (s, c) = angle_deg.to_radians().sin_cos();
-        Self::with_matrix(object, [
-            [  c, 0.0,   s],
-            [0.0, 1.0, 0.0],
-            [ -s, 0.0,   c],
-        ])
+    /// Euler rotation in degrees [rx, ry, rz] about the local origin,
+    /// applied as fwd = Ry * Rx * Rz (Rz first, column-vector convention).
+    pub fn euler(object: Arc<dyn Hittable>, rx_deg: f32, ry_deg: f32, rz_deg: f32) -> Self {
+        let (sx, cx) = rx_deg.to_radians().sin_cos();
+        let (sy, cy) = ry_deg.to_radians().sin_cos();
+        let (sz, cz) = rz_deg.to_radians().sin_cos();
+        let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
+        let ry = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
+        let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
+        Self::with_matrix(object, mat_mul(&ry, &mat_mul(&rx, &rz)))
+    }
+
+    /// Euler rotation about a pivot point: world = R * (local - pivot) + pivot.
+    /// Returns the object unchanged for all-zero angles.
+    pub fn euler_about(object: Arc<dyn Hittable>, pivot: Point3, angles_deg: [f32; 3]) -> Arc<dyn Hittable> {
+        let [rx, ry, rz] = angles_deg;
+        if rx == 0.0 && ry == 0.0 && rz == 0.0 { return object; }
+        let h = Translate::new(object, -pivot);
+        let h = Rotate::euler(Arc::new(h), rx, ry, rz);
+        Arc::new(Translate::new(Arc::new(h), pivot))
     }
 
 }
@@ -258,9 +281,10 @@ impl Hittable for Rotate {
 /// Time-driven turntable rotation about the world Y axis through `center`:
 /// angle(t) = start + (end - start) * clamp(t / duration, 0, 1), evaluated from
 /// each ray's `time`.  Used by `[animation.spin]` to turn gems in place while the
-/// camera stays fixed; because the angle comes from ray.time, the per-frame
-/// motion-blur window gives a correctly blurred spin for free.  Stateless: the
-/// same object serves every frame, and a still render (ray time 0) shows `start`.
+/// camera stays fixed.  Spin frames get a degenerate ray-time window (every ray
+/// at the exact frame time), so each rendered frame is a crisp still at a stepped
+/// angle.  Stateless: the same object serves every frame; a still render (ray
+/// time 0) shows `start`.
 pub struct SpinY {
     object:      Arc<dyn Hittable>,
     center:      Point3,
@@ -437,7 +461,7 @@ mod tests {
         // Sphere at (1,0,0), radius=0.5. Rotate 90° around Y:
         // fwd = [[0,0,1],[0,1,0],[−1,0,0]] maps (1,0,0) → (0,0,−1).
         // Ray from (0,0,−5)→(0,0,1): hits the sphere now at (0,0,−1), t=3.5.
-        let obj = Rotate::around_y(sphere_at(1.0, 0.0, 0.0, 0.5), 90.0);
+        let obj = Rotate::euler(sphere_at(1.0, 0.0, 0.0, 0.5), 0.0, 90.0, 0.0);
         let rec = shoot(&obj, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit rotated sphere");
         assert!((rec.t - 3.5).abs() < 1e-4, "t = {}", rec.t);
     }
@@ -445,7 +469,7 @@ mod tests {
     #[test]
     fn rotate_y_90deg_hit_point_is_at_rotated_position() {
         // The hit point on the near face of the sphere (world z ≈ −1.5, x ≈ 0, y ≈ 0).
-        let obj = Rotate::around_y(sphere_at(1.0, 0.0, 0.0, 0.5), 90.0);
+        let obj = Rotate::euler(sphere_at(1.0, 0.0, 0.0, 0.5), 0.0, 90.0, 0.0);
         let rec = shoot(&obj, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit");
         assert!(rec.p.x.abs()          < 1e-4, "p.x = {}", rec.p.x);
         assert!(rec.p.y.abs()          < 1e-4, "p.y = {}", rec.p.y);
@@ -456,7 +480,7 @@ mod tests {
     fn rotate_y_90deg_normal_is_rotated() {
         // Object-space outward normal at the near face is (1,0,0) (pointing away from sphere centre).
         // After 90° Y rotation: mat_apply([[0,0,1],[0,1,0],[−1,0,0]], (1,0,0)) = (0,0,−1).
-        let obj = Rotate::around_y(sphere_at(1.0, 0.0, 0.0, 0.5), 90.0);
+        let obj = Rotate::euler(sphere_at(1.0, 0.0, 0.0, 0.5), 0.0, 90.0, 0.0);
         let rec = shoot(&obj, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit");
         let outward = if rec.front_face { rec.normal } else { -rec.normal };
         assert!(outward.x.abs()         < 1e-4, "outward.x = {}", outward.x);
@@ -512,9 +536,61 @@ mod tests {
     }
 
     #[test]
+    fn spin_y_angle_step_per_frame_is_uniform() {
+        // 24 fps x 4 s = 96 frames over 360 deg -> exactly 3.75 deg per frame
+        let s = spin_sphere(0.0, 360.0, 4.0);
+        let step = (360.0_f32 / 96.0).to_radians();
+        let d0 = s.angle_at(1.0 / 24.0) - s.angle_at(0.0);
+        let d1 = s.angle_at(2.0 / 24.0) - s.angle_at(1.0 / 24.0);
+        assert!((d0 - step).abs() < 1e-6, "d0 = {}", d0);
+        assert!((d0 - d1).abs() < 1e-6, "steps differ: {} vs {}", d0, d1);
+    }
+
+    // ── Euler ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn euler_y90_hit_point_and_normal() {
+        // euler(0,90,0) must equal around_y(90): sphere (1,0,0) r=0.5 -> (0,0,-1), t=3.5
+        let obj = Rotate::euler(sphere_at(1.0, 0.0, 0.0, 0.5), 0.0, 90.0, 0.0);
+        let rec = shoot(&obj, 0.0, 0.0, -5.0, 0.0, 0.0, 1.0).expect("should hit");
+        assert!((rec.t - 3.5).abs() < 1e-4, "t = {}", rec.t);
+        assert!((rec.p.z + 1.5).abs() < 1e-4, "p.z = {}", rec.p.z);
+    }
+
+    #[test]
+    fn euler_x90_rotates_about_x() {
+        // Rx(90) maps (0,0,1) -> (0,-1,0): ray from (0,-5,0) dir +y hits at y=-1.5, t=3.5
+        let obj = Rotate::euler(sphere_at(0.0, 0.0, 1.0, 0.5), 90.0, 0.0, 0.0);
+        let rec = shoot(&obj, 0.0, -5.0, 0.0, 0.0, 1.0, 0.0).expect("should hit");
+        assert!((rec.t - 3.5).abs() < 1e-4, "t = {}", rec.t);
+        assert!((rec.p.y + 1.5).abs() < 1e-4, "p.y = {}", rec.p.y);
+    }
+
+    #[test]
+    fn euler_about_pivot_rotates_in_place() {
+        // sphere at (2,0,0), pivot (1,0,0), ry=180 -> sphere moves to (0,0,0);
+        // ray from (0,0,-5) dir +z hits p=(0,0,-0.5), t=4.5
+        let obj = Rotate::euler_about(sphere_at(2.0, 0.0, 0.0, 0.5), Point3::new(1.0, 0.0, 0.0), [0.0, 180.0, 0.0]);
+        let r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0));
+        let rec = obj.hit(&r, 0.001, f32::INFINITY).expect("should hit");
+        assert!((rec.t - 4.5).abs() < 1e-4, "t = {}", rec.t);
+        assert!(rec.p.x.abs() < 1e-4 && (rec.p.z + 0.5).abs() < 1e-4, "p.x = {}, p.z = {}", rec.p.x, rec.p.z);
+    }
+
+    #[test]
+    fn euler_about_zero_angles_returns_same_object() {
+        let s: Arc<dyn Hittable> = sphere_at(1.0, 0.0, 0.0, 0.5);
+        let h = Rotate::euler_about(Arc::clone(&s), Point3::new(1.0, 0.0, 0.0), [0.0, 0.0, 0.0]);
+        // identity: ray from (5,0,0) dir -x hits at t=3.5 (same as unrotated)
+        let r = Ray::new(Point3::new(5.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0));
+        let rec = h.hit(&r, 0.001, f32::INFINITY).expect("should hit");
+        assert!((rec.t - 3.5).abs() < 1e-4, "t = {}", rec.t);
+    }
+
+    #[test]
     fn rotate_y_zero_degrees_is_identity() {
         // 0° rotation: sphere at (1,0,0), ray from (5,0,0)→(−1,0,0) hits at t=3.5.
-        let obj = Rotate::around_y(sphere_at(1.0, 0.0, 0.0, 0.5), 0.0);
+        let obj = Rotate::euler(sphere_at(1.0, 0.0, 0.0, 0.5), 0.0, 0.0, 0.0);
         let rec = shoot(&obj, 5.0, 0.0, 0.0, -1.0, 0.0, 0.0).expect("should hit");
         assert!((rec.t - 3.5).abs() < 1e-4, "t = {}", rec.t);
     }

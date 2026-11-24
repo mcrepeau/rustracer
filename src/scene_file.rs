@@ -175,6 +175,11 @@ pub struct ObjectConfig {
     /// Rotation around the world Y axis in degrees, applied after scale.
     #[serde(default)]
     pub rotate_y:  Option<f32>,
+    /// Euler rotation in degrees [rx, ry, rz] (fwd = Ry*Rx*Rz, Rz first), applied
+    /// after scale and before translate, about the object's local origin.
+    /// Adds to `rotate_y` (both may be set).
+    #[serde(default)]
+    pub rotate:    Option<[f32; 3]>,
     /// World-space translation applied last (after scale and rotation).
     #[serde(default)]
     pub translate: Option<[f32; 3]>,
@@ -554,11 +559,16 @@ pub struct GemConfig {
     /// mm -> scene units applied to the size.
     #[serde(default = "default_gem_scale_mm")]
     pub scale_mm:        f32,
-    /// Same SRT placement transforms as objects.
+    /// Same SRT placement transforms as objects.  For gems the rotation pivot is
+    /// the gem's own `center` — the stone turns/tilts in place, not around the
+    /// world origin.
     #[serde(default)]
     pub scale:           Option<f32>,
     #[serde(default)]
     pub rotate_y:        Option<f32>,
+    /// Full Euler rotation in degrees [rx, ry, rz] about the gem center.
+    #[serde(default)]
+    pub rotate:          Option<[f32; 3]>,
     #[serde(default)]
     pub translate:       Option<[f32; 3]>,
 }
@@ -777,7 +787,9 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         }
     };
     if let Some(s) = g.scale     { hittable = Arc::new(UniformScale::new(hittable, s)); }
-    if let Some(a) = g.rotate_y  { hittable = Arc::new(Rotate::around_y(hittable, a)); }
+    let mut angles = g.rotate.unwrap_or([0.0, 0.0, 0.0]);
+    if let Some(a) = g.rotate_y  { angles[1] += a; }
+    if angles != [0.0, 0.0, 0.0] { hittable = Rotate::euler_about(hittable, p3(g.center), angles); }
     if let Some(t) = g.translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
     Ok(hittable)
 }
@@ -841,7 +853,7 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
     };
 
     for (i, obj) in file.objects.into_iter().enumerate() {
-        let (scale, rotate_y, translate) = (obj.scale, obj.rotate_y, obj.translate);
+        let (scale, rotate_y, rotate, translate) = (obj.scale, obj.rotate_y, obj.rotate, obj.translate);
         let mut hittable: Arc<dyn Hittable> = match obj.shape {
             // ── Volume shapes (material field is ignored) ──────────────────
             ShapeConfig::ConstantVolumeSphere { center, radius, density, color, g } => {
@@ -904,9 +916,11 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
                 }
             }
         };
-        // Apply SRT transforms: scale → rotate → translate.
+        // Apply SRT transforms: scale -> rotate (Euler, see `rotate`) -> translate.
         if let Some(s) = scale    { hittable = Arc::new(UniformScale::new(hittable, s)); }
-        if let Some(a) = rotate_y { hittable = Arc::new(Rotate::around_y(hittable, a)); }
+        let mut angles = rotate.unwrap_or([0.0, 0.0, 0.0]);
+        if let Some(a) = rotate_y { angles[1] += a; }
+        if angles != [0.0, 0.0, 0.0] { hittable = Rotate::euler_about(hittable, Point3::default(), angles); }
         if let Some(t) = translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
         // Emissive, NEE-sampleable objects (e.g. an OBJ mesh with a light material,
         // an emissive sphere) join the light list so NEE targets them explicitly;
@@ -1144,6 +1158,15 @@ mod tests {
             }
             _ => panic!("expected AnimationKind::Spin"),
         }
+    }
+
+    #[test]
+    fn rotate_euler_param_parses_for_objects_and_gems() {
+        let text = "name = \"t\"\n[camera]\nlook_from = [0,0,-5]\nlook_at = [0,0,0]\n[background]\ntype = \"solid\"\ncolor = [0.1, 0.1, 0.1]\n[[objects]]\nshape = { type = \"sphere\", center = [2,0,0], radius = 0.5 }\nmaterial = { type = \"lambertian\", color = [0.5, 0.5, 0.5] }\nrotate = [0.0, 90.0, 0.0]\n[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"diamond\"\ncolor_grade = \"D\"\ncenter = [0.0, 0.5, 0.0]\nscale_mm = 0.001\nrotate = [10.0, 0.0, 0.0]\n";
+        let file: SceneFile = toml::from_str(text).unwrap();
+        assert_eq!(file.objects[0].rotate, Some([0.0, 90.0, 0.0]));
+        assert_eq!(file.gems[0].rotate, Some([10.0, 0.0, 0.0]));
+        build(file, std::path::Path::new(".")).unwrap();  // builds with rotations applied
     }
 
     #[test]
