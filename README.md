@@ -144,6 +144,8 @@ turbidity     = 3.0        # must be >= 1.7
 type = "env_map"           # equirectangular HDR (.hdr Radiance RGBE or .exr in linear sRGB --
                             # for ACEScg downloads use the *_sRGBlinear file; v=0 = zenith; bilinear)
 path = "assets/sunset_puresky_4k.hdr"
+# visible = { type = "solid", color = [1.0, 1.0, 1.0] }  # optional: backdrop seen on miss rays;
+                                                       # the env map still provides all lighting
 ```
 
 ```toml
@@ -223,7 +225,7 @@ cargo run --release -- --scene scenes/625469899.toml
 
 By default the generated scene rests the stone centered on a grey chart card (the purchased
 `greyChart_OBJ.obj` mesh, textured with its sRGB TIFF) on a pbr disk floor (radius 30), lit by
-the `assets/studio_small_09_8k.hdr` env map alone (`--env` to change);
+the `assets/studio_small_09_8k.hdr` env map alone (`--env` to change) on a white seamless backdrop (`--bg-env` to show the env itself); `--no-chart` drops the card, `--gap-mm` floats the stone.
 
 The stone is staged in bright product lighting - a studio lightbox env map
 (`assets/studio_small_09_8k.hdr`, the purchased 8k lightbox HDR, default; `--env` switches) as the sole light source; `--lights` adds angled overhead softbox `[[lights]]` quads (geometric, so

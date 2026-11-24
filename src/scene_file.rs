@@ -139,8 +139,22 @@ pub enum BackgroundConfig {
     },
     /// Uniform colour background.
     Solid { color: [f32; 3] },
-    /// Equirectangular HDR environment map (EXR file).
-    EnvMap { path: String },
+    /// Equirectangular HDR environment map (.hdr RGBE or .exr).
+    EnvMap {
+        path: String,
+        /// Optional visible backdrop for miss rays; the env map still provides
+        /// all lighting (NEE + indirect + photons), e.g. a white seamless:
+        /// visible = { type = "solid", color = [1.0, 1.0, 1.0] }
+        #[serde(default)]
+        visible: Option<VisibleBg>,
+    },
+}
+
+/// Visible backdrop used with `env_map` backgrounds (lighting stays on the env).
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VisibleBg {
+    Solid { color: [f32; 3] },
 }
 
 fn default_sun_elevation() -> f32 { 30.0 }
@@ -884,7 +898,7 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
             }
         }
         BackgroundConfig::Solid { color } => Background::Solid(col(color)),
-        BackgroundConfig::EnvMap { path } => {
+        BackgroundConfig::EnvMap { path, visible } => {
             let path = resolve_asset(base, &path);
             let mut reader = image::ImageReader::open(&path)
                 .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
@@ -895,7 +909,12 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
                 .decode()
                 .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
                 .into_rgb32f();
-            Background::EnvMap(Arc::new(EnvMapData::new(img)))
+            let env = Arc::new(EnvMapData::new(img));
+            match visible {
+                Some(VisibleBg::Solid { color }) =>
+                    Background::EnvMapSplit { env, visible: Box::new(Background::Solid(col(color))) },
+                None => Background::EnvMap(env),
+            }
         }
     };
 

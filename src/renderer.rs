@@ -73,7 +73,7 @@ impl EnvMapData {
 
     /// Bilinear sample (u wraps around the seam, v clamps at the poles) so a
     /// low-res (e.g. 2k) env map renders smoothly instead of nearest-neighbour blocks.
-    fn sample(&self, dir: Vec3) -> Color {
+    pub fn sample(&self, dir: Vec3) -> Color {
         use std::f32::consts::PI;
         let d  = dir.unit();
         let u  = (0.5 + d.x.atan2(d.z) / (2.0 * PI)).rem_euclid(1.0);
@@ -163,6 +163,10 @@ pub enum Background {
     Solid(Color),
     Physical { sun_dir: Vec3, turbidity: f32 },
     EnvMap(Arc<EnvMapData>),
+    /// Env map provides ALL lighting (NEE, indirect sampling, photon power);
+    /// `visible` is what rays actually see on a miss (e.g. a white seamless
+    /// product backdrop while the env map still lights the scene).
+    EnvMapSplit { env: Arc<EnvMapData>, visible: Box<Background> },
 }
 
 impl Background {
@@ -171,7 +175,22 @@ impl Background {
             Background::Solid(c)                           => *c,
             Background::Physical { sun_dir, turbidity }    => preetham_sky(dir, *sun_dir, *turbidity),
             Background::EnvMap(em)                         => em.sample(dir),
+            Background::EnvMapSplit { visible, .. }       => visible.eval(dir),
         }
+    }
+
+    /// The env map used for lighting (NEE, indirect, photon power), if any.
+    pub fn env(&self) -> Option<&EnvMapData> {
+        match self {
+            Background::EnvMap(em)                 => Some(em),
+            Background::EnvMapSplit { env, .. }    => Some(env),
+            _                                      => None,
+        }
+    }
+
+    /// Radiance the lighting env map emits in `dir` (black if none).
+    pub fn env_eval(&self, dir: Vec3) -> Color {
+        match self.env() { Some(em) => em.sample(dir), None => Color::new(0.0, 0.0, 0.0) }
     }
 }
 
@@ -315,7 +334,7 @@ fn sample_sun_cone(axis: Vec3, cos_theta_max: f32, rng: &mut impl Rng) -> Vec3 {
 }
 
 fn env_pdf_value(dir: Vec3, background: &Background) -> f32 {
-    if let Background::EnvMap(em) = background { em.dir_pdf(dir) } else { 0.0 }
+    if let Some(em) = background.env() { em.dir_pdf(dir) } else { 0.0 }
 }
 
 // ── Path tracer ───────────────────────────────────────────────────────────────
@@ -343,7 +362,16 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                 let emit_w  = if sun_pdf + env_pdf == 0.0 { 1.0 }
                               else if prev_specular { prev_spec_sun_weight }
                               else                  { prev_mis_w_brdf };
-                color += throughput * background.eval(ray.direction) * bg_scale * emit_w;
+                // Primary (camera) rays see the visible backdrop of a split background;
+                // rays escaping after a bounce still see the lighting env map, so
+                // reflections keep the softbox highlights (MIS weights above stay
+                // consistent with env NEE, which samples the env map).
+                let bg = if depth == 0 || background.env().is_none() {
+                    background.eval(ray.direction)
+                } else {
+                    background.env_eval(ray.direction)
+                };
+                color += throughput * bg * bg_scale * emit_w;
                 break;
             }
             Some(rec) => {
@@ -465,7 +493,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                     // Mirrors the sun NEE block above.  A direction is drawn from the
                     // luminance-weighted 2-D CDF built at load time; if the shadow ray
                     // is unoccluded the env radiance is added with MIS weighting.
-                    if let Background::EnvMap(em) = background {
+                    if let Some(em) = background.env() {
                         let (env_dir, env_pdf) = em.sample_dir(rng);
                         if env_pdf > 0.0 {
                             let shadow = Ray::new_at_time(rec.p, env_dir, ray.time);
@@ -475,7 +503,7 @@ pub fn ray_color(r: &Ray, world: &dyn Hittable, background: &Background, lights:
                                 if brdf > 0.0 {
                                     let area_pdf = if lights.objects.is_empty() { 0.0 }
                                                    else { lights.pdf_value(rec.p, env_dir, ray.time) };
-                                    let env_color = background.eval(env_dir);
+                                    let env_color = background.env_eval(env_dir);
                                     let mis_d = env_pdf * env_pdf + brdf * brdf + area_pdf * area_pdf;
                                     color += throughput * tr * sr.attenuation * brdf * env_pdf * env_color / mis_d;
                                 }
@@ -677,6 +705,29 @@ pub fn render_tiles(
 mod env_tests {
     use super::*;
     use image::Rgb;
+
+    #[test]
+    fn env_map_split_visible_bg_lighting_from_env() {
+        let mut img = Rgb32FImage::new(4, 2);
+        for j in 0..2u32 {
+            for i in 0..4u32 {
+                img.put_pixel(i, j, Rgb([2.0, 2.0, 2.0]));
+            }
+        }
+        let env = Arc::new(EnvMapData::new(img));
+        let bg = Background::EnvMapSplit {
+            env: env.clone(),
+            visible: Box::new(Background::Solid(Color::new(0.5, 0.5, 0.5))),
+        };
+        // miss rays see the visible backdrop...
+        let c = bg.eval(Vec3::new(0.0, 1.0, 0.0));
+        assert!((c.x - 0.5).abs() < 1e-6, "miss should see visible bg 0.5, got {}", c.x);
+        // ...while lighting (NEE colour + pdf) still comes from the env map
+        let e = bg.env_eval(Vec3::new(0.0, 1.0, 0.0));
+        assert!((e.x - 2.0).abs() < 1e-6, "env light should be 2.0, got {}", e.x);
+        assert!(env_pdf_value(Vec3::new(0.0, 1.0, 0.0), &bg) > 0.0);
+        assert!(bg.env().is_some());
+    }
 
     #[test]
     fn env_sample_is_bilinear_not_nearest() {

@@ -49,7 +49,7 @@ impl SceneData {
             self.photon_map = Some(Arc::new(
                 PhotonMap::build(world.as_ref(), sun_dir, sun_color, n, r)
             ));
-        } else if let Background::EnvMap(em) = &self.background {
+        } else if let Some(em) = self.background.env() {
             // No sun and no area light: emit photons from a directional disk
             // facing a bright direction importance-sampled from the env map's
             // luminance CDF (fixed seed -> deterministic map). For the studio
@@ -62,7 +62,7 @@ impl SceneData {
                 dir = dir + d;
             }
             let dir   = dir.unit();
-            let color = self.background.eval(dir) * std::f32::consts::PI;
+            let color = em.sample(dir) * std::f32::consts::PI;
             self.photon_map = Some(Arc::new(
                 PhotonMap::build(world.as_ref(), dir, color, n, r)
             ));

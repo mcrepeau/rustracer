@@ -229,6 +229,8 @@ def render_toml(f, args):
     # pbr disk floor (radius 30), lit by the 8k lightbox HDR env map alone (--env to change);
     # --lights adds geometric softbox quads on top.
     bg_lines = ['type = "env_map"', 'path = "%s"' % args.env]
+    if not args.bg_env:
+        bg_lines.append('visible = { type = "solid", color = [1.0, 1.0, 1.0] }  # white seamless backdrop; env map still lights')
     staging = "lightbox studio HDR env map lights the scene; pbr disk floor (Blue Nile style)"
     lights_block = None
     if args.lights:
@@ -418,6 +420,8 @@ def main():
                     help="grey chart albedo TIFF (sRGB, decoded to linear at sample time)")
     ap.add_argument("--env", default="assets/studio_small_09_8k.hdr",
                     help="env map path relative to scenes/ (default: assets/studio_small_09_8k.hdr, 8k lightbox; .hdr or .exr)")
+    ap.add_argument("--bg-env", action="store_true",
+                    help="keep the env map visible as the background (default: white seamless solid backdrop, env map lights only)")
     ap.add_argument("--no-caustics", action="store_true")
     ap.add_argument("--no-animation", action="store_true",
                     help="do not emit the [animation] / [animation.orbit] turntable block")
