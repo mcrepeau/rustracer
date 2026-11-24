@@ -144,10 +144,28 @@ def parse_report(text):
         f["crown_pct"], f["table_pct"], f["pavilion_pct"] = float(m.group(1)), float(m.group(2)), float(m.group(3))
         f["culet"], f["depth_pct"] = m.group(4), float(m.group(5))
     else:
+        # Alternate layout (newer IGI electronic copies): crown% pavilion% culet depth% table%,
+        # no PROPORTIONS keyword; the culet word anchors the match.
+        m = re.search(r"(\d{1,3}(?:\.\d+)?)\s*%\s*(\d{1,3}(?:\.\d+)?)\s*%\s*"
+                      r"(Pointed|Very Small|Small|Medium|Slightly Large|Large|Very Large|Extremely Large)\s*"
+                      r"(\d{1,3}(?:\.\d+)?)\s*%\s*(\d{1,3}(?:\.\d+)?)\s*%", text)
+        if m:
+            f["crown_pct"], f["pavilion_pct"] = float(m.group(1)), float(m.group(2))
+            f["culet"], f["depth_pct"], f["table_pct"] = m.group(3), float(m.group(4)), float(m.group(5))
+    if not m:
         warnings.append("no proportions diagram found; cut angles will use defaults")
         f["crown_pct"] = f["table_pct"] = f["pavilion_pct"] = f["depth_pct"] = None
-    gm = re.search(r"(Extremely Thin|Very Thin|Thin|Medium|Slightly Thick|Thick|Very Thick|Extremely Thick)", text)
-    f["girdle"] = gm.group(1) if gm else None
+    gw = "(Extremely Thin|Very Thin|Thin|Medium|Slightly Thick|Thick|Very Thick|Extremely Thick)"
+    gm = re.search(gw + r"(?:\s*(?:To|to|-)\s*(" + gw + r"))?", text)
+    f["girdle"] = gm.group(0) if gm else None
+    if gm:
+        lo = GIRDLE_TO_PCT[gm.group(1)]
+        hi = GIRDLE_TO_PCT[gm.group(2)] if gm.group(2) else lo
+        f["girdle_pct_val"] = (lo + hi) / 2.0   # ranges like "Slightly Thick To Thick" -> midpoint
+    else:
+        f["girdle_pct_val"] = None
+    fm = re.search(r"\(\s*(Faceted|Polished|Bruted)\s*\)", text, re.I)
+    f["girdle_finish"] = fm.group(1).lower() if fm else None
     m = re.search(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}", text)
     f["date"] = m.group(0) if m else "unknown date"
     f["measurements_mm"] = parse_measurements(text, warnings)
@@ -322,8 +340,10 @@ def render_toml(f, args):
         lines.append("crown_pct       = %.6g                 # %% of minor axis" % f["crown_pct"])
         lines.append("pavilion_pct    = %.6g" % f["pavilion_pct"])
         lines.append("depth_pct       = %.6g" % f["depth_pct"])
-        gp = GIRDLE_TO_PCT.get(f.get("girdle"), 2.0)
+        gp = f.get("girdle_pct_val") or 2.0
         lines.append("girdle_pct       = %.6g                 # girdle band, %% of diameter (report: %s)" % (gp, f.get("girdle") or "n/a"))
+    if f.get("girdle_finish"):
+        lines.append('girdle_finish     = "%s"              # girdle condition from the report (brilliant cuts)' % f["girdle_finish"])
     if oval and cut == "brilliant":
         lines.append("girdle_facets   = 64      # smooth oval outline (16 would show polygon edges)")
     lines.append('color_grade     = "%s"' % f["color_grade"])

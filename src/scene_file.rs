@@ -542,6 +542,11 @@ pub struct GemConfig {
     /// Girdle band thickness as a percentage of the girdle diameter/width
     /// (GIA-style: thin ~1.5%, medium ~3%, thick ~5%).  Default 2%; 0 = knife edge.
     pub girdle_pct:      Option<f32>,
+    /// Girdle condition: "faceted" (distinct vertical facets on the band, the
+    /// default look) or "polished"/"bruted" (smooth band, approximated by
+    /// raising the outline to >= 64 facets).  Brilliant-family cuts only.
+    #[serde(default)]
+    pub girdle_finish:   Option<String>,
     /// Girdle centre in scene units.
     pub center:          [f32; 3],
     /// mm -> scene units applied to the size.
@@ -750,12 +755,24 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         None    => g.pavilion_angle,
     };
 
+    let finish = g.girdle_finish.as_deref().map(str::to_lowercase);
+    match finish.as_deref() {
+        None | Some("faceted") | Some("polished") | Some("bruted") => {}
+        Some(other) => return Err(format!(
+            "gem '{}': girdle_finish must be faceted|polished|bruted, got '{other}'", g.report)),
+    }
+    let mut facets = g.girdle_facets.unwrap_or(if oval_ratio > 1.05 { 64 } else { 16 });
+    // Polished/bruted girdle = smooth band: approximate with many fine outline
+    // facets (64-gon reads as smooth at render resolution).  Faceted keeps the
+    // distinct per-edge vertical facets.
+    if matches!(finish.as_deref(), Some("polished") | Some("bruted")) { facets = facets.max(64); }
+
     let params = DiamondParams {
         table_pct:      g.table_pct,
         crown_angle,
         pavilion_angle,
         oval_ratio,
-        girdle_facets:  g.girdle_facets.unwrap_or(if oval_ratio > 1.05 { 64 } else { 16 }),
+        girdle_facets:  facets,
         girdle_pct:     g.girdle_pct.unwrap_or(2.0),
     };
 
@@ -1150,6 +1167,15 @@ mod tests {
         apply_gem_spin(&mut file, 45.0);
         assert_eq!(file.gems.len(), 2);
         assert!(file.gems.iter().all(|g| g.spin == Some(45.0)));
+    }
+
+    #[test]
+    fn gem_girdle_finish_parses_and_validates() {
+        let g = parse_gem("[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"diamond\"\ncolor_grade = \"D\"\ncenter = [0,0,0]\nscale_mm = 0.001\ngirdle_finish = \"faceted\"\n");
+        assert_eq!(g.girdle_finish.as_deref(), Some("faceted"));
+        build_gem(&g).expect("faceted builds");
+        let bad = parse_gem("[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"diamond\"\ncolor_grade = \"D\"\ncenter = [0,0,0]\nscale_mm = 0.001\ngirdle_finish = \"rough\"\n");
+        assert!(build_gem(&bad).is_err(), "unknown finish must error");
     }
 
     #[test]
