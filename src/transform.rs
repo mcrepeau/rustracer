@@ -253,6 +253,121 @@ impl Hittable for Rotate {
     fn photon_bounds(&self) -> Option<Aabb> { self.photon_bbox }
 }
 
+// ── SpinY ─────────────────────────────────────────────────────────────────────
+
+/// Time-driven turntable rotation about the world Y axis through `center`:
+/// angle(t) = start + (end - start) * clamp(t / duration, 0, 1), evaluated from
+/// each ray's `time`.  Used by `[animation.spin]` to turn gems in place while the
+/// camera stays fixed; because the angle comes from ray.time, the per-frame
+/// motion-blur window gives a correctly blurred spin for free.  Stateless: the
+/// same object serves every frame, and a still render (ray time 0) shows `start`.
+pub struct SpinY {
+    object:      Arc<dyn Hittable>,
+    center:      Point3,
+    start:       f32,   // radians
+    end:         f32,   // radians
+    duration:    f32,   // seconds
+    bbox:        Option<Aabb>,
+    photon_bbox: Option<Aabb>,
+}
+
+impl SpinY {
+    pub fn new(object: Arc<dyn Hittable>, center: Point3, start_deg: f32, end_deg: f32, duration: f32) -> Self {
+        let start = start_deg.to_radians();
+        let end   = end_deg.to_radians();
+        // Swept bbox: a child-bbox corner at horizontal distance r from the spin
+        // axis sweeps a circle of radius r under a full turn, so the exact x/z extent
+        // is center +/- r (conservative for partial ranges).  Never smaller than the
+        // true swept volume, so BVH culling stays safe.
+        let sweep = |bb: &Aabb| -> Aabb {
+            let mut min = Point3::new(f32::INFINITY, bb.min.y, f32::INFINITY);
+            let mut max = Point3::new(f32::NEG_INFINITY, bb.max.y, f32::NEG_INFINITY);
+            for i in 0..2usize {
+                for k in 0..2usize {
+                    let x = if i == 0 { bb.min.x } else { bb.max.x };
+                    let z = if k == 0 { bb.min.z } else { bb.max.z };
+                    let r = ((x - center.x).powi(2) + (z - center.z).powi(2)).sqrt();
+                    min.x = min.x.min(center.x - r); max.x = max.x.max(center.x + r);
+                    min.z = min.z.min(center.z - r); max.z = max.z.max(center.z + r);
+                }
+            }
+            Aabb::new(min, max)
+        };
+        let bbox        = object.bounding_box().map(|bb| sweep(&bb));
+        let photon_bbox = object.photon_bounds().map(|bb| sweep(&bb));
+        Self { object, center, start, end, duration, bbox, photon_bbox }
+    }
+
+    fn angle_at(&self, t: f32) -> f32 {
+        let frac = if self.duration > 1e-8 { (t / self.duration).clamp(0.0, 1.0) } else { 0.0 };
+        self.start + (self.end - self.start) * frac
+    }
+
+    /// World-from-local rotation matrix at the given ray time.
+    fn fwd_at(&self, t: f32) -> [[f32; 3]; 3] {
+        let (s, c) = self.angle_at(t).sin_cos();
+        [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]]
+    }
+}
+
+impl Hittable for SpinY {
+    fn hit(&self, r: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord<'_>> {
+        let fwd = self.fwd_at(r.time);
+        // world -> local:  local = R^T (world - center) + center
+        let local = Ray::scatter_from(
+            mat_apply_t(&fwd, r.origin - self.center) + self.center,
+            mat_apply_t(&fwd, r.direction),
+            r,
+        );
+        let mut rec = self.object.hit(&local, t_min, t_max)?;
+        // local -> world:  world = R (local - center) + center
+        rec.p       = mat_apply(&fwd, rec.p - self.center) + self.center;
+        rec.normal  = mat_apply(&fwd, rec.normal);
+        rec.tangent = mat_apply(&fwd, rec.tangent);
+        Some(rec)
+    }
+
+    fn any_hit(&self, r: &Ray, t_min: f32, t_max: f32) -> bool {
+        let fwd = self.fwd_at(r.time);
+        let local = Ray::scatter_from(
+            mat_apply_t(&fwd, r.origin - self.center) + self.center,
+            mat_apply_t(&fwd, r.direction),
+            r,
+        );
+        self.object.any_hit(&local, t_min, t_max)
+    }
+
+    fn transmittance(&self, r: &Ray, t_min: f32, t_max: f32) -> f32 {
+        let fwd = self.fwd_at(r.time);
+        let local = Ray::scatter_from(
+            mat_apply_t(&fwd, r.origin - self.center) + self.center,
+            mat_apply_t(&fwd, r.direction),
+            r,
+        );
+        self.object.transmittance(&local, t_min, t_max)
+    }
+
+    fn light_area(&self) -> f32 { self.object.light_area() }
+
+    fn pdf_value(&self, origin: Point3, dir: Vec3, time: f32) -> f32 {
+        let fwd = self.fwd_at(time);
+        self.object.pdf_value(
+            mat_apply_t(&fwd, origin - self.center) + self.center,
+            mat_apply_t(&fwd, dir),
+            time,
+        )
+    }
+
+    fn pdf_generate(&self, origin: Point3, rng: &mut dyn RngCore, time: f32) -> Vec3 {
+        let fwd = self.fwd_at(time);
+        let d_local = self.object.pdf_generate(mat_apply_t(&fwd, origin - self.center) + self.center, rng, time);
+        mat_apply(&fwd, d_local)
+    }
+
+    fn bounding_box(&self) -> Option<Aabb> { self.bbox }
+    fn photon_bounds(&self) -> Option<Aabb> { self.photon_bbox }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +462,53 @@ mod tests {
         assert!(outward.x.abs()         < 1e-4, "outward.x = {}", outward.x);
         assert!(outward.y.abs()         < 1e-4, "outward.y = {}", outward.y);
         assert!((outward.z + 1.0).abs() < 1e-4, "outward.z = {}", outward.z);
+    }
+
+    // ── SpinY ─────────────────────────────────────────────────────────────────
+
+    fn spin_sphere(start_deg: f32, end_deg: f32, dur: f32) -> SpinY {
+        SpinY::new(sphere_at(1.0, 0.0, 0.0, 0.5), Point3::new(0.0, 0.0, 0.0), start_deg, end_deg, dur)
+    }
+
+    #[test]
+    fn spin_y_time_zero_is_start_angle() {
+        // t=0 (angle 0): ray from (1,0,-5) dir +z hits sphere at (1,0,0) r=0.5 -> p=(1,0,-0.5), t=4.5
+        let s = spin_sphere(0.0, 180.0, 4.0);
+        let r = Ray::new_at_time(Point3::new(1.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let rec = s.hit(&r, 0.001, f32::INFINITY).expect("should hit");
+        assert!((rec.t - 4.5).abs() < 1e-4, "t = {}", rec.t);
+        assert!((rec.p.x - 1.0).abs() < 1e-4 && (rec.p.z + 0.5).abs() < 1e-4, "p.x = {}, p.z = {}", rec.p.x, rec.p.z);
+    }
+
+    #[test]
+    fn spin_y_at_duration_rotates_hit_180() {
+        // t=4 (=duration, angle 180): world sphere at (-1,0,0); ray from (-1,0,-5) -> p=(-1,0,-0.5)
+        let s = spin_sphere(0.0, 180.0, 4.0);
+        let r = Ray::new_at_time(Point3::new(-1.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 4.0);
+        let rec = s.hit(&r, 0.001, f32::INFINITY).expect("should hit");
+        assert!((rec.t - 4.5).abs() < 1e-4, "t = {}", rec.t);
+        assert!((rec.p.x + 1.0).abs() < 1e-4 && (rec.p.z + 0.5).abs() < 1e-4, "p.x = {}, p.z = {}", rec.p.x, rec.p.z);
+    }
+
+    #[test]
+    fn spin_y_time_is_clamped_to_duration() {
+        // t=100 >> duration behaves exactly like t=duration
+        let s = spin_sphere(0.0, 180.0, 4.0);
+        let r = Ray::new_at_time(Point3::new(-1.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 100.0);
+        let rec = s.hit(&r, 0.001, f32::INFINITY).expect("should hit");
+        assert!((rec.p.x + 1.0).abs() < 1e-4, "p.x = {}", rec.p.x);
+    }
+
+    #[test]
+    fn spin_y_bbox_covers_full_sweep() {
+        // sphere at (1,0,0) r=0.5 has bbox corners up to (1.5, +-0.5); each corner sweeps a
+        // circle of radius hypot(1.5, 0.5) = sqrt(2.5) about the axis, so x,z in [-sqrt(2.5), sqrt(2.5)]
+        let s = spin_sphere(0.0, 360.0, 4.0);
+        let bb = s.bounding_box().expect("bbox");
+        let r = 2.5_f32.sqrt();
+        assert!((bb.min.x + r).abs() < 1e-4 && (bb.max.x - r).abs() < 1e-4, "x: {}..{}", bb.min.x, bb.max.x);
+        assert!((bb.min.z + r).abs() < 1e-4 && (bb.max.z - r).abs() < 1e-4, "z: {}..{}", bb.min.z, bb.max.z);
+        assert!((bb.min.y + 0.5).abs() < 1e-4 && (bb.max.y - 0.5).abs() < 1e-4, "y: {}..{}", bb.min.y, bb.max.y);
     }
 
     #[test]
