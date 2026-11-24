@@ -27,7 +27,7 @@ move_speed      = 0.5       # free-cam step per keypress — scale it to your sc
 [background]
 type = "env_map"                          # HDR equirectangular panorama (.hdr or linear-sRGB .exr;
                                            # sampled bilinearly, so 2k maps render smoothly)
-path = "assets/hdri_lightbox_default_2k_sRGBlinear.exr"
+path = "assets/studio_small_09_8k.hdr"
 # visible = { type = "solid", color = [1.0, 1.0, 1.0] }   # optional: separate backdrop seen on
 # visible = { type = "gradient", top = [1,1,1], bottom = [0.8,0.8,0.8] }   # seamless sweep
 #                                                        # miss rays; the env map still lights everything

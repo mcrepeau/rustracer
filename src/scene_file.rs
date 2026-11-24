@@ -629,7 +629,8 @@ pub fn load_with(path: &str, gem_spin: Option<f32>) -> Result<SceneData, String>
         .map_err(|e| format!("parse error in {path}:\n{e}"))?;
     if let Some(s) = gem_spin { apply_gem_spin(&mut file, s); }
     // Asset paths in the file resolve relative to the scene file's own
-    // directory first (so scenes/ can carry its own assets/), then cwd.
+    // directory first (so scenes/ can carry its own assets/), then cwd, then
+    // the shared scenes/assets/ pool.
     let base = std::path::Path::new(path)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
@@ -658,6 +659,10 @@ fn resolve_asset(base: &std::path::Path, p: &str) -> String {
     if std::path::Path::new(p).is_relative() {
         let cand = base.join(p);
         if cand.exists() { return cand.to_string_lossy().into_owned(); }
+        // Fall back to the shared scenes/assets pool, so scenes living outside
+        // scenes/ (e.g. examples/) can reference the same HDRs/chart/textures.
+        let shared = std::path::Path::new("scenes").join(p);
+        if shared.exists() { return shared.to_string_lossy().into_owned(); }
     }
     p.to_string()
 }

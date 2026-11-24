@@ -4,6 +4,15 @@ A physically-based path tracer built in Rust. It simulates how light actually be
 
 **Scenes are TOML files.** There are no built-in scenes: the viewer, `--render`, and `--bench` all load a scene file (`scenes/scene.toml` / `scenes/bench.toml` by default, or anything you pass with `--scene`).
 
+## Example output
+
+![Round brilliant diamond rendered from its IGI grading report](examples/render_lg702531654_round_brilliant_1502spp.png)
+
+`examples/702531654.pdf` (IGI cert) -> `py report_to_toml.py examples/702531654.pdf -o examples/702531654.toml`
+-> `target/release/rustracer.exe --render --scene examples/702531654.toml --preset final --width 1280 --height 720 --output out.png`
+
+The report PDF, the generated scene TOML and the 1502 spp + OIDN + AgX render all live in `examples/`.
+
 ## Build & Run
 
 ```sh
@@ -80,7 +89,7 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
 
 - **`scenes/assets/`** - env maps, textures, meshes. Generated gem scenes (see below) use the
   purchased Poly Haven 8k lightbox HDR `studio_small_09_8k.hdr` (bilinear sampling; `--env` picks
-  another, e.g. the 2k `hdri_lightbox_default_2k_sRGBlinear.exr`). Purchased assets stay local
+  (other maps via `--env`, e.g. `studio_kontrast_04_8k.hdr`). Purchased assets stay local
   (git-ignored); `scenes/scene.toml` demos with the local `sunset_puresky_4k.hdr`.
 
 - **`report_to_toml.py`** — turns an IGI/GIA grading-report PDF into a renderable `scenes/<report>.toml`
