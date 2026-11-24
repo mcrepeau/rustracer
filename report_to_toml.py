@@ -19,8 +19,11 @@ Field mapping:
     Measurements L x W x D mm        -> measurements_mm (ranges are averaged)
     Carat Weight                     -> carat
     Color Grade                      -> color_grade
-    Proportions diagram (crown% table% pavilion% culet depth%)
+    Proportions diagram (both layouts: 'crown% table% pavilion% culet depth% PROPORTIONS'
+                                     and 'crown% pavilion% culet depth% table%')
                                      -> crown_pct / table_pct / pavilion_pct / depth_pct
+    Girdle descriptor (single or range) -> girdle_pct (range -> midpoint)
+    Girdle condition '(Faceted)'/'(Polished)'/'(Bruted)' -> girdle_finish
 """
 
 import argparse

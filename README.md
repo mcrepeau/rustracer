@@ -88,7 +88,7 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
   `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation]`
 - **`spin_stills.py`** — renders a gem-rotation still series (one crisp still per `--spin <deg>`,
   no motion blur, camera fixed):
-  `py spin_stills.py scenes/625469899.toml [-n 96] [-o out/] [--preset final --width 1280 --height 720] [--dry-run]`
+  `py spin_stills.py scenes/625469899.toml [-n 96] [-o out/] [--preset final --width 1280 --height 720] [--tonemapper agx|aces] [--exposure f] [--dry-run]`
 
 ## Features
 
@@ -208,8 +208,12 @@ clover) need an OBJ mesh.
 
 `py report_to_toml.py REPORT.pdf` (Python stdlib only) pulls the IGI/GIA fields straight out of the
 PDF's FlateDecode text streams — report number/date, description (-> material preset), cutting
-style (-> cut preset), measurements, carat weight, color/clarity grades and the proportions
-diagram (crown% / table% / pavilion% / depth%) — and writes a ready-to-render scene TOML into
+style (-> cut preset), measurements, carat weight, color/clarity grades, the proportions
+diagram (crown% / table% / pavilion% / depth%; both the classic '... PROPORTIONS' layout and
+the newer crown/pavilion/culet/depth/table layout are parsed), the girdle descriptor (single
+word or range like 'Slightly Thick To Thick' -> midpoint %) and the girdle condition
+('(Faceted)' / '(Polished)' / '(Bruted)' -> `girdle_finish`, which gives a faceted girdle its
+wavy/alveola band) — and writes a ready-to-render scene TOML into
 `scenes/` (next to this script):
 
 ```
@@ -238,6 +242,7 @@ the `[animation.orbit]` block above is the camera turntable instead):
 
 ```sh
 py spin_stills.py scenes/625469899.toml     # 96 crisp stills -> scenes/625469899_spin/
+# add --tonemapper aces --exposure 0.8 to pass those to every still
 ffmpeg -r 24 -i scenes/625469899_spin/gem_%04d.png -c:v libx264 -pix_fmt yuv420p gem_spin.mp4
 ```
 The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only
