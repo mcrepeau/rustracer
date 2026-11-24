@@ -6,7 +6,7 @@ Each frame is ONE crisp still: the gem's static `spin` is set per render via
 move).  N frames -> angular step 360/N degrees.
 
 Usage:
-    py spin_stills.py scenes/625469899.toml                 # 96 stills into scenes/625469899_spin/
+    py spin_stills.py scenes/625469899.toml                 # 96 stills into renders/625469899_spin/
     py spin_stills.py scenes/625469899.toml -n 48 -o out/spin
     py spin_stills.py scenes/625469899.toml --preset final --width 1280 --height 720
     py spin_stills.py scenes/625469899.toml --dry-run       # print commands only
@@ -27,7 +27,7 @@ def main():
     ap.add_argument("-n", "--frames", type=int, default=96,
                     help="number of stills (default 96; angle step = 360/N)")
     ap.add_argument("-o", "--output", default=None,
-                    help="output directory (default: <scene>_spin/)")
+                    help="output directory (default: renders/<scene>_spin/ at the repo root)")
     ap.add_argument("--preset", default="final", help="render preset: preview|final (default: final)")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
@@ -45,7 +45,7 @@ def main():
     if not os.path.exists(args.scene):
         raise SystemExit("error: %s not found" % args.scene)
     exe = args.exe or os.path.join("target", "release", "rustracer.exe")
-    out = args.output or (os.path.splitext(args.scene)[0] + "_spin")
+    out = args.output or os.path.join("renders", os.path.splitext(os.path.basename(args.scene))[0] + "_spin")
     os.makedirs(out, exist_ok=True)
 
     n = args.frames

@@ -241,9 +241,9 @@ Gem-rotation still series (static `spin` per still — crisp, no motion blur, ca
 the `[animation.orbit]` block above is the camera turntable instead):
 
 ```sh
-py spin_stills.py scenes/625469899.toml     # 96 crisp stills -> scenes/625469899_spin/
+py spin_stills.py scenes/625469899.toml     # 96 crisp stills -> renders/625469899_spin/
 # add --tonemapper aces --exposure 0.8 to pass those to every still
-ffmpeg -r 24 -i scenes/625469899_spin/gem_%04d.png -c:v libx264 -pix_fmt yuv420p gem_spin.mp4
+ffmpeg -r 24 -i renders/625469899_spin/gem_%04d.png -c:v libx264 -pix_fmt yuv420p gem_spin.mp4
 ```
 The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only
 `scenes/scene.toml`, `scenes/sample.toml` and `scenes/bench.toml` are tracked. Purchased Poly Haven assets (grey chart OBJ/TIFF, lightbox EXR, cameras) stay local too.
