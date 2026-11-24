@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::animation::{AnimationData, AnimationKind, Keyframe, OrbitData, SpinData};
+use crate::animation::{AnimationData, AnimationKind, Keyframe, OrbitData};
 use crate::bvh::BvhTree;
 use crate::camera::SceneCameraParams;
 use crate::hittable::{Hittable, HittableList, Material};
@@ -60,25 +60,8 @@ pub struct AnimationConfig {
     /// True circular orbit — camera travels on a perfect circle in the XZ-plane.
     /// Takes precedence over `keyframes` when both are present.
     pub orbit: Option<OrbitConfig>,
-    /// Gem spin — rotates every [[gems]] about the vertical axis through its own
-    /// `center` (angle driven by ray time).  Camera-wise `orbit` still wins when
-    /// both are present.
-    pub spin: Option<SpinConfig>,
-}
 
-/// `[animation.spin]` — turntable: gems rotate in place about their own vertical
-/// axis, the camera stays on the still [camera].
-#[derive(Deserialize, Clone)]
-pub struct SpinConfig {
-    /// Start angle in degrees at ray time 0 (default 0).
-    #[serde(default)]
-    pub start_angle: f32,
-    /// End angle in degrees at ray time = duration (default 360 = full turn).
-    #[serde(default = "default_spin_end_angle")]
-    pub end_angle: f32,
 }
-
-fn default_spin_end_angle() -> f32 { 360.0 }
 
 #[derive(Deserialize)]
 pub struct OrbitConfig {
@@ -180,6 +163,11 @@ pub struct ObjectConfig {
     /// Adds to `rotate_y` (both may be set).
     #[serde(default)]
     pub rotate:    Option<[f32; 3]>,
+    /// Static spin in degrees around the local Y axis — shorthand for
+    /// rotate = [0, spin, 0].  STATIC placement, not an animation: stills
+    /// render crisp at this angle.
+    #[serde(default)]
+    pub spin:      Option<f32>,
     /// World-space translation applied last (after scale and rotation).
     #[serde(default)]
     pub translate: Option<[f32; 3]>,
@@ -569,6 +557,10 @@ pub struct GemConfig {
     /// Full Euler rotation in degrees [rx, ry, rz] about the gem center.
     #[serde(default)]
     pub rotate:          Option<[f32; 3]>,
+    /// Static spin in degrees around the gem's own vertical axis (shorthand for
+    /// rotate = [0, spin, 0], pivot = center).  Static placement, not animation.
+    #[serde(default)]
+    pub spin:            Option<f32>,
     #[serde(default)]
     pub translate:       Option<[f32; 3]>,
 }
@@ -789,6 +781,7 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     if let Some(s) = g.scale     { hittable = Arc::new(UniformScale::new(hittable, s)); }
     let mut angles = g.rotate.unwrap_or([0.0, 0.0, 0.0]);
     if let Some(a) = g.rotate_y  { angles[1] += a; }
+    if let Some(a) = g.spin      { angles[1] += a; }
     if angles != [0.0, 0.0, 0.0] { hittable = Rotate::euler_about(hittable, p3(g.center), angles); }
     if let Some(t) = g.translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
     Ok(hittable)
@@ -853,7 +846,7 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
     };
 
     for (i, obj) in file.objects.into_iter().enumerate() {
-        let (scale, rotate_y, rotate, translate) = (obj.scale, obj.rotate_y, obj.rotate, obj.translate);
+        let (scale, rotate_y, rotate, spin, translate) = (obj.scale, obj.rotate_y, obj.rotate, obj.spin, obj.translate);
         let mut hittable: Arc<dyn Hittable> = match obj.shape {
             // ── Volume shapes (material field is ignored) ──────────────────
             ShapeConfig::ConstantVolumeSphere { center, radius, density, color, g } => {
@@ -920,6 +913,7 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
         if let Some(s) = scale    { hittable = Arc::new(UniformScale::new(hittable, s)); }
         let mut angles = rotate.unwrap_or([0.0, 0.0, 0.0]);
         if let Some(a) = rotate_y { angles[1] += a; }
+        if let Some(a) = spin     { angles[1] += a; }
         if angles != [0.0, 0.0, 0.0] { hittable = Rotate::euler_about(hittable, Point3::default(), angles); }
         if let Some(t) = translate { hittable = Arc::new(Translate::new(hittable, v3(t))); }
         // Emissive, NEE-sampleable objects (e.g. an OBJ mesh with a light material,
@@ -932,17 +926,8 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
     }
 
     // ── Gems from grading reports ─────────────────────────────────────────────
-    let spin_cfg = file.animation.as_ref().and_then(|a| a.spin.clone());
-    let spin_dur = file.animation.as_ref().map(|a| a.duration).unwrap_or(0.0);
     for (i, g) in file.gems.iter().enumerate() {
         let hittable = build_gem(g).map_err(|e| format!("gems[{i}]: {e}"))?;
-        // With [animation.spin], wrap the gem so it rotates about the vertical
-        // axis through its own center; the angle is driven by ray time.
-        let hittable: Arc<dyn Hittable> = match &spin_cfg {
-            Some(sc) => Arc::new(crate::transform::SpinY::new(
-                hittable, p3(g.center), sc.start_angle, sc.end_angle, spin_dur)),
-            None => hittable,
-        };
         static_objects.push(hittable);
     }
 
@@ -990,17 +975,6 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
                 vfov:        oc.vfov      .unwrap_or(cam_init.vfov),
                 aperture:    oc.aperture  .unwrap_or(cam_init.aperture),
                 focus_dist:  oc.focus_dist,
-            })
-        } else if ac.spin.is_some() {
-            AnimationKind::Spin(SpinData {
-                still: Keyframe {
-                    time:       0.0,
-                    look_from:  cam_init.pos,
-                    look_at:    cam_init.lookat,
-                    vfov:       cam_init.vfov,
-                    aperture:   cam_init.aperture,
-                    focus_dist: cam_init.focus_dist,
-                },
             })
         } else {
             let keyframes = ac.keyframes.into_iter().map(|kc| {
@@ -1145,26 +1119,12 @@ mod tests {
     }
 
     #[test]
-    fn animation_spin_parses_wraps_gems_and_keeps_still_camera() {
-        let text = "name = \"t\"\n[camera]\nlook_from = [2.8954, 2.7513, -4.9337]\nlook_at = [0.3114, 0.5552, -0.3957]\nvfov = 30.0\n[background]\ntype = \"solid\"\ncolor = [0.1, 0.1, 0.1]\n[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"diamond\"\ncolor_grade = \"D\"\ncenter = [0.0, 0.5, 0.0]\nscale_mm = 0.001\n[animation]\nfps = 24\nduration = 4.0\n[animation.spin]\nstart_angle = 0.0\nend_angle = 360.0\n";
-        let file: SceneFile = toml::from_str(text).unwrap();
-        let scene = build(file, std::path::Path::new(".")).unwrap();
-        let anim = scene.animation.expect("animation present");
-        match &anim.kind {
-            AnimationKind::Spin(s) => {
-                let kf = anim.evaluate(2.0);   // any time: camera stays on the still
-                assert!((kf.look_from.x - 2.8954).abs() < 1e-4, "look_from.x = {}", kf.look_from.x);
-                assert!((kf.look_at.z + 0.3957).abs() < 1e-4, "look_at.z = {}", kf.look_at.z);
-            }
-            _ => panic!("expected AnimationKind::Spin"),
-        }
-    }
-
-    #[test]
     fn rotate_euler_param_parses_for_objects_and_gems() {
-        let text = "name = \"t\"\n[camera]\nlook_from = [0,0,-5]\nlook_at = [0,0,0]\n[background]\ntype = \"solid\"\ncolor = [0.1, 0.1, 0.1]\n[[objects]]\nshape = { type = \"sphere\", center = [2,0,0], radius = 0.5 }\nmaterial = { type = \"lambertian\", color = [0.5, 0.5, 0.5] }\nrotate = [0.0, 90.0, 0.0]\n[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"diamond\"\ncolor_grade = \"D\"\ncenter = [0.0, 0.5, 0.0]\nscale_mm = 0.001\nrotate = [10.0, 0.0, 0.0]\n";
+        let text = "name = \"t\"\n[camera]\nlook_from = [0,0,-5]\nlook_at = [0,0,0]\n[background]\ntype = \"solid\"\ncolor = [0.1, 0.1, 0.1]\n[[objects]]\nshape = { type = \"sphere\", center = [2,0,0], radius = 0.5 }\nmaterial = { type = \"lambertian\", color = [0.5, 0.5, 0.5] }\nrotate = [0.0, 90.0, 0.0]\nspin = 15.0\n[[gems]]\nmeasurements_mm = [5.0, 5.0, 3.0]\nmaterial = \"diamond\"\ncolor_grade = \"D\"\ncenter = [0.0, 0.5, 0.0]\nscale_mm = 0.001\nrotate = [10.0, 0.0, 0.0]\nspin = 30.0\n";
         let file: SceneFile = toml::from_str(text).unwrap();
         assert_eq!(file.objects[0].rotate, Some([0.0, 90.0, 0.0]));
+        assert_eq!(file.objects[0].spin, Some(15.0));
+        assert_eq!(file.gems[0].spin, Some(30.0));
         assert_eq!(file.gems[0].rotate, Some([10.0, 0.0, 0.0]));
         build(file, std::path::Path::new(".")).unwrap();  // builds with rotations applied
     }

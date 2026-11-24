@@ -222,11 +222,10 @@ The stone is staged in bright product lighting — a studio lightbox env map
 facets catch crisp streaks) over a pbr disk floor (radius 30), Blue Nile style —
 with caustics on. Generated scenes are normalized so the stone's length is exactly 1 scene unit
 (all distances, camera, photon radius derive from it); the scene also ships a
-ready-to-render `[animation]` / `[animation.spin]` block: the gem turns in place about
-its own vertical axis (angle driven by ray time, so frames motion-blur correctly) while
-the camera stays on the fixed default framing (`look_from = [2.8954, 2.7513, -4.9337]`,
-`look_at = [0.3114, 0.5552, -0.3957]`, vfov 30 deg), so every frame keeps the still shot's
-composition (full 360-degree turn, 96 frames at 24 fps). Overrides: `--material`,
+ready-to-render `[animation]` / `[animation.orbit]` block derived from the fixed default
+camera (`look_from = [2.8954, 2.7513, -4.9337]`, `look_at = [0.3114, 0.5552, -0.3957]`,
+vfov 30 deg), so every stone gets identical framing and frame 0 of the turntable is
+exactly the still shot (full 360-degree orbit, 96 frames at 24 fps). Overrides: `--material`,
 `--cut`, `--gap-mm`, `--no-chart`, `--lights`, `--no-caustics`, `--no-animation`. Unparseable fields produce warnings,
 never a broken file.
 The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only

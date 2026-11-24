@@ -41,6 +41,9 @@ path = "assets/hdri_lightbox_default_2k_sRGBlinear.exr"
 #   rotate    = [rx, ry, rz]  # Euler degrees, fwd = Ry*Rx*Rz (Rz first); about the
 #                             # object's local origin (gems: about their center)
 #   rotate_y  = 90.0          # shorthand adding to rotate[1]
+#   spin      = 45.0          # STATIC spin about the local Y axis (gems: own center) =
+#                             # rotate = [0, spin, 0]; placement only, NOT an animation,
+#                             # so stills render crisp at this angle
 #   translate = [x, y, z]     # applied last
 
 # Floor. Use `disk`, not `infinite_plane`, when the background is an env map —
@@ -154,7 +157,7 @@ color  = [6.0, 6.0, 6.0]
 # girdle_pct      = 2.0                     # girdle band thickness, % of diameter (0 = knife edge)
 # center          = [0.0, 0.02, 0.0]        # girdle centre, scene units
 # scale_mm        = 0.001                   # mm -> scene units (default 0.001)
-# scale / rotate / rotate_y / translate      # same per-object transforms as [[objects]] (gems rotate about center)
+# scale / rotate / rotate_y / spin / translate  # same per-object transforms as [[objects]] (gems rotate/spin about center)
 
 # ── [caustics] ── photon-map caustics (glass/water pools of light) ────────────
 # [caustics]
@@ -175,13 +178,6 @@ color  = [6.0, 6.0, 6.0]
 # start_angle = 0.0               # degrees; 0 = +Z from center
 # end_angle   = 360.0             # full orbit
 # vfov / aperture / focus_dist    # optional per-orbit camera overrides
-#
-# or spin the gems in place (turntable; camera stays on the still [camera]):
-# [animation.spin]            # camera-wise, orbit takes precedence when both are set
-# start_angle = 0.0           # degrees at frame 0 (ray time 0)
-# end_angle   = 360.0         # degrees at the last frame (ray time = duration)
-#                             # STEP rotation: each frame is a crisp still at its
-#                             # exact angle (fps x duration frames, uniform step)
 #
 # or [[animation.keyframes]] entries for a Catmull-Rom path:
 # [[animation.keyframes]]

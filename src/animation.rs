@@ -25,19 +25,9 @@ pub struct OrbitData {
     pub focus_dist:  Option<f32>,  // None = compute from distance
 }
 
-/// Gem spin (`[animation.spin]`): the camera stays on `still`; every [[gems]]
-/// object rotates about the vertical axis through its own center, angle driven
-/// by ray time over [0, duration] (so per-frame motion blur is correct).
-pub struct SpinData {
-    /// Camera stays on this keyframe for the whole animation; the spin angles live
-    /// in the SpinY wrappers around each gem (driven by ray time).
-    pub still: Keyframe,
-}
-
 pub enum AnimationKind {
     Keyframes(Vec<Keyframe>),
     Orbit(OrbitData),
-    Spin(SpinData),
 }
 
 pub struct AnimationData {
@@ -61,7 +51,6 @@ impl AnimationData {
 
     pub fn evaluate(&self, t: f32) -> Keyframe {
         match &self.kind {
-            AnimationKind::Spin(s) => s.still.clone(),
             AnimationKind::Keyframes(kf) => evaluate_keyframes(kf, t),
             AnimationKind::Orbit(o) => {
                 let frac = (t / self.duration).clamp(0.0, 1.0);

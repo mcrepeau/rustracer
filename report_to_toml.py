@@ -278,7 +278,7 @@ def render_toml(f, args):
     lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
     lines.append("# Render still:     --render --preset final --width 480 --height 300 --output out.png")
     lines.append("# Render turntable: --render --preset final --width 1280 --height 720 --output frames")
-    lines.append("#                   (the [animation.spin] block at the bottom turns the stone in place)")
+    lines.append("#                   (the [animation.orbit] block at the bottom frames the stone automatically)")
     lines.append("")
     lines.append('name = "%s %s"' % (f["report"], f["style"]))
     lines.append("")
@@ -342,17 +342,26 @@ def render_toml(f, args):
         lines.append("")
 
     if not args.no_animation:
-        # Turntable: the GEM spins about its own vertical axis (angle driven by ray
-        # time, so frames motion-blur correctly); camera, chart and env map stay
-        # fixed on the still framing, so every frame uses the [camera] block above.
-        lines.append("# --- Animation: 360-degree spin of the gem (camera/chart/env stay fixed) ---")
+        # Auto-framed 360-degree orbit matching the still camera: radius, height and
+        # start_angle derive from look_from (orbit angle 0 = +Z), look_at is the same
+        # point, so frame 0 of the turntable is exactly the still shot and the framing
+        # is identical for every stone (stone length = 1 scene unit, vfov = 30 deg).
+        orb_r = math.hypot(lf[0], lf[2])
+        orb_a = math.degrees(math.atan2(lf[0], lf[2]))
+        lines.append("# --- Animation: 360-degree orbit matching the still camera (frame 0 = still shot) ---")
         lines.append("[animation]")
         lines.append("fps      = 24")
         lines.append("duration = 4.0   # 96 frames")
         lines.append("")
-        lines.append("[animation.spin]")
-        lines.append("start_angle = 0.0    # degrees at frame 0 (= the still shot)")
-        lines.append("end_angle   = 360.0  # degrees at the last frame: full turn")
+        lines.append("[animation.orbit]")
+        lines.append("center      = [0.0, 0.0, 0.0]    # orbit axis (XZ only; Y comes from `height`)")
+        lines.append("radius      = %.5g              # horizontal distance of look_from" % orb_r)
+        lines.append("height      = %.5g              # look_from y" % lf[1])
+        lines.append("look_at     = [%.4f, %.4f, %.4f]  # same as the still camera" % la)
+        lines.append("start_angle = %.5g              # orbit angle of look_from" % orb_a)
+        lines.append("end_angle   = %.5g              # full 360-degree orbit" % (orb_a + 360.0))
+        lines.append("vfov        = 30.0")
+        lines.append("focus_dist  = %.5g" % focus)
         lines.append("")
     return "\n".join(lines), warnings, dict(cut=cut, material=material, oval=oval)
 
