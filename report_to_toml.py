@@ -104,7 +104,13 @@ def parse_measurements(text, warnings):
 
     m = re.search(r"Measurements\s+([\d.]+(?:\s*-\s*[\d.]+)?)\s*X\s*([\d.]+)\s*X\s*([\d.]+)\s*MM", text)
     if m:
-        return [float(m.group(1).replace(" ", "")), float(m.group(2)), float(m.group(3))]
+        first = m.group(1)
+        if "-" in first:  # "8.99 - 9.03 X 6.42 X 3.97 MM" -> average the range
+            lo, hi = first.split("-")
+            l = (float(lo) + float(hi)) / 2.0
+        else:
+            l = float(first)
+        return [l, float(m.group(2)), float(m.group(3))]
     m = re.search(r"Measurements\s+([\d.]+(?:\s*-\s*[\d.]+)?)\s*X\s*([\d.]+)\s*MM", text)
     if m:  # round stone: "5.26 - 5.31 X 3.24 MM" = diameter range x depth
         first = m.group(1)
@@ -209,7 +215,10 @@ def render_toml(f, args):
     if args.chart:
         chart_scale = (args.chart_width * size) / 18.0   # OBJ units are cm
         card_top = 0.4 * chart_scale                     # OBJ y max = 0.4 cm
-    cy = (pav_mm + args.gap_mm) * scale + card_top       # girdle centre height above the floor
+    girdle_mm = (f.get("girdle_pct_val") or 2.0) / 100.0 * w_mm   # girdle band thickness, mm
+    # gem centre y: the culet tip sits at centre.y - (girdle_h/2 + pavilion_h),
+    # so the centre must include half the girdle band to rest the tip on the card
+    cy = (pav_mm + 0.5 * girdle_mm + args.gap_mm) * scale + card_top
     dist = max(3.2 * size, 0.012)                  # still used for --lights scaling
     # Fixed default camera: identical framing for every stone (stone length = 1 unit).
     lf = (2.8954, 2.7513, -4.9337)                 # look_from
@@ -343,8 +352,8 @@ def render_toml(f, args):
         lines.append("crown_pct       = %.6g                 # %% of minor axis" % f["crown_pct"])
         lines.append("pavilion_pct    = %.6g" % f["pavilion_pct"])
         lines.append("depth_pct       = %.6g" % f["depth_pct"])
-        gp = f.get("girdle_pct_val") or 2.0
-        lines.append("girdle_pct       = %.6g                 # girdle band, %% of diameter (report: %s)" % (gp, f.get("girdle") or "n/a"))
+    gp = f.get("girdle_pct_val") or 2.0
+    lines.append("girdle_pct       = %.6g                 # girdle band, %% of diameter (report: %s)" % (gp, f.get("girdle") or "n/a"))
     if f.get("girdle_finish"):
         lines.append('girdle_finish     = "%s"              # girdle condition from the report (brilliant cuts)' % f["girdle_finish"])
     if oval and cut == "brilliant":
@@ -353,9 +362,9 @@ def render_toml(f, args):
     lines.append('cut             = "%s"' % cut)
     lines.append('material        = "%s"' % material)
     if args.chart:
-        lines.append("center          = [0.0, %.5g, 0.0]   # pavilion (%.2f mm) + %.6g mm gap on chart top y=%.6g" % (cy, pav_mm, args.gap_mm, card_top))
+        lines.append("center          = [0.0, %.5g, 0.0]   # pavilion (%.2f mm) + girdle/2 (%.3f mm) + %.6g mm gap on chart top y=%.6g" % (cy, pav_mm, 0.5 * girdle_mm, args.gap_mm, card_top))
     else:
-        lines.append("center          = [0.0, %.5g, 0.0]   # pavilion (%.2f mm) + %.6g mm gap above the floor" % (cy, pav_mm, args.gap_mm))
+        lines.append("center          = [0.0, %.5g, 0.0]   # pavilion (%.2f mm) + girdle/2 (%.3f mm) + %.6g mm gap above the floor" % (cy, pav_mm, 0.5 * girdle_mm, args.gap_mm))
     lines.append("scale_mm        = %.6g               # mm -> scene units (stone length = 1)" % scale)
     lines.append("")
     if not args.no_caustics:

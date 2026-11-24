@@ -94,7 +94,7 @@ material = { type = "lambertian", color = [0.7, 0.3, 0.3] }
 #                                       noise_scale = 5.0, threshold = 0.0, g = 0.0 }
 # (g = Henyey-Greenstein anisotropy, -1..1)
 
-# All material types (inline-table form; `material` is optional — defaults to lambertian grey):
+# All material types (inline-table form; `material` is required on every [[objects]] entry):
 #   { type = "lambertian",          color = [r,g,b] }
 #   { type = "checker",             even = [r,g,b], odd = [r,g,b], scale = 2.0 }
 #   { type = "noise",               lo = [r,g,b], hi = [r,g,b], scale = 3.0 }   # soft perlin mottle

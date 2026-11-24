@@ -223,3 +223,33 @@ impl Hittable for HittableList {
         self.objects[idx].pdf_generate(origin, rng, time)
     }
 }
+
+/// Exact AABB of a convex polyhedron given as half-spaces `n.dot(x) <= d`
+/// (interior on the negative side of each plane).  The extreme points are the
+/// vertices: intersections of plane triples that satisfy every other plane.
+/// Returns None for a degenerate (empty) plane set.
+pub fn aabb_from_planes(planes: &[(Vec3, f32)]) -> Option<Aabb> {
+    let eps = 1e-5 * (1.0 + planes.iter().map(|&(_, d)| d.abs()).fold(0.0, f32::max));
+    let mut lo = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+    let mut hi = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    let mut found = false;
+    for i in 0..planes.len() {
+        for j in i + 1..planes.len() {
+            for k in j + 1..planes.len() {
+                let (a, da) = planes[i];
+                let (b, db) = planes[j];
+                let (c, dc) = planes[k];
+                // Cramer: solve [a; b; c] x = [da; db; dc]
+                let det = a.dot(b.cross(c));
+                if det.abs() < 1e-12 { continue; }
+                let p = (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) / det;
+                if planes.iter().all(|&(n, d)| n.dot(p) <= d + eps) {
+                    found = true;
+                    lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+                    hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+                }
+            }
+        }
+    }
+    if found { Some(Aabb::new(lo, hi)) } else { None }
+}

@@ -735,6 +735,27 @@ fn step_cut_preset(cut: &str, g: &GemConfig, crown_angle: f32, pavilion_angle: f
 /// (cut = "step"/"princess"/"asscher"/"radiant"/"baguette"/"cushion"/
 /// "trillion"/"marquise"/"pear"), with a preset or overridden
 /// `SpectralDielectric`.
+/// Reject NaN/inf and out-of-range gem parameters early: a NaN plane would
+/// otherwise produce phantom hits at t = infinity during BVH traversal.
+fn validate_diamond_params(radius: f32, table_pct: f32, crown_angle: f32, pavilion_angle: f32, girdle_pct: f32, what: &str) -> Result<(), String> {
+    if !(radius > 0.0 && radius.is_finite()) {
+        return Err(format!("{what}: radius must be positive and finite, got {radius}"));
+    }
+    if !(table_pct > 0.0 && table_pct < 100.0) {
+        return Err(format!("{what}: table_pct must be in (0, 100), got {table_pct}"));
+    }
+    if !(crown_angle.is_finite() && crown_angle > 0.0 && crown_angle < 90.0) {
+        return Err(format!("{what}: crown angle must be in (0, 90) deg, got {crown_angle}"));
+    }
+    if !(pavilion_angle.is_finite() && pavilion_angle > 0.0 && pavilion_angle < 90.0) {
+        return Err(format!("{what}: pavilion angle must be in (0, 90) deg, got {pavilion_angle}"));
+    }
+    if !(girdle_pct.is_finite() && girdle_pct >= 0.0 && girdle_pct < 100.0) {
+        return Err(format!("{what}: girdle_pct must be in [0, 100), got {girdle_pct}"));
+    }
+    Ok(())
+}
+
 fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     // Size: explicit measurements win, else carat weight.  With measurements,
     // the minor axis W sets the radius and L/W the oval ratio (round if ~equal).
@@ -755,6 +776,10 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     if !(g.table_pct > 0.0 && g.table_pct < 100.0) {
         return Err(format!("gem '{}': table_pct must be in (0, 100), got {}", g.report, g.table_pct));
     }
+    let girdle_pct_val = g.girdle_pct.unwrap_or(2.0);
+    if !(girdle_pct_val.is_finite() && girdle_pct_val >= 0.0 && girdle_pct_val < 100.0) {
+        return Err(format!("gem '{}': girdle_pct must be in [0, 100), got {}", g.report, girdle_pct_val));
+    }
 
     // IGI-style crown/pavilion percentages are fractions of the MINOR axis;
     // convert to facet angles via the (round-space) facet geometry.
@@ -767,6 +792,7 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         Some(p) => (p / 100.0 * w_mm * g.scale_mm / radius).atan().to_degrees(),
         None    => g.pavilion_angle,
     };
+    validate_diamond_params(radius, g.table_pct, crown_angle, pavilion_angle, girdle_pct_val, &format!("gem '{}'", g.report))?;
 
     let finish = parse_girdle_finish(g.girdle_finish.as_deref(), &format!("gem '{}'", g.report))?;
     let mut facets = g.girdle_facets.unwrap_or(if oval_ratio > 1.05 { 64 } else { 16 });
@@ -924,13 +950,16 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
                         Arc::new(Cone { center: p3(center), radius, height, mat }),
                     ShapeConfig::Disk { center, normal, radius } =>
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
-                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct, girdle_finish } =>
+                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct, girdle_finish } => {
+                        validate_diamond_params(radius, table_pct, crown_angle, pavilion_angle, girdle_pct, &format!("objects[{i}]"))
+                            .map_err(|e| format!("objects[{i}].shape: {e}"))?;
                         Arc::new(Diamond::new(
                             p3(center), radius,
                             DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct,
                                              girdle_finish: parse_girdle_finish(girdle_finish.as_deref(), &format!("objects[{i}]"))? },
                             mat,
-                        )),
+                        ))
+                    }
                     ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, outline, points, corner_pct, corner_segs, oval_segs, pear, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons, girdle_pct } => {
                         let ol = step_outline_name(outline.as_deref().unwrap_or("rect"), corner_pct, corner_segs, oval_segs, pear, points)
                             .map_err(|e| format!("objects[{i}].shape: {e}"))?;

@@ -246,6 +246,10 @@ impl StepCut {
         // Girdle band height: pct of the width (2b), GIA-style.
         let girdle_h   = (params.girdle_pct / 100.0 * 2.0 * b).clamp(0.0, 0.3 * b);
 
+        if !(params.girdle_pct.is_finite() && params.girdle_pct >= 0.0 && params.girdle_pct < 100.0) {
+            return Err(format!("StepCut: girdle_pct must be in [0, 100), got {}", params.girdle_pct));
+        }
+
         if !(crown_h > 0.0 && pavilion_h > 0.0) {
             return Err(format!("StepCut: crown/pavilion angles must be in (0, 90) degrees, got {} / {}",
                                params.crown_angle, params.pavilion_angle));
@@ -353,17 +357,17 @@ impl StepCut {
         planes.push((Vec3::new(0.0,  1.0, 0.0),  center.y + 0.5 * girdle_h + crown_h));
         planes.push((Vec3::new(0.0, -1.0, 0.0), -(center.y - 0.5 * girdle_h - pavilion_h)));
 
-        // Exact bbox in X/Z from the outline vertices.  In Y, the caps sit at
-        // ±crown_h/pavilion_h, but when the inset exceeds the outline apothem
-        // (e.g. pointed culet on a pinched outline) the step planes bind first,
-        // so clamp the heights by the apothem to keep the box tight.
+        // Exact bbox in X/Z from the outline vertices.  In Y the cap planes at
+        // +/- (girdle_h/2 + crown_h/pavilion_h) always bound the solid (they are
+        // real planes), so the unclamped heights stay correct even when the
+        // table/culet inset exceeds the outline apothem (pointed culet case).
+
         let minx = verts.iter().map(|v| v.0).fold(f32::INFINITY, f32::min);
         let maxx = verts.iter().map(|v| v.0).fold(f32::NEG_INFINITY, f32::max);
         let minz = verts.iter().map(|v| v.1).fold(f32::INFINITY, f32::min);
         let maxz = verts.iter().map(|v| v.1).fold(f32::NEG_INFINITY, f32::max);
-        let apothem = edges.iter().map(|&(_, h)| h).fold(f32::INFINITY, f32::min);
-        let top    = 0.5 * girdle_h + s.min(apothem)  * tan_c;
-        let bottom = 0.5 * girdle_h + sp.min(apothem) * tan_p;
+        let top    = 0.5 * girdle_h + s  * tan_c;
+        let bottom = 0.5 * girdle_h + sp * tan_p;
 
         let bbox = Aabb::new(
             Point3::new(center.x + minx, center.y - bottom, center.z + minz),

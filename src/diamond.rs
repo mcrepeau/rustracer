@@ -166,10 +166,20 @@ impl Diamond {
         }
 
         let circ_r = r / (PI / n as f32).cos();
-        let bbox = Aabb::new(
-            center - Vec3::new(circ_r * q, 0.5 * girdle_h + pavilion_h, circ_r),
-            center + Vec3::new(circ_r * q, 0.5 * girdle_h + crown_h,    circ_r),
-        );
+        // Knife edge (girdle_h == 0): the pavilion facets bulge past the girdle
+        // circle, so circ_r underestimates X/Z -- take the exact bbox from the
+        // plane set instead.  Banded mode: circ_r is exact (girdle vertices).
+        let bbox = if girdle_h > 0.0 {
+            Aabb::new(
+                center - Vec3::new(circ_r * q, 0.5 * girdle_h + pavilion_h, circ_r),
+                center + Vec3::new(circ_r * q, 0.5 * girdle_h + crown_h,    circ_r),
+            )
+        } else {
+            crate::hittable::aabb_from_planes(&planes).unwrap_or_else(|| Aabb::new(
+                center - Vec3::new(circ_r * q, pavilion_h, circ_r),
+                center + Vec3::new(circ_r * q, crown_h,    circ_r),
+            ))
+        };
 
 
         Self { planes, bbox, mat, center, crown_h, pavilion_h, girdle_h }

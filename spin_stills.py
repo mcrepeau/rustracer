@@ -46,7 +46,8 @@ def main():
         raise SystemExit("error: %s not found" % args.scene)
     exe = args.exe or os.path.join("target", "release", "rustracer.exe")
     out = args.output or os.path.join("renders", os.path.splitext(os.path.basename(args.scene))[0] + "_spin")
-    os.makedirs(out, exist_ok=True)
+    if not args.dry_run:
+        os.makedirs(out, exist_ok=True)
 
     n = args.frames
     step = 360.0 / n
@@ -77,10 +78,17 @@ def main():
         if r.returncode != 0:
             raise SystemExit("render failed at frame %d (exit %d)" % (i, r.returncode))
 
+    fps = 24
+    try:
+        import tomllib
+        with open(args.scene, "rb") as fh:
+            fps = float(tomllib.load(fh).get("animation", {}).get("fps", 24))
+    except Exception:
+        pass
     print("\nAll %d stills saved to %s/" % (n, out))
     print("Assemble with ffmpeg:")
-    print('  ffmpeg -r 24 -i "%s" -c:v libx264 -pix_fmt yuv420p output.mp4'
-          % os.path.join(out, "gem_%04d.png").replace(os.sep, "/"))
+    print('  ffmpeg -r %g -i "%s" -c:v libx264 -pix_fmt yuv420p output.mp4'
+          % (fps, os.path.join(out, "gem_%04d.png").replace(os.sep, "/")))
 
 
 if __name__ == "__main__":

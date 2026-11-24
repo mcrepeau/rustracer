@@ -100,7 +100,7 @@ Path tracing works by sending many rays from the camera into the scene. Each ray
 - **Next-event estimation (NEE) with MIS** — at each diffuse bounce, shadow rays are cast directly toward area lights, the sun, and the env map. Contributions are combined with the MIS **power heuristic (β = 2)** over all strategies (`wᵢ = pᵢ² / Σpⱼ²`), which partitions unity exactly; emission is never double-counted with NEE.
 - **Cosine-weighted hemisphere sampling** for diffuse indirect bounces — samples are biased toward directions that contribute more energy, reducing variance without introducing bias
 - **Depth of field** — rays are scattered across a simulated lens aperture, producing realistic out-of-focus blur. Bokeh shape is controlled by a configurable blade count.
-- **Motion blur** — in animated scenes, each frame's rays are jittered over that frame's own time slice `[t, t+1/fps)`
+- **Motion blur** - in animated scenes, each frame's rays are jittered over that frame's own time slice [t, t+1/fps); only time-varying elements are affected, so static TOML scenes render crisp stills
 
 ### Spectral rendering
 
