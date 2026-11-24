@@ -1,8 +1,10 @@
 # Rust build artifacts
 /target/
 
-# Render output
-*.png
+# Render output (bulk frames/series stay local; curated root examples can be tracked)
+frames/
+renders/
+scenes/*_spin/
 *.exr
 *.mp4
 

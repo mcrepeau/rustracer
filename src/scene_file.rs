@@ -1195,6 +1195,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn env_map_visible_field_parses() {
+        let text = "name = \"t\"
+[camera]
+look_from = [0,0,-5]
+look_at = [0,0,0]
+[background]
+type = \"env_map\"
+path = \"x.hdr\"
+visible = { type = \"solid\", color = [1.0, 1.0, 1.0] }
+";
+        let file: SceneFile = toml::from_str(text).unwrap();
+        match &file.background {
+            BackgroundConfig::EnvMap { visible, .. } =>
+                assert!(visible.is_some(), "visible parsed as None"),
+            _ => panic!("wrong background variant"),
+        }
+    }
+
+    #[test]
     fn load_img_supports_tiff() {
         // Poly Haven-style TIFF maps must load through image::open (tiff is a
         // default image feature) and round-trip pixel values exactly.
