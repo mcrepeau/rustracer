@@ -78,14 +78,14 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
   py render_qa.py render.png --annotate               # save render_qa.png with circles
   ```
 
-- **`scenes/assets/`** — env maps, textures, meshes. Generated gem scenes (see below) use the
-  purchased Poly Haven lightbox HDR `hdri_lightbox_default_2k_sRGBlinear.exr` (linear-sRGB
-  primaries; sampled bilinearly so the 2k map renders smoothly). Purchased assets stay local
+- **`scenes/assets/`** - env maps, textures, meshes. Generated gem scenes (see below) use the
+  purchased Poly Haven 8k lightbox HDR `studio_small_09_8k.hdr` (bilinear sampling; `--env` picks
+  another, e.g. the 2k `hdri_lightbox_default_2k_sRGBlinear.exr`). Purchased assets stay local
   (git-ignored); `scenes/scene.toml` demos with the local `sunset_puresky_4k.hdr`.
 
 - **`report_to_toml.py`** — turns an IGI/GIA grading-report PDF into a renderable `scenes/<report>.toml`
   (stdlib only; see "From a grading-report PDF" below):
-  `py report_to_toml.py 625469899.pdf [--material X] [--cut Y] [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation]`
+  `py report_to_toml.py 625469899.pdf [--env assets/studio_kontrast_04_8k.hdr] [--material X] [--cut Y] [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation]`
 - **`spin_stills.py`** — renders a gem-rotation still series (one crisp still per `--spin <deg>`,
   no motion blur, camera fixed):
   `py spin_stills.py scenes/625469899.toml [-n 96] [-o out/] [--preset final --width 1280 --height 720] [--tonemapper agx|aces] [--exposure f] [--dry-run]`
@@ -223,10 +223,10 @@ cargo run --release -- --scene scenes/625469899.toml
 
 By default the generated scene rests the stone centered on a grey chart card (the purchased
 `greyChart_OBJ.obj` mesh, textured with its sRGB TIFF) on a pbr disk floor (radius 30), lit by
-the `hdri_lightbox_default_2k_sRGBlinear.exr` env map alone; `--no-chart` drops the card, `--gap-mm` floats the stone.
+the `assets/studio_small_09_8k.hdr` env map alone (`--env` to change);
 
-The stone is staged in bright product lighting — a studio lightbox env map
-(`hdri_lightbox_default_2k_sRGBlinear.exr`, the purchased 2k lightbox HDR) as the sole light source; `--lights` adds angled overhead softbox `[[lights]]` quads (geometric, so
+The stone is staged in bright product lighting - a studio lightbox env map
+(`assets/studio_small_09_8k.hdr`, the purchased 8k lightbox HDR, default; `--env` switches) as the sole light source; `--lights` adds angled overhead softbox `[[lights]]` quads (geometric, so
 facets catch crisp streaks) over a pbr disk floor (radius 30), Blue Nile style —
 with caustics on. Generated scenes are normalized so the stone's length is exactly 1 scene unit
 (all distances, camera, photon radius derive from it); the scene also ships a

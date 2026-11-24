@@ -21,6 +21,7 @@ __pycache__/
 
 # Downloaded HDR environment maps stay local (only the generated studio HDRs are tracked)
 scenes/assets/*_4k.hdr
+scenes/assets/*_8k.hdr
 
 # Grading-report PDFs stay local (ingest them with report_to_toml.py)
 *.pdf

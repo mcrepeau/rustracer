@@ -226,9 +226,9 @@ def render_toml(f, args):
     focus = math.dist(lf, la)                      # focus_dist = |look_from - look_at|
 
     # Staging: stone rests centered on the grey chart card (unless --no-chart) on a
-    # pbr disk floor (radius 30), lit by the purchased lightbox HDR env map alone;
+    # pbr disk floor (radius 30), lit by the 8k lightbox HDR env map alone (--env to change);
     # --lights adds geometric softbox quads on top.
-    bg_lines = ['type = "env_map"', 'path = "assets/hdri_lightbox_default_2k_sRGBlinear.exr"']
+    bg_lines = ['type = "env_map"', 'path = "%s"' % args.env]
     staging = "lightbox studio HDR env map lights the scene; pbr disk floor (Blue Nile style)"
     lights_block = None
     if args.lights:
@@ -304,7 +304,7 @@ def render_toml(f, args):
         lines.append("#          (needs the local greyChart OBJ+TIFF in scenes/assets; regenerate with --no-chart to skip)")
     else:
         lines.append("# Staging: stone rests on the floor (culet tip + %.6g mm gap); " % args.gap_mm + staging + ";")
-    lines.append("# Lighting: assets/hdri_lightbox_default_2k_sRGBlinear.exr only" + (" plus [[lights]] softbox quads (--lights)" if args.lights else "") + ";")
+    lines.append("# Lighting: %s only" % args.env + (" plus [[lights]] softbox quads (--lights)" if args.lights else "") + ";")
     lines.append("# caustics on. Interactive view:  cargo run --release -- --scene scenes/" + os.path.basename(args.output))
     lines.append("# Render still:     --render --preset final --width 480 --height 300 --output out.png")
     lines.append("# Render turntable: --render --preset final --width 1280 --height 720 --output frames")
@@ -416,6 +416,8 @@ def main():
     ap.add_argument("--chart-obj", default="assets/greyChart_OBJ.obj", help="grey chart OBJ path (cm units)")
     ap.add_argument("--chart-tex", default="assets/greyChart_default_default_COL_sRGB.tiff",
                     help="grey chart albedo TIFF (sRGB, decoded to linear at sample time)")
+    ap.add_argument("--env", default="assets/studio_small_09_8k.hdr",
+                    help="env map path relative to scenes/ (default: assets/studio_small_09_8k.hdr, 8k lightbox; .hdr or .exr)")
     ap.add_argument("--no-caustics", action="store_true")
     ap.add_argument("--no-animation", action="store_true",
                     help="do not emit the [animation] / [animation.orbit] turntable block")
