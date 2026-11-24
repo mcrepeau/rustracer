@@ -232,7 +232,7 @@ def render_toml(f, args):
     # --lights adds geometric softbox quads on top.
     bg_lines = ['type = "env_map"', 'path = "%s"' % args.env]
     if not args.bg_env:
-        bg_lines.append('visible = { type = "solid", color = [1.0, 1.0, 1.0] }  # white seamless backdrop; env map still lights')
+        bg_lines.append('visible = { type = "gradient", top = [1.0, 1.0, 1.0], bottom = [0.8, 0.8, 0.8] }  # white seamless sweep; env map still lights')
     staging = "lightbox studio HDR env map lights the scene; pbr disk floor (Blue Nile style)"
     lights_block = None
     if args.lights:
@@ -330,7 +330,10 @@ def render_toml(f, args):
     lines.append("")
     lines.append("[[objects]]")
     lines.append('shape    = { type = "disk", center = [0, 0, 0], normal = [0, 1, 0], radius = 30 }')
-    lines.append('material = { type = "pbr", albedo = [0.5, 0.48, 0.46], roughness = 0.5, metallic = 0.0 }')
+    # Floor disk: mid-grey under the chart card, near-white without it so the stone's
+    # shadow reads against a seamless white sweep.
+    floor_albedo = '[0.9, 0.9, 0.9]' if not args.chart else '[0.5, 0.48, 0.46]'
+    lines.append('material = { type = "pbr", albedo = %s, roughness = 0.5, metallic = 0.0 }' % floor_albedo)
     lines.append("")
     if args.chart:
         lines.append("[[objects]]")

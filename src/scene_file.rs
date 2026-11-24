@@ -155,6 +155,8 @@ pub enum BackgroundConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum VisibleBg {
     Solid { color: [f32; 3] },
+    /// Vertical sweep backdrop: `bottom` at nadir, `top` at zenith.
+    Gradient { top: [f32; 3], bottom: [f32; 3] },
 }
 
 fn default_sun_elevation() -> f32 { 30.0 }
@@ -913,6 +915,8 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
             match visible {
                 Some(VisibleBg::Solid { color }) =>
                     Background::EnvMapSplit { env, visible: Box::new(Background::Solid(col(color))) },
+                Some(VisibleBg::Gradient { top, bottom }) =>
+                    Background::EnvMapSplit { env, visible: Box::new(Background::Gradient { top: col(top), bottom: col(bottom) }) },
                 None => Background::EnvMap(env),
             }
         }
@@ -1193,6 +1197,16 @@ fn build_material(cfg: MaterialConfig, base: &std::path::Path) -> Result<Arc<dyn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_map_visible_gradient_parses() {
+        let text = "name = \"t\"\n[camera]\nlook_from = [0,0,-5]\nlook_at = [0,0,0]\n[background]\ntype = \"env_map\"\npath = \"x.hdr\"\nvisible = { type = \"gradient\", top = [1.0, 1.0, 1.0], bottom = [0.8, 0.8, 0.8] }\n";
+        let file: SceneFile = toml::from_str(text).unwrap();
+        match &file.background {
+            BackgroundConfig::EnvMap { visible: Some(VisibleBg::Gradient { .. }), .. } => {}
+            _ => panic!("gradient visible not parsed"),
+        }
+    }
 
     #[test]
     fn env_map_visible_field_parses() {

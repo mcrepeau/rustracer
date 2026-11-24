@@ -161,6 +161,9 @@ impl EnvMapData {
 #[derive(Clone)]
 pub enum Background {
     Solid(Color),
+    /// Vertical seamless-paper sweep: `bottom` at nadir, `top` at zenith,
+    /// linear in dir.y.
+    Gradient { top: Color, bottom: Color },
     Physical { sun_dir: Vec3, turbidity: f32 },
     EnvMap(Arc<EnvMapData>),
     /// Env map provides ALL lighting (NEE, indirect sampling, photon power);
@@ -173,6 +176,10 @@ impl Background {
     pub fn eval(&self, dir: Vec3) -> Color {
         match self {
             Background::Solid(c)                           => *c,
+            Background::Gradient { top, bottom }           => {
+                let t = (dir.y.clamp(-1.0, 1.0) + 1.0) * 0.5;
+                *bottom * (1.0 - t) + *top * t
+            }
             Background::Physical { sun_dir, turbidity }    => preetham_sky(dir, *sun_dir, *turbidity),
             Background::EnvMap(em)                         => em.sample(dir),
             Background::EnvMapSplit { visible, .. }       => visible.eval(dir),
@@ -705,6 +712,14 @@ pub fn render_tiles(
 mod env_tests {
     use super::*;
     use image::Rgb;
+
+    #[test]
+    fn gradient_bg_endpoints() {
+        let g = Background::Gradient { top: Color::new(1.0, 1.0, 1.0), bottom: Color::new(0.2, 0.2, 0.2) };
+        let up = g.eval(Vec3::new(0.0, 1.0, 0.0));
+        let dn = g.eval(Vec3::new(0.0, -1.0, 0.0));
+        assert!((up.x - 1.0).abs() < 1e-6 && (dn.x - 0.2).abs() < 1e-6);
+    }
 
     #[test]
     fn env_map_split_visible_bg_lighting_from_env() {

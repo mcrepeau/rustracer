@@ -145,6 +145,7 @@ type = "env_map"           # equirectangular HDR (.hdr Radiance RGBE or .exr in 
                             # for ACEScg downloads use the *_sRGBlinear file; v=0 = zenith; bilinear)
 path = "assets/sunset_puresky_4k.hdr"
 # visible = { type = "solid", color = [1.0, 1.0, 1.0] }  # optional: backdrop seen on miss rays;
+                                                       # or { type = "gradient", top = [1,1,1], bottom = [0.8,0.8,0.8] } for a seamless sweep;
                                                        # the env map still provides all lighting
 ```
 

@@ -29,6 +29,7 @@ type = "env_map"                          # HDR equirectangular panorama (.hdr o
                                            # sampled bilinearly, so 2k maps render smoothly)
 path = "assets/hdri_lightbox_default_2k_sRGBlinear.exr"
 # visible = { type = "solid", color = [1.0, 1.0, 1.0] }   # optional: separate backdrop seen on
+# visible = { type = "gradient", top = [1,1,1], bottom = [0.8,0.8,0.8] }   # seamless sweep
 #                                                        # miss rays; the env map still lights everything
 # type          = "physical"               # Preetham sky + sun disc
 # sun_azimuth   = 0.0                     # degrees clockwise from +Z, seen from above (default 0)
