@@ -85,7 +85,7 @@ Recommended workflow: render once with `--preset reference`, iterate with `--pre
 
 - **`report_to_toml.py`** — turns an IGI/GIA grading-report PDF into a renderable `scenes/<report>.toml`
   (stdlib only; see "From a grading-report PDF" below):
-  `py report_to_toml.py 625469899.pdf [--env assets/studio_kontrast_04_8k.hdr] [--material X] [--cut Y] [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation]`
+  `py report_to_toml.py 625469899.pdf [--env assets/studio_kontrast_04_8k.hdr] [--material X] [--cut Y] [--gap-mm 0.0] [--no-chart] [--lights] [--no-caustics] [--no-animation]`
 - **`spin_stills.py`** — renders a gem-rotation still series (one crisp still per `--spin <deg>`,
   no motion blur, camera fixed):
   `py spin_stills.py scenes/625469899.toml [-n 96] [-o out/] [--preset final --width 1280 --height 720] [--tonemapper agx|aces] [--exposure f] [--dry-run]`
@@ -223,8 +223,8 @@ py report_to_toml.py 625469899.pdf        # writes scenes/625469899.toml
 cargo run --release -- --scene scenes/625469899.toml
 ```
 
-By default the generated scene rests the stone centered on a grey chart card (the purchased
-`greyChart_OBJ.obj` mesh, textured with its sRGB TIFF) on a pbr disk floor (radius 30), lit by
+By default the generated scene rests the stone in contact (gap 0) centered on a grey chart card (the purchased
+`greyChart_OBJ.obj` mesh, textured with its sRGB TIFF, at true scale - 18 cm wide, i.e. 180/L_mm stone lengths) on a pbr disk floor (radius 30), lit by
 the `assets/studio_small_09_8k.hdr` env map alone (`--env` to change) on a white seamless backdrop (`--bg-env` to show the env itself); `--no-chart` drops the card, `--gap-mm` floats the stone.
 
 The stone is staged in bright product lighting - a studio lightbox env map
@@ -232,8 +232,8 @@ The stone is staged in bright product lighting - a studio lightbox env map
 facets catch crisp streaks) over a pbr disk floor (radius 30), Blue Nile style —
 with caustics on. Generated scenes are normalized so the stone's length is exactly 1 scene unit
 (all distances, camera, photon radius derive from it); the scene also ships a
-ready-to-render `[animation]` / `[animation.orbit]` block derived from the fixed default
-camera (`look_from = [2.8954, 2.7513, -4.9337]`, `look_at = [0.3114, 0.5552, -0.3957]`,
+ready-to-render `[animation]` / `[animation.orbit]` block derived from the fixed camera offset around the stone centre
+(look_at = stone centre, look_from = look_at + [2.5840, 2.1961, -4.5380],
 vfov 20 deg), so every stone gets identical framing and frame 0 of the turntable is
 exactly the still shot (full 360-degree orbit, 96 frames at 24 fps). Overrides: `--material`,
 `--cut`, `--gap-mm`, `--no-chart`, `--lights`, `--no-caustics`, `--no-animation`. Unparseable fields produce warnings,

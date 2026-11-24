@@ -4,7 +4,7 @@ rustracer scene TOML with a [[gems]] block.
 
 Usage:
     py report_to_toml.py REPORT.pdf [-o out.toml] [--material PRESET] [--cut CUT]
-                                [--gap-mm 0.1] [--no-chart] [--lights] [--no-caustics] [--no-animation]
+                                [--gap-mm 0.0] [--no-chart] [--lights] [--no-caustics] [--no-animation]
 
     py report_to_toml.py LG625469749.pdf            # writes scenes/LG625469749.toml
 
@@ -206,23 +206,25 @@ def render_toml(f, args):
     oval = cut == "brilliant" and l_mm / w_mm > 1.05
     # pavilion height in mm = W * pavilion_pct/100 (see build_gem angle conversion)
     pav_mm = w_mm * (f["pavilion_pct"] or 41.0) / 100.0
-    size = l_mm * scale                            # stone length in scene units
+    size = l_mm * scale                            # stone length in scene units (= 1)
+    chart_width = args.chart_width if args.chart_width is not None else 180.0 / l_mm  # true 18 cm card
     # Optional grey-chart card under the stone: the OBJ is in centimetres
     # (18 cm wide, 0.4 cm tall); scale it so the card is --chart-width stone
     # lengths wide. Its top becomes the new "floor" the culet tip rests on.
     card_top = 0.0
     chart_scale = 0.0
     if args.chart:
-        chart_scale = (args.chart_width * size) / 18.0   # OBJ units are cm
+        chart_scale = (chart_width * size) / 18.0   # OBJ units are cm
         card_top = 0.4 * chart_scale                     # OBJ y max = 0.4 cm
     girdle_mm = (f.get("girdle_pct_val") or 2.0) / 100.0 * w_mm   # girdle band thickness, mm
     # gem centre y: the culet tip sits at centre.y - (girdle_h/2 + pavilion_h),
     # so the centre must include half the girdle band to rest the tip on the card
     cy = (pav_mm + 0.5 * girdle_mm + args.gap_mm) * scale + card_top
     dist = max(3.2 * size, 0.012)                  # still used for --lights scaling
-    # Fixed default camera: identical framing for every stone (stone length = 1 unit).
-    lf = (2.8954, 2.7513, -4.9337)                 # look_from
-    la = (0.3114, 0.5552, -0.3957)                 # look_at
+    # Fixed default camera: look_at = stone centre, look_from = look_at + a fixed
+    # offset, so framing is identical for every stone whatever the card height.
+    la = (0.3114, cy, -0.3957)                     # look_at = stone centre (x,z = 0)
+    lf = (la[0] + 2.5840, la[1] + 2.1961, la[2] - 4.5380)   # look_from = la + fixed offset
     focus = math.dist(lf, la)                      # focus_dist = |look_from - look_at|
 
     # Staging: stone rests centered on the grey chart card (unless --no-chart) on a
@@ -302,7 +304,7 @@ def render_toml(f, args):
                      % (f["table_pct"], f["crown_pct"], f["pavilion_pct"], f["depth_pct"], f["culet"], f.get("girdle") or "n/a"))
     lines.append("#")
     if args.chart:
-        lines.append("# Staging: stone rests centered on a grey chart card (%.6g stone lengths wide); " % args.chart_width + staging + ";")
+        lines.append("# Staging: stone rests centered on a grey chart card (%.6g stone lengths wide); " % chart_width + staging + ";")
         lines.append("#          (needs the local greyChart OBJ+TIFF in scenes/assets; regenerate with --no-chart to skip)")
     else:
         lines.append("# Staging: stone rests on the floor (culet tip + %.6g mm gap); " % args.gap_mm + staging + ";")
@@ -335,7 +337,7 @@ def render_toml(f, args):
         lines.append('# grey chart card the stone rests on (OBJ in cm: %s)' % args.chart_obj)
         lines.append('shape    = { type = "mesh", path = "%s" }' % args.chart_obj)
         lines.append('material = { type = "textured_pbr", albedo_path = "%s", roughness = 0.9, metallic = 0.0 }' % args.chart_tex)
-        lines.append("scale    = %.6g              # card 18 cm wide -> %.6g stone lengths" % (chart_scale, args.chart_width))
+        lines.append("scale    = %.6g              # card 18 cm wide -> %.6g stone lengths" % (chart_scale, chart_width))
         lines.append("translate = [0.0, 0.0, -0.4]  # card shifted back 0.4; bottom on the floor, top at y = %.6g" % card_top)
         lines.append("")
     if lights_block:
@@ -372,8 +374,8 @@ def render_toml(f, args):
     if not args.no_caustics:
         lines.append("[caustics]")
         lines.append("enabled       = true")
-        lines.append("gather_radius = %.5g" % (1.2 * w_mm * scale))
-        lines.append("num_photons   = 300000")
+        lines.append("gather_radius = %.5g" % (0.35 * w_mm * scale))
+        lines.append("num_photons   = 500000")
         lines.append("")
 
     if not args.no_animation:
@@ -408,13 +410,13 @@ def main():
     ap.add_argument("-o", "--output", default=None, help="output .toml (default: scenes/<report>.toml next to this script)")
     ap.add_argument("--material", default=None, help="override material preset (diamond|sapphire|ruby|emerald)")
     ap.add_argument("--cut", default=None, help="override cut preset (brilliant|step|princess|...)")
-    ap.add_argument("--gap-mm", type=float, default=0.1, help="air gap under the stone, mm (default 0.1: culet tip resting)")
+    ap.add_argument("--gap-mm", type=float, default=0.0, help="air gap under the stone, mm (default 0.0: culet tip in contact, real shadow)")
     ap.add_argument("--no-chart", dest="chart", action="store_false",
                     help="no grey chart card under the stone (default: card on, stone resting centered on it)")
     ap.add_argument("--lights", action="store_true",
                     help="add geometric [[lights]] softbox quads on top of env-map lighting (default: env map only)")
-    ap.add_argument("--chart-width", type=float, default=4.0,
-                    help="chart card width in stone lengths (default 4.0)")
+    ap.add_argument("--chart-width", type=float, default=None,
+                    help="chart card width in stone lengths (default: 180/L_mm = true 18 cm card scale)")
     ap.add_argument("--chart-obj", default="assets/greyChart_OBJ.obj", help="grey chart OBJ path (cm units)")
     ap.add_argument("--chart-tex", default="assets/greyChart_default_default_COL_sRGB.tiff",
                     help="grey chart albedo TIFF (sRGB, decoded to linear at sample time)")
