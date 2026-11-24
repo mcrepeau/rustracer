@@ -34,6 +34,7 @@ cargo build --release --features denoise
 --convergence <pct>  convergence target in % (default: 99.0; requires --adaptive)
 --min-samples <n>    minimum SPP before any pixel may be marked converged (default: 128; requires --adaptive)
 --frames <n>         render only the first N frames of a scene animation; 1 = single still (default: all)
+--spin <deg>         override every [[gems]] spin (static rotation about the gem's own axis); render one crisp still per angle
 --no-photon-map      disable caustic photon map (faster, no caustics)
 --denoise [strength] run OIDN after render; optional blend in [0.0, 1.0] (default: 1.0; requires the denoise feature)
 ```
@@ -228,6 +229,18 @@ vfov 30 deg), so every stone gets identical framing and frame 0 of the turntable
 exactly the still shot (full 360-degree orbit, 96 frames at 24 fps). Overrides: `--material`,
 `--cut`, `--gap-mm`, `--no-chart`, `--lights`, `--no-caustics`, `--no-animation`. Unparseable fields produce warnings,
 never a broken file.
+
+Gem-rotation still series (static `spin` per still — crisp, no motion blur, camera fixed;
+the `[animation.orbit]` block above is the camera turntable instead):
+
+```sh
+for i in $(seq 0 95); do
+  d=$(py -c "print($i * 360.0 / 96)")
+  ./target/release/rustracer.exe --render --scene scenes/625469899.toml --spin "$d" \
+      --preset final --width 1280 --height 720 --frames 1 --output "frames/gem_$(printf %04d $i).png"
+done
+ffmpeg -r 24 -i frames/gem_%04d.png -c:v libx264 -pix_fmt yuv420p gem_spin.mp4
+```
 The report PDFs and the per-stone scenes they generate stay local (git-ignored) — only
 `scenes/scene.toml`, `scenes/sample.toml` and `scenes/bench.toml` are tracked. Purchased Poly Haven assets (grey chart OBJ/TIFF, lightbox EXR, cameras) stay local too.
 

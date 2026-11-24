@@ -131,6 +131,7 @@ struct RenderArgs {
     min_samples:      u32,
     no_photon_map:    bool,
     frames:          Option<u32>,
+    spin:            Option<f32>,
     #[cfg(feature = "denoise")]
     denoise:    Option<f32>,
 }
@@ -150,6 +151,7 @@ impl Default for RenderArgs {
             min_samples:     128,
             no_photon_map:   false,
             frames:          None,
+            spin:            None,
             #[cfg(feature = "denoise")]
             denoise:    None,
         }
@@ -204,6 +206,7 @@ fn print_help() {
     println!("  --min-samples <n>    Minimum SPP before any pixel may be marked converged (default: 128; requires --adaptive)");
     println!("  --no-photon-map      Disable caustic photon map (faster, no caustics)");
     println!("  --frames <n>         Render only the first N frames of a scene animation; 1 = single still (default: all)");
+    println!("  --spin <deg>         Override every [[gems]] spin (static rotation about the gem axis); render one crisp still per angle");
     #[cfg(feature = "denoise")]
     println!("  --denoise [strength] Run OIDN after render; optional strength in [0.0, 1.0] (default: 1.0)");
 }
@@ -268,6 +271,7 @@ fn parse_render_args() -> Result<RenderArgs, String> {
                 .map_err(|e| format!("--min-samples: {e}"))?,
             "--no-photon-map" => r.no_photon_map = true,
             "--frames"    => r.frames = Some(val!().parse::<u32>().map_err(|e| format!("--frames: {e}"))?),
+            "--spin"      => r.spin = Some(val!().parse::<f32>().map_err(|e| format!("--spin: {e}"))?),
             "--denoise"    => {
                 #[cfg(feature = "denoise")]
                 {
@@ -289,7 +293,7 @@ fn parse_render_args() -> Result<RenderArgs, String> {
 }
 
 fn run_render(args: RenderArgs) {
-    let mut scene = match scene_file::load(&args.scene) {
+    let mut scene = match scene_file::load_with(&args.scene, args.spin) {
         Ok(s)  => s,
         Err(e) => {
             eprintln!("Failed to load '{}': {e}", args.scene);

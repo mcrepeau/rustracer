@@ -583,10 +583,19 @@ fn default_step_spread()    -> f32  { 0.25  }
 /// Parse `path` (TOML) and return a fully built `SceneData`, or a human-readable
 /// error string suitable for printing to the console.
 pub fn load(path: &str) -> Result<SceneData, String> {
+    load_with(path, None)
+}
+
+/// Like `load`, but overrides every [[gems]] `spin` (static rotation about the
+/// gem's own vertical axis, degrees).  Used by `--spin <deg>` to render a series
+/// of crisp stills with the gem rotated: static placement, no motion blur, the
+/// camera never moves.
+pub fn load_with(path: &str, gem_spin: Option<f32>) -> Result<SceneData, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {path}: {e}"))?;
-    let file: SceneFile = toml::from_str(&text)
+    let mut file: SceneFile = toml::from_str(&text)
         .map_err(|e| format!("parse error in {path}:\n{e}"))?;
+    if let Some(s) = gem_spin { apply_gem_spin(&mut file, s); }
     // Asset paths in the file resolve relative to the scene file's own
     // directory first (so scenes/ can carry its own assets/), then cwd.
     let base = std::path::Path::new(path)
@@ -594,6 +603,11 @@ pub fn load(path: &str) -> Result<SceneData, String> {
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
     build(file, &base)
+}
+
+/// Set `spin` on every gem (used by `load_with` / `--spin`).
+fn apply_gem_spin(file: &mut SceneFile, spin: f32) {
+    for g in file.gems.iter_mut() { g.spin = Some(spin); }
 }
 
 /// Resolve an asset path from a scene file: a relative path that exists next
@@ -1127,6 +1141,15 @@ mod tests {
         assert_eq!(file.gems[0].spin, Some(30.0));
         assert_eq!(file.gems[0].rotate, Some([10.0, 0.0, 0.0]));
         build(file, std::path::Path::new(".")).unwrap();  // builds with rotations applied
+    }
+
+    #[test]
+    fn apply_gem_spin_sets_every_gem() {
+        let text = "name = \"t\"\n[camera]\nlook_from = [0,0,-5]\nlook_at = [0,0,0]\n[background]\ntype = \"solid\"\ncolor = [0.1,0.1,0.1]\n[[gems]]\nmeasurements_mm = [5.0,5.0,3.0]\nmaterial = \"diamond\"\ncenter = [0,0,0]\nscale_mm = 0.001\n[[gems]]\nmeasurements_mm = [4.0,4.0,2.5]\nmaterial = \"ruby\"\ncenter = [2,0,0]\nscale_mm = 0.001\n";
+        let mut file: SceneFile = toml::from_str(text).unwrap();
+        apply_gem_spin(&mut file, 45.0);
+        assert_eq!(file.gems.len(), 2);
+        assert!(file.gems.iter().all(|g| g.spin == Some(45.0)));
     }
 
     #[test]
