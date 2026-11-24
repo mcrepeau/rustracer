@@ -10,6 +10,18 @@ use crate::vec3::{Point3, Vec3};
 ///
 /// The three fields directly control the half-space normals of the analytic
 /// polyhedron built by [`Diamond::new`].
+/// Girdle band finish.  `Uniform` (default): flat vertical band of constant
+/// height all around.  `Faceted`: the IGI "faceted girdle" — the band height
+/// alternates between full and zero at every other girdle vertex, so crown and
+/// pavilion facets converge at alternating knife points and the band facets
+/// alternate tall/zero (the wavy, "alveola" girdle outline).  `Polished`:
+/// uniform band on a high-facet outline (smooth look; the scene loader raises
+/// girdle_facets to >= 64 for this).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GirdleFinish { Uniform, Faceted, Polished }
+
+impl Default for GirdleFinish { fn default() -> Self { GirdleFinish::Uniform } }
+
 #[derive(Clone, Debug)]
 pub struct DiamondParams {
     /// Table facet diameter as a percentage of the girdle diameter.
@@ -30,6 +42,8 @@ pub struct DiamondParams {
     /// so the outline deviation is ~r*(pi/N)^2/2 — 1.9% of the radius at
     /// N=16, 0.12% at N=64, i.e. a visually perfect oval.
     pub girdle_facets: u32,
+    /// Girdle band finish (see GirdleFinish).  Default Uniform.
+    pub girdle_finish: GirdleFinish,
     /// Girdle band thickness as a percentage of the girdle diameter (GIA-style:
     /// thin ~1.5%, medium ~3%, thick ~5%).  0 = knife edge.  Default 2%.
     pub girdle_pct: f32,
@@ -38,7 +52,7 @@ pub struct DiamondParams {
 
 impl Default for DiamondParams {
     fn default() -> Self {
-        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0, girdle_facets: 16, girdle_pct: 2.0 }
+        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0, girdle_facets: 16, girdle_finish: GirdleFinish::Uniform, girdle_pct: 2.0 }
     }
 }
 
@@ -103,6 +117,11 @@ impl Diamond {
         // With a girdle band, a crown plane runs through EVERY girdle edge (not just
         // every other one): otherwise nothing bounds the band at +g/2 on the edges
         // where a pavilion facet converges, and the band bulges vertically there.
+        // Faceted girdle: alternate the band height per vertex (full / knife),
+        // so the band facets alternate tall and zero — the wavy alveola outline.
+        let wavy = girdle_h > 0.0 && params.girdle_finish == GirdleFinish::Faceted;
+        let band_h = |k: u32| if wavy && k % 2 == 1 { 0.0 } else { girdle_h };
+
         let crown_n = if girdle_h > 0.0 { n } else { m };
         for k in 0..crown_n {
             let theta = k as f32 * 2.0 * PI / crown_n as f32;
@@ -110,7 +129,7 @@ impl Diamond {
             let n = Vec3::new(c * crown_h, r - table_r, s * crown_h).unit();
 
             // Face passes through the top edge of the girdle band at this azimuth.
-            let girdle_pt = Vec3::new(center.x + c * r, center.y + 0.5 * girdle_h, center.z + s * r);
+            let girdle_pt = Vec3::new(center.x + c * r, center.y + 0.5 * band_h(k), center.z + s * r);
 
             push_plane(n, girdle_pt);
         }
@@ -129,7 +148,7 @@ impl Diamond {
             let (s, c) = phi.sin_cos();
             let n = Vec3::new(c * pavilion_h, -r, s * pavilion_h).unit();
 
-            let girdle_pt = Vec3::new(center.x + c * r, center.y - 0.5 * girdle_h, center.z + s * r);
+            let girdle_pt = Vec3::new(center.x + c * r, center.y - 0.5 * band_h(k), center.z + s * r);
 
             push_plane(n, girdle_pt);
         }
@@ -305,6 +324,41 @@ mod tests {
                 d.any_hit(&r, 0.001, 100.0),
                 "mismatch for ray ({ox},{oy},{oz}) -> ({dx},{dy},{dz})"
             );
+        }
+    }
+
+    #[test]
+    fn faceted_girdle_alternates_band_facets() {
+        // girdle_pct = 2, r = 1 -> g/2 = 0.02.  Faceted finish: at EVEN girdle
+        // vertices the band is full height (ray just below +g/2 hits the vertical
+        // band face, normal.y == 0); at ODD vertices the band is a knife point
+        // (same ray hits a crown facet, normal.y > 0.5).
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+            DiamondParams { girdle_finish: GirdleFinish::Faceted, ..Default::default() }, mat());
+        assert_eq!(d.planes.len(), 49);  // same plane count as uniform
+        for k in 0..16u32 {
+            let a = k as f32 * 2.0 * PI / 16.0;
+            let (s, c) = a.sin_cos();
+            let r = Ray::new(Point3::new(10.0 * c, 0.019, 10.0 * s), Vec3::new(-c, 0.0, -s));
+            let rec = d.hit(&r, 0.001, 100.0).expect("hit");
+            if k % 2 == 0 {
+                assert!(rec.normal.y.abs() < 1e-6, "even vertex {k}: expected band face, n = {:?}", rec.normal);
+            } else {
+                assert!(rec.normal.y > 0.5, "odd vertex {k}: expected crown facet, n = {:?}", rec.normal);
+            }
+        }
+    }
+
+    #[test]
+    fn uniform_girdle_keeps_band_at_every_vertex() {
+        // default (Uniform): just below +g/2 every azimuth hits the band face
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
+        for k in 0..16u32 {
+            let a = k as f32 * 2.0 * PI / 16.0;
+            let (s, c) = a.sin_cos();
+            let r = Ray::new(Point3::new(10.0 * c, 0.019, 10.0 * s), Vec3::new(-c, 0.0, -s));
+            let rec = d.hit(&r, 0.001, 100.0).expect("hit");
+            assert!(rec.normal.y.abs() < 1e-6, "vertex {k}: expected band face, n = {:?}", rec.normal);
         }
     }
 

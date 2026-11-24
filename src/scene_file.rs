@@ -203,6 +203,9 @@ pub enum ShapeConfig {
         /// Girdle band thickness as % of the girdle diameter (0 = knife edge).
         #[serde(default = "default_girdle_pct")]
         girdle_pct:     f32,
+        /// Girdle condition: "faceted" (wavy/alveola band), "polished"/"bruted" (smooth).
+        #[serde(default)]
+        girdle_finish: Option<String>,
     },
     /// Step-family cut (emerald/princess/cushion/trillion/marquise/...) as an
     /// analytic convex polyhedron: polygon girdle outline, stepped crown and
@@ -615,6 +618,16 @@ fn apply_gem_spin(file: &mut SceneFile, spin: f32) {
     for g in file.gems.iter_mut() { g.spin = Some(spin); }
 }
 
+/// Map a `girdle_finish` TOML string to the enum; errors on unknown values.
+fn parse_girdle_finish(s: Option<&str>, what: &str) -> Result<crate::diamond::GirdleFinish, String> {
+    Ok(match s.map(str::to_lowercase).as_deref() {
+        None | Some("")              => crate::diamond::GirdleFinish::Uniform,
+        Some("faceted")             => crate::diamond::GirdleFinish::Faceted,
+        Some("polished") | Some("bruted") => crate::diamond::GirdleFinish::Polished,
+        Some(other) => return Err(format!("{what}: girdle_finish must be faceted|polished|bruted, got '{other}'")),
+    })
+}
+
 /// Resolve an asset path from a scene file: a relative path that exists next
 /// to the scene file wins; otherwise the path is used as-is (cwd-relative).
 fn resolve_asset(base: &std::path::Path, p: &str) -> String {
@@ -755,17 +768,12 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         None    => g.pavilion_angle,
     };
 
-    let finish = g.girdle_finish.as_deref().map(str::to_lowercase);
-    match finish.as_deref() {
-        None | Some("faceted") | Some("polished") | Some("bruted") => {}
-        Some(other) => return Err(format!(
-            "gem '{}': girdle_finish must be faceted|polished|bruted, got '{other}'", g.report)),
-    }
+    let finish = parse_girdle_finish(g.girdle_finish.as_deref(), &format!("gem '{}'", g.report))?;
     let mut facets = g.girdle_facets.unwrap_or(if oval_ratio > 1.05 { 64 } else { 16 });
     // Polished/bruted girdle = smooth band: approximate with many fine outline
     // facets (64-gon reads as smooth at render resolution).  Faceted keeps the
-    // distinct per-edge vertical facets.
-    if matches!(finish.as_deref(), Some("polished") | Some("bruted")) { facets = facets.max(64); }
+    // wavy per-vertex band (see GirdleFinish::Faceted).
+    if finish == crate::diamond::GirdleFinish::Polished { facets = facets.max(64); }
 
     let params = DiamondParams {
         table_pct:      g.table_pct,
@@ -773,6 +781,7 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         pavilion_angle,
         oval_ratio,
         girdle_facets:  facets,
+        girdle_finish:  finish,
         girdle_pct:     g.girdle_pct.unwrap_or(2.0),
     };
 
@@ -915,10 +924,11 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
                         Arc::new(Cone { center: p3(center), radius, height, mat }),
                     ShapeConfig::Disk { center, normal, radius } =>
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
-                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct } =>
+                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct, girdle_finish } =>
                         Arc::new(Diamond::new(
                             p3(center), radius,
-                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct },
+                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct,
+                                             girdle_finish: parse_girdle_finish(girdle_finish.as_deref(), &format!("objects[{i}]"))? },
                             mat,
                         )),
                     ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, outline, points, corner_pct, corner_segs, oval_segs, pear, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons, girdle_pct } => {

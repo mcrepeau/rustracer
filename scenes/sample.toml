@@ -155,7 +155,8 @@ color  = [6.0, 6.0, 6.0]
 # chevrons        = 3                       # optional override of the cut's default chevron count
 # girdle_facets   = 64                      # brilliant girdle sides (auto-64 for ovals)
 # girdle_pct      = 2.0                     # girdle band thickness, % of diameter (0 = knife edge)
-# girdle_finish   = "faceted"               # faceted (distinct band facets) | polished | bruted (smooth band; brilliant cuts)
+# girdle_finish   = "faceted"               # faceted = wavy/alveola band (alternating tall knife-edge facets,
+#                                           # IGI 'faceted girdle'); polished|bruted = smooth band (>=64 facets)
 # center          = [0.0, 0.02, 0.0]        # girdle centre, scene units
 # scale_mm        = 0.001                   # mm -> scene units (default 0.001)
 # scale / rotate / rotate_y / spin / translate  # same per-object transforms as [[objects]] (gems rotate/spin about center)
