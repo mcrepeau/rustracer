@@ -35,6 +35,10 @@ def main():
     ap.add_argument("--exe", default=None,
                     help="rustracer binary (default: target/release/rustracer.exe)")
     ap.add_argument("--denoise", action="store_true", help="pass --denoise to each render")
+    ap.add_argument("--tonemapper", default=None, choices=["agx", "aces"],
+                    help="tonemapper for every still (default: scene/CLI default agx)")
+    ap.add_argument("--exposure", type=float, default=None,
+                    help="exposure multiplier for every still (default: 1.0)")
     ap.add_argument("--dry-run", action="store_true", help="print the commands without running")
     args = ap.parse_args()
 
@@ -56,6 +60,10 @@ def main():
             cmd += ["--samples", str(args.samples)]
         if args.denoise:
             cmd.append("--denoise")
+        if args.tonemapper:
+            cmd += ["--tonemapper", args.tonemapper]
+        if args.exposure is not None:
+            cmd += ["--exposure", str(args.exposure)]
         cmds.append(cmd)
 
     if args.dry_run:
