@@ -219,6 +219,8 @@ pub enum ShapeConfig {
         /// Girdle band thickness as % of the girdle diameter (0 = knife edge).
         #[serde(default = "default_girdle_pct")]
         girdle_pct:     f32,
+        #[serde(default = "default_polish")]
+        polish:         f32,
         /// Girdle condition: "faceted" (wavy/alveola band), "polished"/"bruted" (smooth).
         #[serde(default)]
         girdle_finish: Option<String>,
@@ -274,6 +276,8 @@ pub enum ShapeConfig {
         /// Girdle band thickness as % of the width (0 = knife edge).
         #[serde(default = "default_girdle_pct")]
         girdle_pct:     f32,
+        #[serde(default = "default_polish")]
+        polish:         f32,
     },
     InfinitePlane {
         point:  [f32; 3],
@@ -561,6 +565,9 @@ pub struct GemConfig {
     /// Girdle band thickness as a percentage of the girdle diameter/width
     /// (GIA-style: thin ~1.5%, medium ~3%, thick ~5%).  Default 2%; 0 = knife edge.
     pub girdle_pct:      Option<f32>,
+    /// Per-facet micro-tilt in radians (polish marks); 0 = optical-perfect planes.
+    #[serde(default = "default_polish")]
+    pub polish:          f32,
     /// Girdle condition: "faceted" (distinct vertical facets on the band, the
     /// default look) or "polished"/"bruted" (smooth band, approximated by
     /// raising the outline to >= 64 facets).  Brilliant-family cuts only.
@@ -595,6 +602,7 @@ fn default_pavilion_angle()-> f32  { 40.75 }
 fn default_oval_ratio()    -> f32  { 1.0   }
 fn default_girdle_facets()  -> u32  { 16    }
 fn default_girdle_pct()     -> f32  { 2.0   }
+fn default_polish()         -> f32  { 0.02  }
 fn default_corner_pct()     -> f32  { 12.0  }
 fn default_corner_segs()    -> u32  { 4     }
 fn default_oval_segs()      -> u32  { 24    }
@@ -743,6 +751,7 @@ fn step_cut_preset(cut: &str, g: &GemConfig, crown_angle: f32, pavilion_angle: f
         table_pct: g.table_pct, crown_angle, pavilion_angle,
         outline, culet_pct, crown_steps, pavilion_steps, step_spread, chevrons: chev,
         girdle_pct: g.girdle_pct.unwrap_or(2.0),
+        polish:     g.polish,
     })
 }
 
@@ -825,6 +834,7 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         girdle_facets:  facets,
         girdle_finish:  finish,
         girdle_pct:     g.girdle_pct.unwrap_or(2.0),
+        polish:         g.polish,
     };
 
     // Cross-check the reported total depth against the facet heights (warning
@@ -973,22 +983,22 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
                         Arc::new(Cone { center: p3(center), radius, height, mat }),
                     ShapeConfig::Disk { center, normal, radius } =>
                         Arc::new(Disk::new(p3(center), v3(normal), radius, mat)),
-                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct, girdle_finish } => {
+                    ShapeConfig::Diamond { center, radius, table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct, girdle_finish, polish } => {
                         validate_diamond_params(radius, table_pct, crown_angle, pavilion_angle, girdle_pct, &format!("objects[{i}]"))
                             .map_err(|e| format!("objects[{i}].shape: {e}"))?;
                         Arc::new(Diamond::new(
                             p3(center), radius,
-                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct,
+                            DiamondParams { table_pct, crown_angle, pavilion_angle, oval_ratio, girdle_facets, girdle_pct, polish,
                                              girdle_finish: parse_girdle_finish(girdle_finish.as_deref(), &format!("objects[{i}]"))? },
                             mat,
                         ))
                     }
-                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, outline, points, corner_pct, corner_segs, oval_segs, pear, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons, girdle_pct } => {
+                    ShapeConfig::StepCut { center, length, width, table_pct, crown_angle, pavilion_angle, outline, points, corner_pct, corner_segs, oval_segs, pear, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons, girdle_pct, polish } => {
                         let ol = step_outline_name(outline.as_deref().unwrap_or("rect"), corner_pct, corner_segs, oval_segs, pear, points)
                             .map_err(|e| format!("objects[{i}].shape: {e}"))?;
                         let sc = StepCut::new(
                             p3(center), 0.5 * length, 0.5 * width,
-                            StepCutParams { table_pct, crown_angle, pavilion_angle, outline: ol, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons, girdle_pct },
+                            StepCutParams { table_pct, crown_angle, pavilion_angle, outline: ol, crown_steps, pavilion_steps, culet_pct, step_spread, chevrons, girdle_pct, polish },
                             mat,
                         ).map_err(|e| format!("objects[{i}].shape: {e}"))?;
                         Arc::new(sc)

@@ -133,6 +133,8 @@ pub struct StepCutParams {
     pub pavilion_steps: u32,
     /// Culet flat width as a percentage of the gem width (0 = pointed culet).
     pub culet_pct:      f32,
+    /// Per-facet micro-tilt amplitude in radians (polish marks); 0 = optical-perfect planes.
+    pub polish:         f32,
     /// Relative angle spread between the girdle row and the table row
     /// (0 = single slope, no visible steps).
     pub step_spread:    f32,
@@ -156,6 +158,7 @@ impl Default for StepCutParams {
             step_spread:    0.25,
             chevrons:       0,
             girdle_pct:     0.0,
+            polish:         0.0,
         }
     }
 }
@@ -176,6 +179,7 @@ pub struct StepCut {
     crown_h:    f32,
     pavilion_h: f32,
     girdle_h:   f32,
+    polish:      f32,
 }
 
 #[inline]
@@ -374,7 +378,8 @@ impl StepCut {
             Point3::new(center.x + maxx, center.y + top,    center.z + maxz),
         );
 
-        Ok(Self { planes, bbox, mat, center, crown_h, pavilion_h, girdle_h })
+        let polish = if params.polish.is_finite() { params.polish.clamp(0.0, 0.25) } else { 0.0 };
+        Ok(Self { planes, bbox, mat, center, crown_h, pavilion_h, girdle_h, polish })
     }
 }
 
@@ -390,6 +395,10 @@ impl Hittable for StepCut {
         let v = ((rel.y + 0.5 * self.girdle_h + self.pavilion_h) / (self.crown_h + self.pavilion_h + self.girdle_h)).clamp(0.0, 1.0);
 
         let mut rec = HitRecord::new(p, t, &*self.mat, r, outward_normal);
+        if self.polish > 0.0 {
+            let facet = self.planes.iter().position(|(n, _)| (n.x - outward_normal.x).abs() < 1e-6 && (n.y - outward_normal.y).abs() < 1e-6 && (n.z - outward_normal.z).abs() < 1e-6).unwrap_or(0);
+            rec.normal = crate::hittable::micro_tilt(facet, self.polish, rec.normal);
+        }
         rec.u = u;
         rec.v = v;
         Some(rec)

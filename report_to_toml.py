@@ -368,6 +368,7 @@ def render_toml(f, args):
     lines.append('color_grade     = "%s"' % f["color_grade"])
     lines.append('cut             = "%s"' % cut)
     lines.append('material        = "%s"' % material)
+    lines.append("polish          = 0.02                 # per-facet micro-tilt, radians (polish marks; 0 = optical-perfect)")
     if args.chart:
         lines.append("center          = [0.0, %.5g, 0.0]   # pavilion (%.2f mm) + girdle/2 (%.3f mm) + %.6g mm gap on chart top y=%.6g" % (cy, pav_mm, 0.5 * girdle_mm, args.gap_mm, card_top))
     else:

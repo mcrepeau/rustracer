@@ -33,6 +33,8 @@ pub struct DiamondParams {
     /// Pavilion main facet angle from the girdle plane, in degrees.
     /// GIA ideal: 40.6–41.0 °. Tolkowsky: 40.75 °.
     pub pavilion_angle: f32,
+    /// Per-facet micro-tilt amplitude in radians (polish marks); 0 = optical-perfect planes.
+    pub polish:         f32,
     /// Girdle stretch along X (length / width).  1.0 = round brilliant;
     /// e.g. 1.40 for an 8.99 x 6.42 mm oval.  `radius` is the semi-MINOR axis.
     pub oval_ratio: f32,
@@ -52,7 +54,7 @@ pub struct DiamondParams {
 
 impl Default for DiamondParams {
     fn default() -> Self {
-        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0, girdle_facets: 16, girdle_finish: GirdleFinish::Uniform, girdle_pct: 2.0 }
+        Self { table_pct: 53.0, crown_angle: 34.5, pavilion_angle: 40.75, oval_ratio: 1.0, girdle_facets: 16, girdle_finish: GirdleFinish::Uniform, girdle_pct: 2.0, polish: 0.0 }
     }
 }
 
@@ -82,6 +84,7 @@ pub struct Diamond {
     crown_h:    f32,
     pavilion_h: f32,
     girdle_h:   f32,
+    polish:      f32,
 }
 
 impl Diamond {
@@ -182,7 +185,8 @@ impl Diamond {
         };
 
 
-        Self { planes, bbox, mat, center, crown_h, pavilion_h, girdle_h }
+        let polish = if params.polish.is_finite() { params.polish.clamp(0.0, 0.25) } else { 0.0 };
+        Self { planes, bbox, mat, center, crown_h, pavilion_h, girdle_h, polish }
     }
 
 }
@@ -255,6 +259,10 @@ impl Hittable for Diamond {
         let v = ((rel.y + 0.5 * self.girdle_h + self.pavilion_h) / (self.crown_h + self.pavilion_h + self.girdle_h)).clamp(0.0, 1.0);
 
         let mut rec = HitRecord::new(p, t, &*self.mat, r, outward_normal);
+        if self.polish > 0.0 {
+            let facet = self.planes.iter().position(|(n, _)| (n.x - outward_normal.x).abs() < 1e-6 && (n.y - outward_normal.y).abs() < 1e-6 && (n.z - outward_normal.z).abs() < 1e-6).unwrap_or(0);
+            rec.normal = crate::hittable::micro_tilt(facet, self.polish, rec.normal);
+        }
         rec.u = u;
         rec.v = v;
         Some(rec)

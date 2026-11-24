@@ -253,3 +253,44 @@ pub fn aabb_from_planes(planes: &[(Vec3, f32)]) -> Option<Aabb> {
     }
     if found { Some(Aabb::new(lo, hi)) } else { None }
 }
+
+/// Deterministic per-facet micro-tilt ("polish marks"): real facets are not
+/// perfect optical planes -- each has a tiny tilt from the polishing process.
+/// `idx` = facet index (stable per plane), `amp` = max tilt in radians.
+/// `amp == 0` returns `n` unchanged.
+pub fn micro_tilt(idx: usize, amp: f32, n: Vec3) -> Vec3 {
+    if amp <= 0.0 { return n; }
+    let h = (idx as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ 0xD1B54A32D192ED03;
+    let a = (((h >> 32) as u32) as f32 / u32::MAX as f32) * 2.0 - 1.0;
+    let b = ((h as u32) as f32 / u32::MAX as f32) * 2.0 - 1.0;
+    let up = if n.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+    let t  = n.cross(up).unit();
+    let b2 = n.cross(t);
+    (n + t * (a * amp) + b2 * (b * amp)).unit()
+}
+
+#[cfg(test)]
+mod polish_tests {
+    use super::*;
+
+    #[test]
+    fn micro_tilt_zero_amp_is_identity() {
+        let n = Vec3::new(0.0, 1.0, 0.0);
+        let m = micro_tilt(7, 0.0, n);
+        assert!((m.x - n.x).abs() < 1e-7 && (m.y - n.y).abs() < 1e-7 && (m.z - n.z).abs() < 1e-7);
+    }
+
+    #[test]
+    fn micro_tilt_deterministic_bounded_per_facet() {
+        let n = Vec3::new(0.0, 1.0, 0.0);
+        let a = micro_tilt(42, 0.02, n);
+        let b = micro_tilt(42, 0.02, n);
+        assert!((a.x - b.x).abs() < 1e-7 && (a.y - b.y).abs() < 1e-7 && (a.z - b.z).abs() < 1e-7,
+                "must be deterministic per facet");
+        let ang = a.dot(n).acos();
+        assert!(ang < 0.06, "tilt angle {} rad exceeds bound", ang);
+        let c = micro_tilt(43, 0.02, n);
+        assert!((a.x - c.x).abs() > 1e-6 || (a.y - c.y).abs() > 1e-6 || (a.z - c.z).abs() > 1e-6,
+                "different facets must tilt differently");
+    }
+}
