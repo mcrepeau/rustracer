@@ -283,6 +283,57 @@ mod tests {
     fn mat() -> Arc<dyn Material> { Arc::new(Dielectric { ir: 1.5 }) }
 
     #[test]
+    fn pavilion_has_n_facets_converging_at_culet() {
+        // Horizontal rays at mid-pavilion height should hit each of the n
+        // pavilion planes exactly once per azimuth sweep: n distinct facets,
+        // all long triangles meeting at the culet (no horizontal band edges).
+        let n = 16u32;
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+            DiamondParams { girdle_facets: n, girdle_pct: 2.0, ..Default::default() }, mat());
+        let y = -d.pavilion_h * 0.5;   // mid-pavilion, below the girdle band
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..720 {
+            let a = i as f32 * PI / 360.0;
+            let r = Ray::new_at_time(Point3::new(0.0, y, 0.0), Vec3::new(a.cos(), 0.0, a.sin()), 0.0);
+            if let Some(rec) = d.hit(&r, 0.001, f32::INFINITY) {
+                for (idx, (pn, _)) in d.planes.iter().enumerate() {
+                    // exit normals come back face-forward (negated for interior rays)
+                    if (rec.normal - *pn).length() < 1e-4 || (rec.normal + *pn).length() < 1e-4 {
+                        seen.insert(idx);
+                        break;
+                    }
+                }
+            }
+        }
+        assert_eq!(seen.len() as u32, n, "expected {n} pavilion facets, got {}", seen.len());
+    }
+
+    #[test]
+    fn girdle_outline_is_regular_ngon_with_bounded_deviation() {
+        // Plan-view outline of an n-gon with apothem r: distance from centre
+        // along azimuth a is r / cos(a mod 2pi/n - pi/n), ranging over
+        // [r, r/cos(pi/n)]. For n=16 the vertex bulge is 1.96% of r.
+        let n = 16u32;
+        let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+            DiamondParams { girdle_facets: n, girdle_pct: 2.0, girdle_finish: GirdleFinish::Faceted, ..Default::default() }, mat());
+        let mut dmin = f32::INFINITY;
+        let mut dmax = 0.0f32;
+        for i in 0..720 {
+            let a = i as f32 * PI / 360.0;
+            let r = Ray::new_at_time(Point3::new(0.0, 0.0, 0.0), Vec3::new(a.cos(), 0.0, a.sin()), 0.0);
+            if let Some(rec) = d.hit(&r, 0.001, f32::INFINITY) {
+                let dist = (rec.p - Point3::new(0.0, 0.0, 0.0)).length();
+                dmin = dmin.min(dist);
+                dmax = dmax.max(dist);
+            }
+        }
+        let expect_max = 1.0 / (PI / n as f32).cos();
+        assert!((dmin - 1.0).abs() < 1e-3, "apothem should be r=1, got {dmin}");
+        assert!((dmax - expect_max).abs() < 1e-3, "vertex bulge should be {expect_max:.5}, got {dmax}");
+    }
+
+
+    #[test]
     fn convex_hit_accepts_entry_at_exactly_t_max() {
         // Closed-interval convention: entering the solid at t == t_max is a
         // hit (slab x in [-1, 1]: ray along +x from x=-5 enters at t=4).

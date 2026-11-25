@@ -539,6 +539,7 @@ pub struct GemConfig {
     #[serde(default = "default_color_grade")]
     pub color_grade:     String,
     /// Gem material preset: "diamond" (default), "sapphire", "ruby" or "emerald".
+    /// Debug: "checker" (opaque checkerboard) or "opaque" (matte grey) for geometry checks.
     /// Sets IOR/dispersion and a body-colour absorption (Beer-Lambert); the
     /// color_grade tint and explicit cauchy_b/cauchy_c/absorption add on top.
     #[serde(default)]
@@ -859,12 +860,22 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
         }
     }
 
-    let (mut cauchy_b, mut cauchy_c, preset_abs) = gem_preset(g.material.as_deref().unwrap_or("diamond"))?;
-    if let Some(v) = g.cauchy_b { cauchy_b = v; }
-    if let Some(v) = g.cauchy_c { cauchy_c = v; }
-    let absorption = gem_absorption(g, preset_abs);
-
-    let mat: Arc<dyn Material> = Arc::new(SpectralDielectric { cauchy_b, cauchy_c, absorption });
+    // Debug materials for geometry checks: `material = "checker"` renders the gem
+    // as an opaque fine 3-D checkerboard (facet layout / normals at a glance),
+    // `"opaque"` as plain matte grey. Both ignore cauchy/absorption.
+    let mat_name = g.material.as_deref().unwrap_or("diamond");
+    let mat: Arc<dyn Material> = match mat_name {
+        "checker" => Arc::new(Lambertian { texture: Texture::Checker {
+            scale: 12.0, even: Color::new(0.9, 0.9, 0.9), odd: Color::new(0.05, 0.05, 0.05) } }),
+        "opaque"  => Arc::new(Lambertian { texture: Texture::from(Color::new(0.8, 0.8, 0.8)) }),
+        _ => {
+            let (mut cauchy_b, mut cauchy_c, preset_abs) = gem_preset(mat_name)?;
+            if let Some(v) = g.cauchy_b { cauchy_b = v; }
+            if let Some(v) = g.cauchy_c { cauchy_c = v; }
+            let absorption = gem_absorption(g, preset_abs);
+            Arc::new(SpectralDielectric { cauchy_b, cauchy_c, absorption })
+        }
+    };
 
     // Cut style: brilliant (round/oval) or a step-family preset.
     let cut = g.cut.as_deref().unwrap_or("brilliant");
