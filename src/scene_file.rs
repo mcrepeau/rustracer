@@ -829,11 +829,9 @@ fn build_gem(g: &GemConfig) -> Result<Arc<dyn Hittable>, String> {
     validate_diamond_params(radius, g.table_pct, crown_angle, pavilion_angle, girdle_pct_val, &format!("gem '{}'", g.report))?;
 
     let finish = parse_girdle_finish(g.girdle_finish.as_deref(), &format!("gem '{}'", g.report))?;
-    let mut facets = g.girdle_facets.unwrap_or(if oval_ratio > 1.05 { 64 } else { 16 });
-    // Polished/bruted girdle = smooth band: approximate with many fine outline
-    // facets (64-gon reads as smooth at render resolution).  Faceted keeps the
-    // wavy per-vertex band (see GirdleFinish::Faceted).
-    if finish == crate::diamond::GirdleFinish::Polished { facets = facets.max(64); }
+    // Facet count n drives the crown/pavilion planes; the girdle band outline is
+    // handled inside Diamond::new (n-gon for Faceted, smooth 64-gon shell otherwise).
+    let facets = g.girdle_facets.unwrap_or(if oval_ratio > 1.05 { 64 } else { 16 });
 
     let params = DiamondParams {
         table_pct:      g.table_pct,
@@ -1366,8 +1364,8 @@ center = [0,0,0]
         let bb = h.bounding_box().unwrap();
         let width = bb.max.x - bb.min.x;
         // 1 ct -> d = (1/0.00355)^(1/3) ~= 6.55 mm; scale_mm default 0.001 -> 0.00655 units.
-        // The bbox uses the 16-gon circumradius r/cos(pi/16), so width = d*scale/cos(pi/16).
-        let expected = (1.0f32 / 0.00355).cbrt() * 0.001 / (std::f32::consts::PI / 16.0).cos();
+        // The bbox uses the smooth 64-gon band circumradius r/cos(pi/64), so width = d*scale/cos(pi/64).
+        let expected = (1.0f32 / 0.00355).cbrt() * 0.001 / (std::f32::consts::PI / 64.0).cos();
         assert!((width - expected).abs() < 1e-6, "width {width} vs expected {expected}");
     }
 
@@ -1382,7 +1380,7 @@ center = [0,0,0]
         let bb = h.bounding_box().unwrap();
         let width = bb.max.x - bb.min.x;
         // minor axis W = 6.40 sets the radius; L/W = 1.016 < 2% -> round
-        let expected = 6.40 * 0.001 / (std::f32::consts::PI / 16.0).cos();
+        let expected = 6.40 * 0.001 / (std::f32::consts::PI / 64.0).cos();
         assert!((width - expected).abs() < 1e-6, "width {width} vs expected {expected}");
     }
 

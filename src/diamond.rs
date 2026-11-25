@@ -72,9 +72,11 @@ impl Default for DiamondParams {
 /// Recommended material: `SpectralDielectric { cauchy_b: 2.395, cauchy_c: 0.00585, .. }`.
 /// With `girdle_pct` > 0 the crown/pavilion planes attach at y = +/-g/2 and N
 /// extra vertical planes form a flat girdle band around the widest outline
-/// With a band: 3N+1 half-spaces (1 table + N crown + N pavilion + N vertical band),
-/// and a crown/pavilion plane runs through EVERY girdle edge so the band height is
-/// uniform all around; with girdle_pct = 0 it stays N+1 (knife edge).
+/// With a band: 2N+1+M half-spaces (1 table + N crown + N pavilion + M vertical band
+/// planes). A FACETED girdle is M = N flat band facets (n-gon outline, wavy heights);
+/// a uniform/polished/bruted girdle is ground ROUND, so the band is a fine M=64
+/// shell (0.12% vertex bulge) and the N facet planes attach to the circle inside
+/// it. With girdle_pct = 0 there is no band: N+1 (knife edge).
 pub struct Diamond {
 
     planes:     Vec<(Vec3, f32)>,   // (outward unit normal n, offset d) — interior iff n·x ≤ d
@@ -99,7 +101,10 @@ impl Diamond {
 
         let n = (params.girdle_facets.max(4) / 2) * 2;  // even, >= 4
         let m = n / 2;                                   // main facets per side
-        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity((3 * n + 1) as usize);
+        // Band outline resolution: faceted girdle = n-gon (the band facets ARE the
+        // outline, wavy); otherwise the girdle is ground round -> fine 64-gon shell.
+        let band_m = if params.girdle_finish == GirdleFinish::Faceted { n } else { 64 };
+        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity((2 * n + 1 + band_m) as usize);
 
         // Push a facet plane given its ROUND-space unit normal `n` and a point
         // `g` on it: the oval shape is the round shape scaled by S = diag(q,1,1),
@@ -161,14 +166,14 @@ impl Diamond {
         // Girdle band: N vertical planes through the girdle N-gon edges
         // (apothem r), spanning y in [-g/2, +g/2] between crown and pavilion.
         if girdle_h > 0.0 {
-            for j in 0..n {
-                let a = j as f32 * 2.0 * PI / n as f32;
+            for j in 0..band_m {
+                let a = j as f32 * 2.0 * PI / band_m as f32;
                 let (s, c) = a.sin_cos();
                 push_plane(Vec3::new(c, 0.0, s), Vec3::new(center.x + c * r, center.y, center.z + s * r));
             }
         }
 
-        let circ_r = r / (PI / n as f32).cos();
+        let circ_r = if girdle_h > 0.0 { r / (PI / band_m as f32).cos() } else { r / (PI / n as f32).cos() };
         // Knife edge (girdle_h == 0): the pavilion facets bulge past the girdle
         // circle, so circ_r underestimates X/Z -- take the exact bbox from the
         // plane set instead.  Banded mode: circ_r is exact (girdle vertices).
@@ -332,6 +337,32 @@ mod tests {
         assert!((dmax - expect_max).abs() < 1e-3, "vertex bulge should be {expect_max:.5}, got {dmax}");
     }
 
+    #[test]
+    fn smooth_girdle_finishes_give_round_cylindrical_outline() {
+        // Uniform/Polished: band is a 64-gon shell -> plan outline bulge is only
+        // r/cos(pi/64) - 1 = 0.12% (vs 1.96% for the faceted n-gon), and the 16
+        // facet planes stay at 16 (crown/pavilion counts unaffected).
+        for finish in [GirdleFinish::Uniform, GirdleFinish::Polished] {
+            let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
+                DiamondParams { girdle_facets: 16, girdle_pct: 2.0, girdle_finish: finish, ..Default::default() }, mat());
+            assert_eq!(d.planes.len(), 97, "1 table + 16 crown + 16 pavilion + 64 band");
+            let mut dmin = f32::INFINITY;
+            let mut dmax = 0.0f32;
+            for i in 0..1440 {
+                let a = i as f32 * PI / 720.0;
+                let r = Ray::new_at_time(Point3::new(0.0, 0.0, 0.0), Vec3::new(a.cos(), 0.0, a.sin()), 0.0);
+                if let Some(rec) = d.hit(&r, 0.001, f32::INFINITY) {
+                    let dist = (rec.p - Point3::new(0.0, 0.0, 0.0)).length();
+                    dmin = dmin.min(dist);
+                    dmax = dmax.max(dist);
+                }
+            }
+            let expect_max = 1.0 / (PI / 64.0).cos();   // 1.00120
+            assert!((dmin - 1.0).abs() < 1e-3, "{finish:?}: apothem r=1, got {dmin}");
+            assert!((dmax - expect_max).abs() < 1e-3, "{finish:?}: bulge {expect_max:.5}, got {dmax}");
+        }
+    }
+
 
     #[test]
     fn convex_hit_accepts_entry_at_exactly_t_max() {
@@ -350,14 +381,14 @@ mod tests {
             DiamondParams { girdle_facets: 64, ..Default::default() }, mat());
         assert_eq!(d.planes.len(), 193);  // 1 table + 64 crown + 64 pavilion + 64 band
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0, Default::default(), mat());
-        assert_eq!(d.planes.len(), 49);   // classic: 1 + 16 + 16 + 16 band
+        assert_eq!(d.planes.len(), 97);   // classic: 1 + 16 + 16 crown/pav + 64-gon smooth band
     }
 
     #[test]
     fn odd_facet_count_rounds_down_to_even() {
         let d = Diamond::new(Point3::new(0.0, 0.0, 0.0), 1.0,
             DiamondParams { girdle_facets: 17, ..Default::default() }, mat());
-        assert_eq!(d.planes.len(), 49);   // 17 -> 16 -> 1 + 16 + 16 + 16 band
+        assert_eq!(d.planes.len(), 97);   // 17 -> 16 -> 1 + 16 + 16 + 64-gon band
     }
 
     #[test]

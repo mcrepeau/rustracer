@@ -226,7 +226,7 @@ diagram (crown% / table% / pavilion% / depth%; both the classic '... PROPORTIONS
 the newer crown/pavilion/culet/depth/table layout are parsed), the girdle descriptor (single
 word or range like 'Slightly Thick To Thick' -> midpoint %) and the girdle condition
 ('(Faceted)' / '(Polished)' / '(Bruted)' -> `girdle_finish`, which gives a faceted girdle its
-wavy/alveola band). Gem `material` also accepts the debug values `"checker"` / `"opaque"` to render the raw facet geometry (facet layout/normals check) — and writes a ready-to-render scene TOML into
+wavy/alveola band; uniform/polished/bruted girdles instead get a smooth cylindrical outline (fine 64-gon shell, 0.12% deviation) with the facet planes attached inside it). Gem `material` also accepts the debug values `"checker"` / `"opaque"` to render the raw facet geometry (facet layout/normals check) — and writes a ready-to-render scene TOML into
 `scenes/` (next to this script):
 
 ```
