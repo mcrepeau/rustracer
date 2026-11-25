@@ -41,6 +41,14 @@ def main():
                     help="exposure multiplier for every still (default: 1.0)")
     ap.add_argument("--firefly", type=float, default=None,
                     help="firefly clamp multiplier for every still (default: 8.0; 0 = off)")
+    ap.add_argument("--aperture", type=float, default=None,
+                    help="override camera aperture for every still (macro DOF ~ 0.02-0.06)")
+    ap.add_argument("--focus-dist", type=float, default=None,
+                    help="override camera focus distance for every still")
+    ap.add_argument("--vignette", type=float, default=None,
+                    help="lens vignetting for every still (0 = off; ~0.2-0.35 gentle)")
+    ap.add_argument("--distortion", type=float, default=None,
+                    help="barrel distortion coefficient for every still (0 = off; ~0.02-0.05)")
     ap.add_argument("--dry-run", action="store_true", help="print the commands without running")
     args = ap.parse_args()
 
@@ -69,6 +77,14 @@ def main():
             cmd += ["--exposure", str(args.exposure)]
         if args.firefly is not None:
             cmd += ["--firefly", str(args.firefly)]
+        if args.aperture is not None:
+            cmd += ["--aperture", str(args.aperture)]
+        if args.focus_dist is not None:
+            cmd += ["--focus-dist", str(args.focus_dist)]
+        if args.vignette is not None:
+            cmd += ["--vignette", str(args.vignette)]
+        if args.distortion is not None:
+            cmd += ["--distortion", str(args.distortion)]
         cmds.append(cmd)
 
     if args.dry_run:

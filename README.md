@@ -47,6 +47,10 @@ cargo build --release --features denoise
 --no-photon-map      disable caustic photon map (faster, no caustics)
 --firefly <f>        firefly clamp multiplier vs running mean (default 8.0; 0 = off)
 --firefly-floor <f>  absolute luminance floor of the clamp threshold (default 5.0)
+--aperture <f>       override scene camera aperture (0 = pinhole; macro DOF ~ 0.02-0.06)
+--focus-dist <f>     override scene camera focus distance (scene units)
+--vignette <f>       lens vignetting, corner falloff fraction (default 0; ~0.2-0.35 gentle)
+--distortion <k>     faint barrel distortion (default 0; ~0.02-0.05)
 --denoise [strength] run OIDN after render; optional blend in [0.0, 1.0] (default: 1.0; requires the denoise feature)
 ```
 
@@ -67,6 +71,20 @@ usually invisible and keeps interactive previews clean.
   remove the speckles instead. Lower values (e.g. `--firefly 16`) only if you render raw without
   the denoiser.
 - `spin_stills.py --firefly <f>` forwards the flag to every still of a spin series.
+
+### Camera optics (macro look)
+
+`--aperture` / `--focus-dist` override the scene camera (DOF; the scene's autofocus
+focus is used when `--focus-dist` is omitted). `--vignette` (linear-light corner
+falloff, corners at `1 - v`) and `--distortion` (faint barrel, lines bow outward)
+are post optics applied before tonemapping. A gentle macro recipe:
+
+```
+rustracer --render --scene scenes/702531654.toml --preset final --width 1600 --height 1067   --aperture 0.03 --vignette 0.25 --distortion 0.02 --output macro.png
+```
+
+All four flags are also forwarded by `spin_stills.py` to every still of a spin series.
+Defaults are 0 = off, so existing scenes render unchanged unless you ask for optics.
 
 ## Controls
 

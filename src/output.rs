@@ -148,3 +148,87 @@ pub fn save_png(
         Err(e) => eprintln!("Save failed: {e}"),
     }
 }
+
+/// Post optics applied in linear light before tonemapping:
+/// - vignette: multiply by `1 - vignette * r^2` with r normalised so the image
+///   corners sit at r = 1 (vignette 0.3 -> corners at 70% brightness).
+/// - distortion: faint barrel distortion; each output pixel samples the source
+///   at `c + (p - c) * (1 - k * r^2)` (bilinear), k > 0 bows straight lines
+///   outward like a real wide/macro lens.
+/// Both 0 returns an untouched copy.
+pub fn apply_optics(img: &[Color], w: u32, h: u32, vignette: f32, distortion: f32) -> Vec<Color> {
+    if vignette == 0.0 && distortion == 0.0 { return img.to_vec(); }
+    let cx = (w as f32 - 1.0) * 0.5;
+    let cy = (h as f32 - 1.0) * 0.5;
+    let rcorner = (cx * cx + cy * cy).sqrt().max(1e-6);
+    let mut out = vec![Color::default(); img.len()];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let dx = (x as f32 - cx) / rcorner;
+            let dy = (y as f32 - cy) / rcorner;
+            let r2 = dx * dx + dy * dy;
+            let s = 1.0 - distortion * r2;
+            let sx = (cx + dx * rcorner * s).clamp(0.0, w as f32 - 1.0);
+            let sy = (cy + dy * rcorner * s).clamp(0.0, h as f32 - 1.0);
+            let x0 = sx as usize;
+            let y0 = sy as usize;
+            let x1 = (x0 + 1).min(w as usize - 1);
+            let y1 = (y0 + 1).min(h as usize - 1);
+            let fx = sx - x0 as f32;
+            let fy = sy - y0 as f32;
+            let c00 = img[y0 * w as usize + x0];
+            let c10 = img[y0 * w as usize + x1];
+            let c01 = img[y1 * w as usize + x0];
+            let c11 = img[y1 * w as usize + x1];
+            let c = (c00 * (1.0 - fx) + c10 * fx) * (1.0 - fy)
+                  + (c01 * (1.0 - fx) + c11 * fx) * fy;
+            let vig = (1.0 - vignette * r2).max(0.0);
+            out[y * w as usize + x] = c * vig;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod optics_tests {
+    use super::*;
+
+    #[test]
+    fn optics_identity_when_off() {
+        let img: Vec<Color> = (0..16).map(|i| Color::new(i as f32, 0.0, 0.0)).collect();
+        let out = apply_optics(&img, 4, 4, 0.0, 0.0);
+        assert_eq!(out.len(), img.len());
+        for (a, b) in out.iter().zip(img.iter()) {
+            assert!((a.x - b.x).abs() < 1e-7 && (a.y - b.y).abs() < 1e-7 && (a.z - b.z).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn vignette_darkens_corners_not_center() {
+        let img = vec![Color::new(1.0, 1.0, 1.0); 16];
+        let out = apply_optics(&img, 4, 4, 0.4, 0.0);
+        let center = out[1 * 4 + 1];
+        assert!(center.x > 0.9 && center.x < 1.0, "near-center pixel only mildly darkened, got {}", center.x);
+        let corner = out[0];
+        assert!((corner.x - 0.6).abs() < 1e-6, "corner r^2 = 1 -> 1 - 0.4 = 0.6, got {}", corner.x);
+    }
+
+    #[test]
+    fn barrel_distortion_pulls_corners_inward() {
+        // horizontal gradient: value = x
+        let w = 9u32;   // odd size so pixel (4,4) is the exact centre
+        let h = 9u32;
+        let img: Vec<Color> = (0..(w * h) as usize)
+            .map(|i| Color::new((i % w as usize) as f32, 0.0, 0.0))
+            .collect();
+        let out = apply_optics(&img, w, h, 0.0, 0.2);
+        let corner_in = img[0].x;                       // 0.0
+        let corner_out = out[0].x;
+        // source moves inward -> samples x > 0 -> brighter than 0
+        assert!(corner_out > corner_in, "barrel corner should sample inward: {corner_out} vs {corner_in}");
+        // center unchanged
+        let c_in = img[(4 * w + 4) as usize].x;
+        let c_out = out[(4 * w + 4) as usize].x;
+        assert!((c_out - c_in).abs() < 1e-6);
+    }
+}

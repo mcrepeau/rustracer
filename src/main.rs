@@ -40,7 +40,7 @@ use renderer::{Background, render_tiles};
 #[cfg(feature = "denoise")]
 use renderer::{Background, render_tiles, render_aux_pass};
 use scene::SceneData;
-use output::{to_rgb_u32, save_png, ToneMapper};
+use output::{to_rgb_u32, save_png, apply_optics, ToneMapper};
 
 use winit::{
     dpi::PhysicalSize,
@@ -136,6 +136,10 @@ impl Default for FireflyConfig {
 struct RenderArgs {
     scene:      String,
     firefly:    FireflyConfig,
+    aperture:   Option<f32>,
+    focus_dist: Option<f32>,
+    vignette:   f32,
+    distortion: f32,
     samples:    Option<u32>,
     width:      u32,
     height:     u32,
@@ -157,6 +161,10 @@ impl Default for RenderArgs {
         Self {
             scene:           "scenes/scene.toml".to_string(),
             firefly:         FireflyConfig::default(),
+            aperture:        None,
+            focus_dist:      None,
+            vignette:        0.0,
+            distortion:      0.0,
             samples:         None,
             width:           WIDTH,
             height:          HEIGHT,
@@ -224,6 +232,10 @@ fn print_help() {
     println!("  --no-photon-map      Disable caustic photon map (faster, no caustics)");
     println!("  --firefly <f>        Firefly clamp multiplier vs running pixel mean (default: 8.0; 0 = off)");
     println!("  --firefly-floor <f>  Absolute luminance floor of the clamp threshold (default: 5.0)");
+    println!("  --aperture <f>       Override scene camera aperture (0 = pinhole; macro DOF ~ 0.02-0.06)");
+    println!("  --focus-dist <f>     Override scene camera focus distance (scene units)");
+    println!("  --vignette <f>       Lens vignetting, corner falloff fraction (default: 0 = off; ~0.2-0.35 gentle)");
+    println!("  --distortion <k>     Faint barrel distortion coefficient (default: 0 = off; ~0.02-0.05)");
     println!("  --frames <n>         Render only the first N frames of a scene animation; 1 = single still (default: all)");
     println!("  --spin <deg>         Override every [[gems]] spin (static rotation about the gem axis); render one crisp still per angle");
     #[cfg(feature = "denoise")]
@@ -291,6 +303,10 @@ fn parse_render_args() -> Result<RenderArgs, String> {
             "--no-photon-map" => r.no_photon_map = true,
             "--firefly"       => r.firefly.clamp = val!().parse::<f32>().map_err(|e| format!("--firefly: {e}"))?,
             "--firefly-floor" => r.firefly.abs_floor = val!().parse::<f32>().map_err(|e| format!("--firefly-floor: {e}"))?,
+            "--aperture"      => r.aperture   = Some(val!().parse::<f32>().map_err(|e| format!("--aperture: {e}"))?),
+            "--focus-dist"    => r.focus_dist = Some(val!().parse::<f32>().map_err(|e| format!("--focus-dist: {e}"))?),
+            "--vignette"      => r.vignette   = val!().parse::<f32>().map_err(|e| format!("--vignette: {e}"))?.clamp(0.0, 1.0),
+            "--distortion"    => r.distortion = val!().parse::<f32>().map_err(|e| format!("--distortion: {e}"))?.clamp(0.0, 1.0),
             "--frames"    => r.frames = Some(val!().parse::<u32>().map_err(|e| format!("--frames: {e}"))?),
             "--spin"      => r.spin = Some(val!().parse::<f32>().map_err(|e| format!("--spin: {e}"))?),
             "--denoise"    => {
@@ -323,6 +339,8 @@ fn run_render(args: RenderArgs) {
         }
     };
     if !args.no_photon_map { scene.rebuild_caustics(); }
+    if let Some(a) = args.aperture   { scene.cam_init.aperture = a; }
+    if let Some(f) = args.focus_dist { scene.cam_init.focus_dist = f; }
 
     let samples_max = args.samples.unwrap_or(scene.max_samples);
     let strata      = compute_strata(samples_max);
@@ -355,6 +373,14 @@ fn run_render(args: RenderArgs) {
         println!("Samples:    {samples_max}  (strata {strata}×{strata})");
     }
     println!("Tonemapper: {tm_name}  exposure {:.2}", args.exposure);
+    if args.aperture.is_some() || args.focus_dist.is_some() {
+        println!("Camera:     aperture {:.4}  focus {:.4} (CLI override)",
+                 args.aperture.unwrap_or(scene.cam_init.aperture),
+                 args.focus_dist.unwrap_or(scene.cam_init.focus_dist));
+    }
+    if args.vignette > 0.0 || args.distortion > 0.0 {
+        println!("Optics:     vignette {:.3}  barrel {:.3}", args.vignette, args.distortion);
+    }
     if args.no_photon_map { println!("Photon map: off"); }
     #[cfg(feature = "denoise")]
     if let Some(blend) = args.denoise {
@@ -382,13 +408,17 @@ fn run_render(args: RenderArgs) {
         // ── Camera for this frame ─────────────────────────────────────────────
         let camera: Camera = if let Some(anim) = &animation {
             let t  = frame_idx as f32 / anim.fps;
-            let kf = anim.evaluate(t);
+            let mut kf = anim.evaluate(t);
+            if let Some(a) = args.aperture   { kf.aperture = a; }
+            if let Some(f) = args.focus_dist { kf.focus_dist = f; }
             Camera::new(kf.look_from, kf.look_at, Vec3::new(0.0, 1.0, 0.0),
                         kf.vfov, aspect, kf.aperture, kf.focus_dist,
                         scene.cam_init.aperture_blades)
         } else {
             let mut cam = CameraState::from_params(&scene.cam_init);
             cam.autofocus(scene.world.as_ref());
+            if let Some(a) = args.aperture   { cam.aperture = a; }
+            if let Some(f) = args.focus_dist { cam.focus_dist = f; }
             cam.to_camera(aspect)
         };
 
@@ -504,6 +534,7 @@ fn run_render(args: RenderArgs) {
                     };
                     // output is already per-pixel-normalized; samples=1 so save_png
                     // applies exposure directly without a second division
+                    let output = apply_optics(&output, args.width, args.height, args.vignette, args.distortion);
                     save_png(&output, 1, None, scene.name,
                              args.width, args.height, args.exposure, args.tonemapper,
                              Some(actual_spp), Some(&path));
@@ -514,16 +545,24 @@ fn run_render(args: RenderArgs) {
         }
 
         if !saved {
-            let ps = pixel_samples_opt.as_deref();
             let out_path: Option<String> = if is_anim {
                 let out_dir = args.output.as_deref().unwrap_or(".");
                 Some(format!("{out_dir}/{slug}_{frame_idx:04}.png"))
             } else {
                 args.output.clone()
             };
-            save_png(&accumulator, actual_spp, ps, scene.name,
+            // Normalize to per-sample radiance, apply lens optics in linear light,
+            // then save with samples=1 so save_png does not divide again.
+            let raw: Vec<Color> = accumulator.iter().enumerate()
+                .map(|(i, c)| {
+                    let n = pixel_samples_opt.as_ref().map_or(actual_spp, |ps| ps[i]).max(1) as f32;
+                    Color::new(c.x / n, c.y / n, c.z / n)
+                })
+                .collect();
+            let raw = apply_optics(&raw, args.width, args.height, args.vignette, args.distortion);
+            save_png(&raw, 1, None, scene.name,
                      args.width, args.height, args.exposure, args.tonemapper,
-                     None, out_path.as_deref());
+                     Some(actual_spp), out_path.as_deref());
         }
     }
 
@@ -780,6 +819,8 @@ fn main() {
     // Adaptive sampling state
     let mut tonemapper          = ToneMapper::AgX;
     let     firefly             = FireflyConfig::default();
+    let     vignette            = 0.0f32;
+    let     distortion          = 0.0f32;
     let mut adaptive_on         = false;
     let     min_adaptive_samples: u32 = 128;
     let mut photon_map_on  = true;
@@ -874,10 +915,12 @@ fn main() {
                                             let blended: Vec<Color> = accumulator.iter().zip(denoised_guard.iter())
                                                 .map(|(acc, den)| *den * denoise_blend + *acc * sc * (1.0 - denoise_blend))
                                                 .collect();
+                                            let blended = apply_optics(&blended, win_w, win_h, vignette, distortion);
                                             save_png(&blended, 1, None, scene.name, win_w, win_h, exposure, tonemapper, Some(samples), None);
                                         } else {
                                             let ps = Some(pixel_samples.as_slice());
-                                            save_png(&accumulator, samples, ps, scene.name, win_w, win_h, exposure, tonemapper, None, None);
+                                            let acc2 = apply_optics(&accumulator, win_w, win_h, vignette, distortion);
+                                            save_png(&acc2, samples, ps, scene.name, win_w, win_h, exposure, tonemapper, None, None);
                                         }
                                     }
                                     #[cfg(not(feature = "denoise"))]
@@ -1160,14 +1203,16 @@ fn main() {
                     } else if adaptive_on {
                         write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure, tonemapper);
                     } else {
-                        write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
+                        let disp = apply_optics(&accumulator, win_w, win_h, vignette, distortion);
+                        write_tonemap(buf, &disp, sc, exposure, tonemapper);
                     }
                 }
                 #[cfg(not(feature = "denoise"))]
                 if adaptive_on {
                     write_tonemap_adaptive(buf, &accumulator, &pixel_samples, exposure, tonemapper);
                 } else {
-                    write_tonemap(buf, &accumulator, sc, exposure, tonemapper);
+                    let disp = apply_optics(&accumulator, win_w, win_h, vignette, distortion);
+                    write_tonemap(buf, &disp, sc, exposure, tonemapper);
                 }
                 buffer.present().unwrap();
             }
