@@ -153,6 +153,7 @@ turbidity     = 3.0        # must be >= 1.7
 type = "env_map"           # equirectangular HDR (.hdr Radiance RGBE or .exr in linear sRGB --
                             # for ACEScg downloads use the *_sRGBlinear file; v=0 = zenith; bilinear)
 path = "assets/sunset_puresky_4k.hdr"
+# rotate_y = 90.0                        # optional: yaw-rotate the env map (degrees)
 # visible = { type = "solid", color = [1.0, 1.0, 1.0] }  # optional: backdrop seen on miss rays;
                                                        # or { type = "gradient", top = [1,1,1], bottom = [0.8,0.8,0.8] } for a seamless sweep;
                                                        # the env map still provides all lighting
@@ -240,7 +241,7 @@ the `assets/studio_small_09_8k.hdr` env map alone (`--env` to change) on a white
 The stone is staged in bright product lighting - a studio lightbox env map
 (`assets/studio_small_09_8k.hdr`, the purchased 8k lightbox HDR, default; `--env` switches) as the sole light source; `--lights` adds angled overhead softbox `[[lights]]` quads (geometric, so
 facets catch crisp streaks) over a pbr disk floor (radius 30), Blue Nile style —
-with caustics on. Generated scenes are normalized so the stone's length is exactly 1 scene unit
+with caustics on (photon map: 2,000,000 photons with a tight gather radius, so the caustic stays a sharp bright flash at the contact point instead of a diffuse smudge). The env map is yawed `rotate_y = 270.0` by default so its key light sits overhead: the stone throws a compact shadow with the caustic concentrated right under the culet, not a soft blob offset to the side. Generated scenes are normalized so the stone's length is exactly 1 scene unit
 (all distances, camera, photon radius derive from it); the scene also ships a
 ready-to-render `[animation]` / `[animation.orbit]` block derived from the fixed camera offset around the stone centre
 (look_at = stone centre, look_from = look_at + [2.5840, 2.1961, -4.5380],

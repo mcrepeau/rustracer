@@ -142,6 +142,9 @@ pub enum BackgroundConfig {
     /// Equirectangular HDR environment map (.hdr RGBE or .exr).
     EnvMap {
         path: String,
+        /// Yaw-rotate the map (degrees) to place its key light where wanted.
+        #[serde(default)]
+        rotate_y: Option<f32>,
         /// Optional visible backdrop for miss rays; the env map still provides
         /// all lighting (NEE + indirect + photons), e.g. a white seamless:
         /// visible = { type = "solid", color = [1.0, 1.0, 1.0] }
@@ -915,7 +918,7 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
             }
         }
         BackgroundConfig::Solid { color } => Background::Solid(col(color)),
-        BackgroundConfig::EnvMap { path, visible } => {
+        BackgroundConfig::EnvMap { path, visible, rotate_y } => {
             let path = resolve_asset(base, &path);
             let mut reader = image::ImageReader::open(&path)
                 .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
@@ -926,7 +929,7 @@ fn build(file: SceneFile, base: &std::path::Path) -> Result<SceneData, String> {
                 .decode()
                 .map_err(|e| format!("cannot load environment map '{path}': {e}"))?
                 .into_rgb32f();
-            let env = Arc::new(EnvMapData::new(img));
+            let env = Arc::new(EnvMapData::new(img).with_rotation(rotate_y.unwrap_or(0.0)));
             match visible {
                 Some(VisibleBg::Solid { color }) =>
                     Background::EnvMapSplit { env, visible: Box::new(Background::Solid(col(color))) },

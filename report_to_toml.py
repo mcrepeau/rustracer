@@ -230,7 +230,8 @@ def render_toml(f, args):
     # Staging: stone rests centered on the grey chart card (unless --no-chart) on a
     # pbr disk floor (radius 30), lit by the 8k lightbox HDR env map alone (--env to change);
     # --lights adds geometric softbox quads on top.
-    bg_lines = ['type = "env_map"', 'path = "%s"' % args.env]
+    bg_lines = ['type = "env_map"', 'path = "%s"' % args.env,
+                'rotate_y = 270.0  # yaw the env map so its key light sits overhead: compact shadow + caustic under the culet']
     if not args.bg_env:
         bg_lines.append('visible = { type = "gradient", top = [1.0, 1.0, 1.0], bottom = [0.8, 0.8, 0.8] }  # white seamless sweep; env map still lights')
     staging = "lightbox studio HDR env map lights the scene; pbr disk floor (Blue Nile style)"
@@ -378,8 +379,8 @@ def render_toml(f, args):
     if not args.no_caustics:
         lines.append("[caustics]")
         lines.append("enabled       = true")
-        lines.append("gather_radius = %.5g" % (0.35 * w_mm * scale))
-        lines.append("num_photons   = 500000")
+        lines.append("gather_radius = %.5g" % (0.12 * w_mm * scale))
+        lines.append("num_photons   = 2000000")
         lines.append("")
 
     if not args.no_animation:

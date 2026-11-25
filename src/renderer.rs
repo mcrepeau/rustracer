@@ -24,7 +24,8 @@ pub struct EnvMapData {
     image:        Rgb32FImage,
     marginal_cdf: Vec<f32>,  // len = H; CDF over image rows
     cond_cdf:     Vec<f32>,  // len = H*W, row-major; conditional CDF over columns per row
-    inv_total:    f32,       // reciprocal of Σ(luminance × sinθ), used in PDF evaluation
+    inv_total:    f32,
+    rot_y:        f32,       // yaw rotation (radians) applied to sampled/queried dirs       // reciprocal of Σ(luminance × sinθ), used in PDF evaluation
 }
 
 impl EnvMapData {
@@ -68,14 +69,34 @@ impl EnvMapData {
             image,
             marginal_cdf,
             cond_cdf,
+            rot_y: 0.0,
         }
+    }
+
+    /// Builder: yaw-rotate the map around +Y by `deg` degrees, so a scene can
+    /// place the env's key light (e.g. overhead) regardless of map orientation.
+    pub fn with_rotation(mut self, deg: f32) -> Self {
+        self.rot_y = deg.to_radians();
+        self
+    }
+
+    #[inline]
+    fn rot_y(&self, d: Vec3) -> Vec3 {
+        let (s, c) = self.rot_y.sin_cos();
+        Vec3::new(d.x * c + d.z * s, d.y, -d.x * s + d.z * c)
+    }
+
+    #[inline]
+    fn unrot_y(&self, d: Vec3) -> Vec3 {
+        let (s, c) = self.rot_y.sin_cos();
+        Vec3::new(d.x * c - d.z * s, d.y, d.x * s + d.z * c)
     }
 
     /// Bilinear sample (u wraps around the seam, v clamps at the poles) so a
     /// low-res (e.g. 2k) env map renders smoothly instead of nearest-neighbour blocks.
     pub fn sample(&self, dir: Vec3) -> Color {
         use std::f32::consts::PI;
-        let d  = dir.unit();
+        let d  = self.unrot_y(dir.unit());
         let u  = (0.5 + d.x.atan2(d.z) / (2.0 * PI)).rem_euclid(1.0);
         let v  = d.y.clamp(-1.0, 1.0).acos() / PI;
         let w  = self.image.width()  as f32;
@@ -127,7 +148,7 @@ impl EnvMapData {
         let phi   = 2.0 * PI * (u - 0.5);
         let theta = PI * v;
         let sin_t = theta.sin();
-        let dir   = Vec3::new(sin_t * phi.sin(), theta.cos(), sin_t * phi.cos());
+        let dir   = self.rot_y(Vec3::new(sin_t * phi.sin(), theta.cos(), sin_t * phi.cos()));
 
         (dir, self.dir_pdf_at(i, j))
     }
@@ -137,7 +158,7 @@ impl EnvMapData {
         use std::f32::consts::PI;
         let w = self.image.width()  as usize;
         let h = self.image.height() as usize;
-        let d = dir.unit();
+        let d = self.unrot_y(dir.unit());
         let u = (0.5 + d.x.atan2(d.z) / (2.0 * PI)).rem_euclid(1.0);
         let v = d.y.clamp(-1.0, 1.0).acos() / PI;
         let i = ((u * w as f32) as usize).min(w - 1);
@@ -712,6 +733,28 @@ pub fn render_tiles(
 mod env_tests {
     use super::*;
     use image::Rgb;
+
+    #[test]
+    fn env_rotation_shifts_azimuth() {
+        use rand::SeedableRng;
+        let mut img = Rgb32FImage::new(8, 4);
+        for j in 0..4u32 {
+            for i in 0..8u32 {
+                let v = if i == 1 || i == 2 { 5.0f32 } else { 0.0 };  // bright band around u = 0.25 (-X)
+                img.put_pixel(i, j, Rgb([v, v, v]));
+            }
+        }
+        let env = EnvMapData::new(img).with_rotation(90.0);
+        // bright band around u=0.25 -> dir ~(-1,0,0); rotated +90deg about Y -> ~(0,0,1)
+        let c = env.sample(Vec3::new(0.0, 0.0, 1.0));
+        assert!(c.x > 4.0, "rotated map should be bright at +Z, got {}", c.x);
+        let c2 = env.sample(Vec3::new(-1.0, 0.0, 0.0));
+        assert!(c2.x < 1.0, "pre-rotation bright dir should be dark now, got {}", c2.x);
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+        let (d, pdf) = env.sample_dir(&mut rng);
+        let du = d.unit();
+        assert!(pdf > 0.0 && du.z > du.x.abs(), "sample_dir should land in the +Z half after rotation, got {:?} pdf {}", d, pdf);
+    }
 
     #[test]
     fn gradient_bg_endpoints() {
