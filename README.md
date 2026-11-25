@@ -51,6 +51,7 @@ cargo build --release --features denoise
 --focus-dist <f>     override scene camera focus distance (scene units)
 --vignette <f>       lens vignetting, corner falloff fraction (default 0; ~0.2-0.35 gentle)
 --distortion <k>     faint barrel distortion (default 0; ~0.02-0.05)
+--optics <name>      lens-look recipe: off / gentle / strong (explicit flags override)
 --denoise [strength] run OIDN after render; optional blend in [0.0, 1.0] (default: 1.0; requires the denoise feature)
 ```
 
@@ -80,11 +81,17 @@ falloff, corners at `1 - v`) and `--distortion` (faint barrel, lines bow outward
 are post optics applied before tonemapping. A gentle macro recipe:
 
 ```
-rustracer --render --scene scenes/702531654.toml --preset final --width 1600 --height 1067   --aperture 0.03 --vignette 0.25 --distortion 0.02 --output macro.png
+rustracer --render --scene scenes/702531654.toml --preset final --width 1600 --height 1067   --optics gentle --frames 1 --output still.png        # standard product still
+rustracer --render --scene scenes/702531654.toml --preset final --width 1600 --height 1067   --optics strong --frames 1 --output macro.png        # macro close-up
 ```
 
-All four flags are also forwarded by `spin_stills.py` to every still of a spin series.
-Defaults are 0 = off, so existing scenes render unchanged unless you ask for optics.
+`--optics gentle` = aperture 0.03, vignette 0.25, distortion 0.02 (standard still);
+`--optics strong` = aperture 0.06, vignette 0.40, distortion 0.05 (macro);
+`--optics off` = pinhole, no falloff, no warp. Explicit `--aperture` / `--vignette` /
+`--distortion` flags override the recipe. All of them are forwarded by `spin_stills.py`
+to every still of a spin series. Defaults are off, so existing scenes render unchanged
+unless you ask for optics. Note: add `--frames 1` for a single still — without it the
+scene's `[animation.orbit]` renders the camera turntable into a directory.
 
 ## Controls
 

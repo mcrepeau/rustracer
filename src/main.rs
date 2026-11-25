@@ -236,6 +236,7 @@ fn print_help() {
     println!("  --focus-dist <f>     Override scene camera focus distance (scene units)");
     println!("  --vignette <f>       Lens vignetting, corner falloff fraction (default: 0 = off; ~0.2-0.35 gentle)");
     println!("  --distortion <k>     Faint barrel distortion coefficient (default: 0 = off; ~0.02-0.05)");
+    println!("  --optics <name>      Lens-look recipe: off / gentle / strong (explicit flags override)");
     println!("  --frames <n>         Render only the first N frames of a scene animation; 1 = single still (default: all)");
     println!("  --spin <deg>         Override every [[gems]] spin (static rotation about the gem axis); render one crisp still per angle");
     #[cfg(feature = "denoise")]
@@ -268,6 +269,18 @@ fn apply_preset(r: &mut RenderArgs, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One-word lens-look recipes for --optics; explicit --aperture/--vignette/
+/// --distortion flags later on the command line override these (pre-scan).
+fn apply_optics_preset(r: &mut RenderArgs, name: &str) -> Result<(), String> {
+    match name {
+        "off"     => { r.aperture = Some(0.0); r.vignette = 0.0; r.distortion = 0.0; }
+        "gentle"  => { r.aperture = Some(0.03); r.vignette = 0.25; r.distortion = 0.02; }
+        "strong"  => { r.aperture = Some(0.06); r.vignette = 0.40; r.distortion = 0.05; }
+        other => return Err(format!("Unknown optics '{other}': use off, gentle or strong")),
+    }
+    Ok(())
+}
+
 fn parse_render_args() -> Result<RenderArgs, String> {
     let mut r  = RenderArgs::default();
     let argv: Vec<String> = std::env::args().skip(2).collect(); // skip binary + "--render"
@@ -277,6 +290,10 @@ fn parse_render_args() -> Result<RenderArgs, String> {
         let name = argv.get(pos + 1).ok_or("--preset requires a value (preview|final|reference)")?;
         apply_preset(&mut r, name)?;
     }
+    if let Some(pos) = argv.iter().position(|a| a == "--optics") {
+        let name = argv.get(pos + 1).ok_or("--optics requires a value (off|gentle|strong)")?;
+        apply_optics_preset(&mut r, name)?;
+    }
     let mut it = argv.into_iter().peekable();
     while let Some(flag) = it.next() {
         macro_rules! val {
@@ -284,6 +301,7 @@ fn parse_render_args() -> Result<RenderArgs, String> {
         }
         match flag.as_str() {
             "--preset"    => { val!(); } // applied by the pre-scan above
+            "--optics"    => { val!(); } // applied by the pre-scan above
             "--scene"      => r.scene    = val!(),
             "--samples"    => r.samples  = Some(val!().parse::<u32>().map_err(|e| format!("--samples: {e}"))?),
             "--width"      => r.width    = val!().parse::<u32>().map_err(|e| format!("--width: {e}"))?,

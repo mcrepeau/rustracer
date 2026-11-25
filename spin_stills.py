@@ -49,6 +49,8 @@ def main():
                     help="lens vignetting for every still (0 = off; ~0.2-0.35 gentle)")
     ap.add_argument("--distortion", type=float, default=None,
                     help="barrel distortion coefficient for every still (0 = off; ~0.02-0.05)")
+    ap.add_argument("--optics", default=None, choices=["off", "gentle", "strong"],
+                    help="lens-look recipe for every still (explicit flags override)")
     ap.add_argument("--dry-run", action="store_true", help="print the commands without running")
     args = ap.parse_args()
 
@@ -85,6 +87,8 @@ def main():
             cmd += ["--vignette", str(args.vignette)]
         if args.distortion is not None:
             cmd += ["--distortion", str(args.distortion)]
+        if args.optics is not None:
+            cmd += ["--optics", args.optics]
         cmds.append(cmd)
 
     if args.dry_run:
