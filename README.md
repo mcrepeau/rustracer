@@ -53,6 +53,21 @@ cargo build --release --features denoise
 Recommended workflow: render once with `--preset reference`, iterate with `--preset preview`, ship with
 `--preset final`, and check the result with `render_qa.py` (see Tools below).
 
+### Firefly control
+
+Specular highlights and caustic paths occasionally produce a single sample far brighter than the
+pixel's running mean (a "firefly"). The renderer clamps any sample whose luminance exceeds
+`max(--firefly × running pixel mean, --firefly-floor)` down to that threshold, but only after
+`FIREFLY_MIN_SAMPLES` (4) samples so a dark pixel's first legitimate bright sample isn't crushed
+(the floor exists for the same reason). This biases high-variance pixels slightly dark, which is
+usually invisible and keeps interactive previews clean.
+
+- Default `--firefly 8.0 --firefly-floor 5.0` is right for previews and most stills.
+- For final high-SPP renders prefer `--firefly 0 --denoise`: clamping off (no bias) and let OIDN
+  remove the speckles instead. Lower values (e.g. `--firefly 16`) only if you render raw without
+  the denoiser.
+- `spin_stills.py --firefly <f>` forwards the flag to every still of a spin series.
+
 ## Controls
 
 | Key | Action |
