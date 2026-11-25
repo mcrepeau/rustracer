@@ -128,15 +128,45 @@ const FIRE_LUMA_POW: f32 = 0.5;
 /// Floor for the luminance weight so deep violet is dimmed, not erased.
 const FIRE_LUMA_FLOOR: f32 = 0.08;
 
+/// Desaturate the fire tint toward its own luminance: 0 = full spectral hue,
+/// 1 = achromatic. Default 0.5 (measured: kills the lavender caustic cast while
+/// keeping visible fire; 0.85 reads as plain glass). Read once from the FIRE_DESAT env var so
+/// the amount can be swept without recompiling. Per-channel renormalisation in
+/// `fire_norms` keeps E_lambda[fire] = (1,1,1) for any value.
+fn fire_desat() -> f32 {
+    static D: OnceLock<f32> = OnceLock::new();
+    *D.get_or_init(|| {
+        std::env::var("FIRE_DESAT").ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.5_f32)  // default 0.5: keeps subtle fire, removes the violet cast (0 = full hue, 1 = achromatic)
+            .clamp(0.0_f32, 1.0_f32)
+    })
+}
+
+/// Luminance-weighted CMF colour at CIE (x,y,z), optionally desaturated toward
+/// its own luminance. This is the un-normalised fire tint.
+fn fire_color(x: f32, y: f32, z: f32) -> [f32; 3] {
+    let w = y.powf(FIRE_LUMA_POW).max(FIRE_LUMA_FLOOR);
+    let [r, g, b] = xyz_to_srgb_clamped(x, y, z);
+    let mut c = [r * w, g * w, b * w];
+    let d = fire_desat();
+    if d > 0.0 {
+        let lum = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        for ch in c.iter_mut() {
+            *ch = *ch * (1.0 - d) + lum * d;
+        }
+    }
+    c
+}
+
 fn fire_norms() -> [f32; 3] {
     *FIRE_NORMS.get_or_init(|| {
         let mut sum = [0.0f32; 3];
         for i in 0..CIE_N {
-            let w = CIE_Y[i].powf(FIRE_LUMA_POW).max(FIRE_LUMA_FLOOR);
-            let rgb = xyz_to_srgb_clamped(CIE_X[i], CIE_Y[i], CIE_Z[i]);
-            sum[0] += rgb[0] * w;
-            sum[1] += rgb[1] * w;
-            sum[2] += rgb[2] * w;
+            let c = fire_color(CIE_X[i], CIE_Y[i], CIE_Z[i]);
+            sum[0] += c[0];
+            sum[1] += c[1];
+            sum[2] += c[2];
         }
         [
             CIE_N as f32 / sum[0].max(1e-6),
@@ -157,10 +187,9 @@ pub fn spectral_fire_rgb(lambda: f32) -> Color {
     let x = CIE_X[i] + frac * (CIE_X[i + 1] - CIE_X[i]);
     let y = CIE_Y[i] + frac * (CIE_Y[i + 1] - CIE_Y[i]);
     let z = CIE_Z[i] + frac * (CIE_Z[i + 1] - CIE_Z[i]);
-    let w = y.powf(FIRE_LUMA_POW).max(FIRE_LUMA_FLOOR);
-    let [r, g, b] = xyz_to_srgb_clamped(x, y, z);
+    let c = fire_color(x, y, z);
     let n = fire_norms();
-    Color::new(r * w * n[0], g * w * n[1], b * w * n[2])
+    Color::new(c[0] * n[0], c[1] * n[1], c[2] * n[2])
 }
 
 /// Planck spectral radiance, un-normalised.
