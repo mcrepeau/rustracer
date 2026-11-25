@@ -118,8 +118,24 @@ fn run_bench() {
 
 // ── Headless render ───────────────────────────────────────────────────────────
 
+/// Runtime firefly-clamp settings (defaults are the compile-time consts below;
+/// `--firefly` / `--firefly-floor` override them per render).
+#[derive(Clone, Copy)]
+struct FireflyConfig {
+    clamp:       f32,   // <= 0 disables clamping entirely
+    min_samples: u32,
+    abs_floor:   f32,
+}
+
+impl Default for FireflyConfig {
+    fn default() -> Self {
+        Self { clamp: FIREFLY_CLAMP, min_samples: FIREFLY_MIN_SAMPLES, abs_floor: FIREFLY_ABS_FLOOR }
+    }
+}
+
 struct RenderArgs {
     scene:      String,
+    firefly:    FireflyConfig,
     samples:    Option<u32>,
     width:      u32,
     height:     u32,
@@ -140,6 +156,7 @@ impl Default for RenderArgs {
     fn default() -> Self {
         Self {
             scene:           "scenes/scene.toml".to_string(),
+            firefly:         FireflyConfig::default(),
             samples:         None,
             width:           WIDTH,
             height:          HEIGHT,
@@ -205,6 +222,8 @@ fn print_help() {
     println!("  --convergence <pct>  Convergence target in %% (default: 99.0; requires --adaptive)");
     println!("  --min-samples <n>    Minimum SPP before any pixel may be marked converged (default: 128; requires --adaptive)");
     println!("  --no-photon-map      Disable caustic photon map (faster, no caustics)");
+    println!("  --firefly <f>        Firefly clamp multiplier vs running pixel mean (default: 8.0; 0 = off)");
+    println!("  --firefly-floor <f>  Absolute luminance floor of the clamp threshold (default: 5.0)");
     println!("  --frames <n>         Render only the first N frames of a scene animation; 1 = single still (default: all)");
     println!("  --spin <deg>         Override every [[gems]] spin (static rotation about the gem axis); render one crisp still per angle");
     #[cfg(feature = "denoise")]
@@ -270,6 +289,8 @@ fn parse_render_args() -> Result<RenderArgs, String> {
             "--min-samples"   => r.min_samples = val!().parse::<u32>()
                 .map_err(|e| format!("--min-samples: {e}"))?,
             "--no-photon-map" => r.no_photon_map = true,
+            "--firefly"       => r.firefly.clamp = val!().parse::<f32>().map_err(|e| format!("--firefly: {e}"))?,
+            "--firefly-floor" => r.firefly.abs_floor = val!().parse::<f32>().map_err(|e| format!("--firefly-floor: {e}"))?,
             "--frames"    => r.frames = Some(val!().parse::<u32>().map_err(|e| format!("--frames: {e}"))?),
             "--spin"      => r.spin = Some(val!().parse::<f32>().map_err(|e| format!("--spin: {e}"))?),
             "--denoise"    => {
@@ -405,7 +426,7 @@ fn run_render(args: RenderArgs) {
                          &scene.lights, 1.0, scene.photon_map.as_deref(), frame_time);
 
             accumulate_sample(&mut accumulator, &scratch,
-                              &mut pixel_samples, &mut var_m2, &adap_conv);
+                              &mut pixel_samples, &mut var_m2, &adap_conv, &args.firefly);
             s += 1;
 
             if adaptive && s >= min_samples {
@@ -528,6 +549,7 @@ fn accumulate_sample(
     pixel_samples: &mut [u32],
     var_m2:        &mut [Color],
     adap_conv:     &[bool],
+    ff:            &FireflyConfig,
 ) {
     accumulator.par_iter_mut()
         .zip(scratch.par_iter())
@@ -549,9 +571,9 @@ fn accumulate_sample(
             // pixel whose first samples are all zero) would clamp its first legitimate
             // bright sample to ~0 and render black despite a healthy true mean.
             let old_lum  = luminance(old_mean);
-            let sc = if old_n >= FIREFLY_MIN_SAMPLES {
+            let sc = if ff.clamp > 0.0 && old_n >= ff.min_samples {
                 let l      = luminance(sc);
-                let thresh = (FIREFLY_CLAMP * old_lum).max(FIREFLY_ABS_FLOOR);
+                let thresh = (ff.clamp * old_lum).max(ff.abs_floor);
                 if l > thresh { sc * (thresh / l) } else { sc }
             } else { sc };
             *a  += sc;
@@ -631,6 +653,7 @@ const ADAPTIVE_THRESHOLD:   f32 = 0.05;
 /// Photon-map caustics are unaffected: the photon irradiance estimate is
 /// constant across samples, so it contributes equally to every sample and
 /// never appears as a spike relative to the running mean.
+// Defaults for FireflyConfig; override per render with --firefly / --firefly-floor.
 const FIREFLY_CLAMP:        f32 = 8.0;
 const FIREFLY_MIN_SAMPLES:  u32 = 4;
 /// Absolute floor (linear luminance) for the firefly-clamp threshold — see
@@ -756,6 +779,7 @@ fn main() {
     let mut strata = compute_strata(scene.max_samples);
     // Adaptive sampling state
     let mut tonemapper          = ToneMapper::AgX;
+    let     firefly             = FireflyConfig::default();
     let mut adaptive_on         = false;
     let     min_adaptive_samples: u32 = 128;
     let mut photon_map_on  = true;
@@ -1074,7 +1098,7 @@ fn main() {
                                  pm, None);
 
                     accumulate_sample(&mut accumulator, &scratch,
-                                      &mut pixel_samples, &mut var_m2, &adap_conv);
+                                      &mut pixel_samples, &mut var_m2, &adap_conv, &firefly);
                     samples += 1;
 
                     if adaptive_on && samples >= min_adaptive_samples {
@@ -1151,4 +1175,43 @@ fn main() {
             _ => {}
         }
     });
+}
+
+
+#[cfg(test)]
+mod firefly_tests {
+    use super::*;
+
+    fn px() -> (Vec<Color>, Vec<Color>, Vec<u32>, Vec<Color>, Vec<bool>) {
+        (vec![Color::default(); 1], vec![Color::default(); 1],
+         vec![0u32; 1], vec![Color::default(); 1], vec![false; 1])
+    }
+
+    #[test]
+    fn default_config_clamps_spike() {
+        let (mut acc, mut scratch, mut n, mut m2, conv) = px();
+        let ff = FireflyConfig::default();
+        // 4 dark samples first so min_samples is reached and mean ~ 0 (floor applies)
+        for _ in 0..4 {
+            scratch[0] = Color::new(0.0, 0.0, 0.0);
+            accumulate_sample(&mut acc, &scratch, &mut n, &mut m2, &conv, &ff);
+        }
+        scratch[0] = Color::new(100.0, 100.0, 100.0);   // firefly
+        accumulate_sample(&mut acc, &scratch, &mut n, &mut m2, &conv, &ff);
+        // clamped to max(8*0, 5.0) = 5.0 luminance
+        assert!((acc[0].x / n[0] as f32 - 5.0 / 5.0).abs() < 1e-4, "mean should be 5/5=1, got {}", acc[0].x / n[0] as f32);
+    }
+
+    #[test]
+    fn zero_clamp_disables_firefly_clamp() {
+        let (mut acc, mut scratch, mut n, mut m2, conv) = px();
+        let ff = FireflyConfig { clamp: 0.0, ..Default::default() };
+        for _ in 0..4 {
+            scratch[0] = Color::new(0.0, 0.0, 0.0);
+            accumulate_sample(&mut acc, &scratch, &mut n, &mut m2, &conv, &ff);
+        }
+        scratch[0] = Color::new(100.0, 100.0, 100.0);
+        accumulate_sample(&mut acc, &scratch, &mut n, &mut m2, &conv, &ff);
+        assert!((acc[0].x / n[0] as f32 - 20.0).abs() < 1e-3, "spike must pass through unclamped: mean {}", acc[0].x / n[0] as f32);
+    }
 }

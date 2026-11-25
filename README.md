@@ -45,6 +45,8 @@ cargo build --release --features denoise
 --frames <n>         render only the first N frames of a scene animation; 1 = single still (default: all)
 --spin <deg>         override every [[gems]] spin (static rotation about the gem's own axis); render one crisp still per angle
 --no-photon-map      disable caustic photon map (faster, no caustics)
+--firefly <f>        firefly clamp multiplier vs running mean (default 8.0; 0 = off)
+--firefly-floor <f>  absolute luminance floor of the clamp threshold (default 5.0)
 --denoise [strength] run OIDN after render; optional blend in [0.0, 1.0] (default: 1.0; requires the denoise feature)
 ```
 
@@ -280,7 +282,7 @@ The report PDFs and the per-stone scenes they generate stay local (git-ignored) 
 |---|---|---|---|
 | `MAX_DEPTH` | `src/renderer.rs` | `50` | Maximum ray bounce depth. Lower cuts render time but loses energy in glass/mirror-heavy scenes. |
 | `ADAPTIVE_THRESHOLD` | `src/main.rs` | `0.05` | Relative standard error (σ/μ, per channel) below which a pixel is converged and skipped. |
-| `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | Samples above `max(FIREFLY_CLAMP × running pixel mean, FIREFLY_ABS_FLOOR)` luminance are scaled down to that threshold. Downward bias on high-variance pixels — use `--denoise` for bias-free firefly suppression in finals. |
+| `FIREFLY_CLAMP` | `src/main.rs` | `8.0` | Default for the runtime `--firefly` flag: samples above `max(clamp × running pixel mean, floor)` luminance are scaled down to that threshold. Downward bias on high-variance pixels — use `--denoise` for bias-free firefly suppression in finals, or `--firefly 0` to disable. |
 | `FIREFLY_MIN_SAMPLES` | `src/main.rs` | `4` | Minimum samples before per-pixel firefly clamping activates. |
 | `FIREFLY_ABS_FLOOR` | `src/main.rs` | `5.0` | Absolute floor (linear luminance) for the clamp threshold — without it, a pixel whose running mean is still ~0 clamps its first legitimate bright sample to ~0 and renders black. |
 | `FIRE_LUMA_POW` | `src/spectrum.rs` | `0.5` | Exponent applied to the photopic luminance ȳ(λ) in the `spectral_fire_rgb` dispersion tint. Higher (→1.0) dims violet/blue fire harder so the gem reads warmer/whiter; lower (→0.0) gives full rainbow fire with more blue/violet sparkle. The tint stays per-channel normalised, so white light is white on average at any value. |

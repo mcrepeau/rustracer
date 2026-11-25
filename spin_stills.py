@@ -39,6 +39,8 @@ def main():
                     help="tonemapper for every still (default: scene/CLI default agx)")
     ap.add_argument("--exposure", type=float, default=None,
                     help="exposure multiplier for every still (default: 1.0)")
+    ap.add_argument("--firefly", type=float, default=None,
+                    help="firefly clamp multiplier for every still (default: 8.0; 0 = off)")
     ap.add_argument("--dry-run", action="store_true", help="print the commands without running")
     args = ap.parse_args()
 
@@ -65,6 +67,8 @@ def main():
             cmd += ["--tonemapper", args.tonemapper]
         if args.exposure is not None:
             cmd += ["--exposure", str(args.exposure)]
+        if args.firefly is not None:
+            cmd += ["--firefly", str(args.firefly)]
         cmds.append(cmd)
 
     if args.dry_run:
